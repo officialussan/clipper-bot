@@ -188,7 +188,7 @@ client.on(Events.MessageCreate, async message => {
     .setDescription(
       'This server requires you to verify yourself before accessing the rest of the server.\n\nClick the **Verify** button below to continue.'
     )
-    .setImage('https://your-image-link-here.com/banner.png');
+    .setImage('https://discordapp.com/channels/1413113505565118524/1492174381063999643/1495521874275205351');
 
   await message.channel.send({
     embeds: [embed],
