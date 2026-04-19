@@ -160,6 +160,79 @@ async function updateStaffMessage(guild, app) {
 
 client.once(Events.ClientReady, c => console.log(`Online as ${c.user.tag}`));
 
+client.on(Events.MessageCreate, async message => {
+  try {
+    if (message.author.bot) return;
+    if (!message.guild) return;
+
+    console.log('MESSAGE RECEIVED:', message.content);
+
+    // VERIFY PANEL
+    if (message.content === '!verifypanel') {
+      if (!isAdmin(message.member)) {
+        await message.reply('❌ You must be an admin to use this command.');
+        return;
+      }
+
+      await message.delete().catch(() => {});
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('verify_human')
+          .setLabel("I'm not a robot")
+          .setStyle(ButtonStyle.Success)
+      );
+
+      await message.channel.send({
+        content: `✅ **Verification Required**
+
+Click the button below to verify that you're human.`,
+        components: [row]
+      });
+
+      return;
+    }
+
+    // CAMPAIGN PANEL
+    if (message.content.startsWith('!campaignpanel')) {
+      if (!isAdmin(message.member)) {
+        await message.reply('❌ You must be an admin to use this command.');
+        return;
+      }
+
+      const args = message.content.trim().split(/\s+/);
+      const campaignId = args[1];
+
+      if (!campaignId || !CAMPAIGNS[campaignId]) {
+        await message.channel.send(
+          `❌ Usage: \`!campaignpanel campaign_id\`\nAvailable campaigns: ${Object.keys(CAMPAIGNS).join(', ')}`
+        );
+        return;
+      }
+
+      const campaign = CAMPAIGNS[campaignId];
+
+      await message.delete().catch(() => {});
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`join_campaign:${campaign.id}`)
+          .setLabel('Join Campaign')
+          .setStyle(ButtonStyle.Success)
+      );
+
+      await message.channel.send({
+        content: campaign.panelText,
+        components: [row]
+      });
+
+      return;
+    }
+  } catch (error) {
+    console.error('MessageCreate error:', error);
+  }
+});
+
 client.on(Events.InteractionCreate, async interaction => {
   try {
 
