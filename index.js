@@ -234,6 +234,7 @@ client.on(Events.MessageCreate, async message => {
 
       return;
     }
+
   } catch (error) {
     console.error('MessageCreate error:', error);
   }
