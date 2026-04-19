@@ -12,7 +12,7 @@ const {
   TextInputStyle,
   StringSelectMenuBuilder,
   Events,
-  PermissionsBitField
+  PermissionsBitField,
   EmbedBuilder
 } = require('discord.js');
 
