@@ -159,8 +159,6 @@ async function updateStaffMessage(guild, app) {
   } catch {}
 }
 
-client.once(Events.ClientReady, c => console.log(`Online as ${c.user.tag}`));
-
 client.on(Events.MessageCreate, async message => {
   try {
     if (message.author.bot) return;
@@ -195,6 +193,42 @@ client.on(Events.MessageCreate, async message => {
 
       await message.channel.send({
         embeds: [embed],
+        components: [row]
+      });
+
+      return;
+    }
+
+    // CAMPAIGN PANEL
+    if (message.content.startsWith('!campaignpanel')) {
+      if (!isAdmin(message.member)) {
+        await message.reply('❌ You must be an admin to use this command.');
+        return;
+      }
+
+      const args = message.content.trim().split(/\s+/);
+      const campaignId = args[1];
+
+      if (!campaignId || !CAMPAIGNS[campaignId]) {
+        await message.channel.send(
+          `❌ Usage: \`!campaignpanel campaign_id\`\nAvailable campaigns: ${Object.keys(CAMPAIGNS).join(', ')}`
+        );
+        return;
+      }
+
+      const campaign = CAMPAIGNS[campaignId];
+
+      await message.delete().catch(() => {});
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`join_campaign:${campaign.id}`)
+          .setLabel('Join Campaign')
+          .setStyle(ButtonStyle.Success)
+      );
+
+      await message.channel.send({
+        content: campaign.panelText,
         components: [row]
       });
 
