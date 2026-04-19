@@ -169,10 +169,34 @@ client.on(Events.MessageCreate, async message => {
 
     // VERIFY PANEL
     if (message.content === '!verifypanel') {
-      if (!isAdmin(message.member)) {
-        await message.reply('❌ You must be an admin to use this command.');
-        return;
-      }
+  if (!isAdmin(message.member)) {
+    await message.reply('❌ You must be an admin to use this command.');
+    return;
+  }
+
+  await message.delete().catch(() => {});
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('verify_human')
+      .setLabel('Verify')
+      .setStyle(ButtonStyle.Primary)
+  );
+
+  const embed = new EmbedBuilder()
+    .setTitle('🤖 Verification Required')
+    .setDescription(
+      'This server requires you to verify yourself before accessing the rest of the server.\n\nClick the **Verify** button below to continue.'
+    )
+    .setImage('https://your-image-link-here.com/banner.png');
+
+  await message.channel.send({
+    embeds: [embed],
+    components: [row]
+  });
+
+  return;
+}
 
       await message.delete().catch(() => {});
 
