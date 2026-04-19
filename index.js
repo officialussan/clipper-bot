@@ -236,36 +236,105 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 
     // STAFF CODE SUBMIT
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('staff_code')) {
-      const appId = interaction.customId.split(':')[1];
-      const data = loadData();
-      const app = data.applications[appId];
+if (interaction.isModalSubmit() && interaction.customId.startsWith('staff_code')) {
+  if (!interaction.guild || !isAdmin(interaction.member)) {
+    await interaction.reply({
+      content: '❌ You are not allowed to do this.',
+      ephemeral: true
+    });
+    return;
+  }
 
-      app.bioCode = interaction.fields.getTextInputValue('code');
-      app.status = 'waiting_confirm';
-      saveData(data);
+  const appId = interaction.customId.split(':')[1];
+  const data = loadData();
+  const app = data.applications[appId];
 
-      await updateStaffMessage(interaction.guild, app);
+  if (!app) {
+    await interaction.reply({
+      content: '❌ Application not found.',
+      ephemeral: true
+    });
+    return;
+  }
 
-      await interaction.reply({ content: 'Code sent.', ephemeral: true });
-    }
+  const code = interaction.fields.getTextInputValue('code').trim();
 
-    // USER CONFIRM (FIXED)
-    if (interaction.isButton() && interaction.customId.startsWith('user_confirm')) {
-      const appId = interaction.customId.split(':')[1];
-      const data = loadData();
-      const app = data.applications[appId];
+  app.bioCode = code;
+  app.status = 'waiting_confirm';
+  data.applications[appId] = app;
+  saveData(data);
 
-      app.status = 'verifying';
-      saveData(data);
+  // update staff message first
+  await updateStaffMessage(interaction.guild, app);
 
-      await updateStaffMessage(interaction.guild, app);
+  // send code to original campaign channel
+  const sourceChannel = interaction.guild.channels.cache.get(app.sourceChannelId);
 
-      await interaction.reply({
-        content: 'Submitted. Staff reviewing.',
-        ephemeral: true
-      });
-    }
+  if (!sourceChannel) {
+    await interaction.reply({
+      content: '❌ Original campaign channel not found.',
+      ephemeral: true
+    });
+    return;
+  }
+
+  const confirmRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`user_confirm:${appId}`)
+      .setLabel('Confirm Bio Updated')
+      .setStyle(ButtonStyle.Success)
+  );
+
+  await sourceChannel.send({
+    content: `📩 <@${app.userId}> your bio code for **${app.campaignName}** is:
+
+\`${code}\`
+
+Add this code to your **${formatPlatform(app.platform)}** bio for **@${app.username}**.
+
+When done, click the button below.`,
+    components: [confirmRow]
+  });
+
+  await interaction.reply({
+    content: `✅ Code sent to <@${app.userId}>.`,
+    ephemeral: true
+  });
+}
+
+    // USER CONFIRM
+if (interaction.isButton() && interaction.customId.startsWith('user_confirm')) {
+  const appId = interaction.customId.split(':')[1];
+  const data = loadData();
+  const app = data.applications[appId];
+
+  if (!app) {
+    await interaction.reply({
+      content: '❌ Application not found.',
+      ephemeral: true
+    });
+    return;
+  }
+
+  if (interaction.user.id !== app.userId) {
+    await interaction.reply({
+      content: '❌ This confirmation is not for you.',
+      ephemeral: true
+    });
+    return;
+  }
+
+  app.status = 'verifying';
+  data.applications[appId] = app;
+  saveData(data);
+
+  await updateStaffMessage(interaction.guild, app);
+
+  await interaction.reply({
+    content: '✅ Submitted. Staff reviewing.',
+    ephemeral: true
+  });
+}
 
   } catch (e) {
     console.log(e);
