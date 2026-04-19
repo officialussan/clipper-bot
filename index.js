@@ -32,12 +32,36 @@ const dataFilePath = path.join(__dirname, 'data.json');
 
 const CAMPAIGNS = {
   emoney_shopping: {
-    id: 'emoney_shopping',
-    name: 'eMoney Shopping',
-    allowedPlatforms: ['tiktok', 'instagram', 'youtube', 'facebook'],
-    staffChannelId: process.env.EMONEY_STAFF_CHANNEL_ID,
-    roleId: process.env.EMONEY_CAMPAIGN_ROLE_ID,
-    panelText: `🛍️ **Earn Money Posting Clips & Edits – eMoney Shopping**`
+  id: 'emoney_shopping',
+  name: 'eMoney Shopping',
+  allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
+  staffChannelId: process.env.EMONEY_STAFF_CHANNEL_ID,
+  roleId: process.env.EMONEY_CAMPAIGN_ROLE_ID,
+    panelText: `🎙️ **Earn Money Posting Political Clips – Michael Carbonara Campaign**
+
+Earn money by posting clips and edits of politician *Michael Carbonara* discussing current political topics. High-quality AI-generated content is accepted!
+
+All you have to do is **register for the campaign below** and follow the guidelines to start earning.
+
+📊 **Campaign Overview**
+• **Content:** Michael Carbonara political discussions
+• **Platforms:** TikTok, IG Reels, YouTube Shorts
+• **Requirement:** Must tag **@mcarbonarafl** at the start of every caption
+• **Requirement:** Likeness (audio/visual) must be exact
+• **Strict Rule:** **NO** Anti-Trump or Anti-White House content
+• **Strict Rule:** **NO** outrageous or violent content *(r*pe, killing, etc.)*
+
+💰 **Payment Details**
+
+> **TikTok:** $160 per 100,000 views  
+> **YouTube Shorts:** $100 per 100,000 views  
+> **Instagram Reels:** $50 per 100,000 views  
+> **Account Limit:** Unlimited  
+> **Payment Method:** Crypto  
+> **Minimum Payout:** 100k views to qualify
+
+🚀 **Join the Campaign**
+Click the button below to start clipping and earning:`
   }
 };
 
