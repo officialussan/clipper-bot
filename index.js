@@ -240,15 +240,7 @@ client.on(Events.MessageCreate, async message => {
   }
 });
 
-      await message.delete().catch(() => {});
-
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('verify_human')
-          .setLabel("I'm not a robot")
-          .setStyle(ButtonStyle.Success)
-      );
-
+     
       await message.channel.send({
         content: `✅ **Verification Required**
 
