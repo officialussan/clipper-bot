@@ -13,7 +13,7 @@ const {
   StringSelectMenuBuilder,
   Events,
   PermissionsBitField
-  EmbedBitField
+  EmbedBuilder
 } = require('discord.js');
 
 const client = new Client({
@@ -169,39 +169,41 @@ client.on(Events.MessageCreate, async message => {
     console.log('MESSAGE RECEIVED:', message.content);
 
     // VERIFY PANEL
-if (message.content === '!verifypanel') {
-  if (!isAdmin(message.member)) {
-    await message.reply('❌ You must be an admin to use this command.');
-    return;
+    if (message.content === '!verifypanel') {
+      if (!isAdmin(message.member)) {
+        await message.reply('❌ You must be an admin to use this command.');
+        return;
+      }
+
+      await message.delete().catch(() => {});
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('verify_human')
+          .setLabel('Verify')
+          .setStyle(ButtonStyle.Primary)
+      );
+
+      const embed = new EmbedBuilder()
+        .setColor(0x7ED957)
+        .setTitle('Welcome to Verification!')
+        .setDescription(
+          'This server requires you to verify yourself to get access to other channels.\n\nYou can simply verify by clicking on the **Verify** button below.'
+        )
+        .setImage('https://cdn.discordapp.com/attachments/1492952587224354947/1495526570230546502/copy_3A941843-8993-470E-ACAC-3C7BCBC89E90.jpg?ex=69e69127&is=69e53fa7&hm=bf601d27e93a82fe86f7b9377683c5ad9ab8dd5034a9fc1d3fa40027f35c8e0e&')
+        .setFooter({ text: 'Creators Elite Security' });
+
+      await message.channel.send({
+        embeds: [embed],
+        components: [row]
+      });
+
+      return;
+    }
+  } catch (error) {
+    console.error('MessageCreate error:', error);
   }
-
-  await message.delete().catch(() => {});
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId('verify_human')
-      .setLabel('Verify')
-      .setStyle(ButtonStyle.Primary)
-  );
-
-  // 👉 THIS is where your embed goes
-  const embed = new EmbedBuilder()
-    .setColor(7ED957)
-    .setTitle('Welcome to Verification!')
-    .setDescription(
-      'This server requires you to verify yourself to get access to other channels.\n\nYou can simply verify by clicking on the **Verify** button below.'
-    )
-    .setImage('https://cdn.discordapp.com/attachments/1492952587224354947/1495526570230546502/copy_3A941843-8993-470E-ACAC-3C7BCBC89E90.jpg?ex=69e69127&is=69e53fa7&hm=bf601d27e93a82fe86f7b9377683c5ad9ab8dd5034a9fc1d3fa40027f35c8e0e&')
-    .setFooter({ text: 'Creators Elite Security' });
-
-  // 👉 send embed + button
-  await message.channel.send({
-    embeds: [embed],
-    components: [row]
-  });
-
-  return;
-}
+});
 
       await message.delete().catch(() => {});
 
