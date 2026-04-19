@@ -1,0 +1,33 @@
+{
+  "users": {
+    "1189010402533720127": {
+      "discordId": "1189010402533720127",
+      "discordName": "officialussan",
+      "verified": false,
+      "campaigns": [],
+      "stats": {
+        "videosPosted": 0,
+        "videosApproved": 0,
+        "videosRejected": 0,
+        "totalViews": 0,
+        "moneyMade": 0
+      }
+    }
+  },
+  "applications": {
+    "app_1776606149088_6438": {
+      "id": "app_1776606149088_6438",
+      "guildId": "1413113505565118524",
+      "userId": "1189010402533720127",
+      "campaignId": "emoney_shopping",
+      "campaignName": "eMoney Shopping",
+      "platform": "tiktok",
+      "username": "officialussan",
+      "status": "verifying",
+      "bioCode": "EME-567",
+      "createdAt": "2026-04-19T13:42:29.092Z",
+      "staffChannelId": "1494360481891356794",
+      "staffMessageId": "1495419320891605044"
+    }
+  }
+}
