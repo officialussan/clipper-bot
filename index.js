@@ -227,7 +227,7 @@ client.on(Events.MessageCreate, async message => {
         new ButtonBuilder()
           .setCustomId('verify_human')
           .setLabel('Verify')
-          .setStyle(ButtonStyle.Primary)
+          .setStyle(ButtonStyle.Success)
       );
 
       const embed = new EmbedBuilder()
@@ -377,6 +377,7 @@ client.on(Events.InteractionCreate, async interaction => {
           new TextInputBuilder()
             .setCustomId('campaign_username_input')
             .setLabel('Username')
+            .setPlaceholder('@username')
             .setStyle(TextInputStyle.Short)
             .setRequired(true)
         )
