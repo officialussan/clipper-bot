@@ -115,10 +115,6 @@ function ensureUser(data, member) {
   return data.users[member.id];
 }
 
-  data.users[member.id].discordName = member.user.username;
-  return data.users[member.id];
-}
-
 function isAdmin(member) {
   return member.permissions.has(PermissionsBitField.Flags.Administrator);
 }
@@ -218,7 +214,7 @@ async function updateStaffMessage(guild, app) {
   }
 }
 
-  function formatNumber(num) {
+function formatNumber(num) {
   const n = Number(num) || 0;
 
   if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
@@ -228,12 +224,11 @@ async function updateStaffMessage(guild, app) {
 }
 
 function getLeaderboardUsers(data) {
-  return Object.values(data.users)
-    .sort((a, b) => {
-      const viewsA = a.stats?.totalViews || 0;
-      const viewsB = b.stats?.totalViews || 0;
-      return viewsB - viewsA;
-    });
+  return Object.values(data.users).sort((a, b) => {
+    const viewsA = a.stats?.totalViews || 0;
+    const viewsB = b.stats?.totalViews || 0;
+    return viewsB - viewsA;
+  });
 }
 
 function buildLeaderboardEmbed(data, page = 1, perPage = 10) {
@@ -305,7 +300,11 @@ client.once(Events.ClientReady, c => {
 
 client.on(Events.MessageCreate, async message => {
   try {
-        // LEADERBOARD PANEL
+    if (message.author.bot) return;
+    if (!message.guild) return;
+
+    console.log('MESSAGE RECEIVED:', message.content);
+
     if (message.content === '!leaderboard') {
       const data = loadData();
       const leaderboard = buildLeaderboardEmbed(data, 1, 10);
@@ -316,9 +315,8 @@ client.on(Events.MessageCreate, async message => {
       });
 
       return;
-   }
+    }
 
-    // ADMIN: ADD VIEWS
     if (message.content.startsWith('!addviews')) {
       if (!isAdmin(message.member)) {
         await message.reply('❌ You must be an admin to use this command.');
@@ -342,16 +340,13 @@ client.on(Events.MessageCreate, async message => {
 
       const data = loadData();
       const userRecord = ensureUser(data, member);
-
       userRecord.stats.totalViews += views;
-
       saveData(data);
 
       await message.reply(`✅ Added **${views}** views to <@${mentionedUser.id}>.`);
       return;
     }
 
-    // ADMIN: APPROVE CLIP
     if (message.content.startsWith('!approveclip')) {
       if (!isAdmin(message.member)) {
         await message.reply('❌ You must be an admin to use this command.');
@@ -390,7 +385,6 @@ client.on(Events.MessageCreate, async message => {
       return;
     }
 
-    // ADMIN: REJECT CLIP
     if (message.content.startsWith('!rejectclip')) {
       if (!isAdmin(message.member)) {
         await message.reply('❌ You must be an admin to use this command.');
@@ -421,11 +415,6 @@ client.on(Events.MessageCreate, async message => {
       await message.reply(`❌ Rejected clip for <@${mentionedUser.id}>.`);
       return;
     }
-
-    if (message.author.bot) return;
-    if (!message.guild) return;
-
-    console.log('MESSAGE RECEIVED:', message.content);
 
     if (message.content === '!verifypanel') {
       if (!isAdmin(message.member)) {
@@ -500,23 +489,21 @@ client.on(Events.MessageCreate, async message => {
 
 client.on(Events.InteractionCreate, async interaction => {
   try {
-        // LEADERBOARD: PREVIOUS
     if (interaction.isButton() && interaction.customId.startsWith('leaderboard_prev:')) {
       const currentPage = Number(interaction.customId.split(':')[1]);
       const newPage = currentPage - 1;
 
       const data = loadData();
-      const leaderboard = buildLeaderboardContent(data, newPage, 10);
+      const leaderboard = buildLeaderboardEmbed(data, newPage, 10);
 
       await interaction.update({
-        content: leaderboard.content,
+        embeds: [leaderboard.embed],
         components: buildLeaderboardButtons(leaderboard.page, leaderboard.totalPages)
       });
 
       return;
     }
 
-    // LEADERBOARD: NEXT
     if (interaction.isButton() && interaction.customId.startsWith('leaderboard_next:')) {
       const currentPage = Number(interaction.customId.split(':')[1]);
       const newPage = currentPage + 1;
@@ -532,7 +519,6 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
-    // LEADERBOARD: MY STATS
     if (interaction.isButton() && interaction.customId === 'leaderboard_mystats') {
       const data = loadData();
       const guildMember = interaction.guild
@@ -572,8 +558,8 @@ client.on(Events.InteractionCreate, async interaction => {
 
       return;
     }
-     
-      if (interaction.isButton() && interaction.customId === 'verify_human') {
+
+    if (interaction.isButton() && interaction.customId === 'verify_human') {
       if (!interaction.guild) {
         await interaction.reply({
           content: '❌ This can only be used in the server.',
@@ -968,9 +954,9 @@ When done, click the button below.`,
       });
       return;
     }
-
   } catch (e) {
     console.log('Interaction error:', e);
+
     if (interaction.isRepliable()) {
       if (interaction.replied || interaction.deferred) {
         await interaction.followUp({
