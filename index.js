@@ -70,13 +70,14 @@ function loadData() {
   if (!fs.existsSync(dataFilePath)) {
     fs.writeFileSync(
       dataFilePath,
-      JSON.stringify({ users: {}, applications: {} }, null, 2)
+      JSON.stringify({ users: {}, applications: {}, socialAccounts: {} }, null, 2)
     );
   }
 
   const raw = JSON.parse(fs.readFileSync(dataFilePath, 'utf8'));
   if (!raw.users) raw.users = {};
   if (!raw.applications) raw.applications = {};
+  if (!raw.socialAccounts) raw.socialAccounts = {};
   return raw;
 }
 
@@ -91,6 +92,7 @@ function ensureUser(data, member) {
       discordName: member.user.username,
       verified: false,
       campaigns: [],
+      socials: [],
       stats: {
         videosPosted: 0,
         videosApproved: 0,
@@ -109,6 +111,10 @@ function ensureUser(data, member) {
       totalViews: 0,
       moneyMade: 0
     };
+  }
+
+  if (!data.users[member.id].socials) {
+    data.users[member.id].socials = [];
   }
 
   data.users[member.id].discordName = member.user.username;
@@ -131,7 +137,16 @@ function formatPlatform(p) {
 function normalizeUsername(u) {
   return String(u).trim().replace(/^@+/, '');
 }
+function normalizeSocialKey(platform, username) {
+  return `${platform}:${normalizeUsername(username).toLowerCase()}`;
+}
 
+function ensureUserSocials(data, userId) {
+  if (!data.users[userId]) return;
+  if (!data.users[userId].socials) {
+    data.users[userId].socials = [];
+  }
+}
 function makeApplicationId() {
   return `app_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 }
@@ -499,6 +514,48 @@ client.on(Events.MessageCreate, async message => {
       return;
     }
 
+    if (message.content === '!socialpanel') {
+      if (!isAdmin(message.member)) {
+        await message.reply('❌ You must be an admin to use this command.');
+        return;
+      }
+
+      await message.delete().catch(() => {});
+
+      const embed = new EmbedBuilder()
+        .setColor(0x7ED957)
+        .setTitle('Manage Your Social Accounts')
+        .setDescription(
+          `Use the buttons below to manage your social media accounts.\n\n` +
+          `🟢 **Link Account**\nConnect a new social media account.\n\n` +
+          `🟢 **Remove Account**\nUnlink a connected social account.\n\n` +
+          `🟢 **View Accounts**\nView your connected social accounts.\n\n` +
+          `**Powered by Creators Elite**`
+       );
+
+     const row1 = new ActionRowBuilder().addComponents(
+       new ButtonBuilder()
+         .setCustomId('social_link')
+         .setLabel('Link Account')
+         .setStyle(ButtonStyle.Success),
+       new ButtonBuilder()
+         .setCustomId('social_remove')
+         .setLabel('Remove Account')
+         .setStyle(ButtonStyle.Secondary),
+       new ButtonBuilder()
+         .setCustomId('social_view')
+         .setLabel('View Accounts')
+         .setStyle(ButtonStyle.Primary)
+     );
+
+     await message.channel.send({
+       embeds: [embed],
+       components: [row1]
+     });
+
+     return;
+   }
+
     if (message.content.startsWith('!campaignpanel')) {
       if (!isAdmin(message.member)) {
         await message.reply('❌ You must be an admin to use this command.');
@@ -611,6 +668,236 @@ client.on(Events.InteractionCreate, async interaction => {
         content: '📂 Clip history is not connected yet. This button will show all your submitted clips once clip tracking is added.',
         ephemeral: true
       });
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'social_link') {
+      const select = new StringSelectMenuBuilder()
+        .setCustomId('social_link_platform')
+        .setPlaceholder('Select platform')
+        .addOptions([
+          { label: 'TikTok', value: 'tiktok' },
+          { label: 'Instagram', value: 'instagram' },
+          { label: 'YouTube', value: 'youtube' },
+          { label: 'Facebook', value: 'facebook' }
+        ]);
+
+      await interaction.reply({
+        content: 'Choose the platform you want to link.',
+        components: [new ActionRowBuilder().addComponents(select)],
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isStringSelectMenu() && interaction.customId === 'social_link_platform') {
+      const platform = interaction.values[0];
+
+      const modal = new ModalBuilder()
+        .setCustomId(`social_link_modal:${platform}`)
+        .setTitle('Link Account');
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('social_username')
+            .setLabel('Username')
+            .setPlaceholder('@username')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+        )
+      );
+
+      await interaction.showModal(modal);
+      return;
+    }
+    
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('social_link_modal:')) {
+      const platform = interaction.customId.split(':')[1];
+      const username = normalizeUsername(
+        interaction.fields.getTextInputValue('social_username')
+      );
+
+      if (!username) {
+        await interaction.reply({
+          content: '❌ Username cannot be empty.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const data = loadData();
+      ensureUser(data, interaction.member);
+      ensureUserSocials(data, interaction.user.id);
+
+      const key = normalizeSocialKey(platform, username);
+      const existing = data.socialAccounts[key];
+
+      if (existing && existing.ownerId !== interaction.user.id) {
+        await interaction.reply({
+          content: `❌ This ${formatPlatform(platform)} account is already linked by another user.`,
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (existing && existing.ownerId === interaction.user.id) {
+        await interaction.reply({
+          content: `❌ You already linked this ${formatPlatform(platform)} account.`,
+          ephemeral: true
+        });
+        return;
+      }  
+
+      data.socialAccounts[key] = {
+        ownerId: interaction.user.id,
+        platform,
+        username,
+        addedAt: new Date().toISOString()
+      };
+
+      const userSocials = data.users[interaction.user.id].socials;
+      const alreadyInUserList = userSocials.some(
+        acc => acc.platform === platform && acc.username.toLowerCase() === username.toLowerCase()
+      );
+
+      if (!alreadyInUserList) {
+        userSocials.push({ platform, username });
+      }
+
+      saveData(data);
+
+      await interaction.reply({
+        content: `✅ Linked **${formatPlatform(platform)}** account: @${username}`,
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'social_view') {
+      const data = loadData();
+      const member = interaction.guild
+        ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null)
+        : null;
+
+      if (!member) {
+        await interaction.reply({
+          content: '❌ Could not load your accounts.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const userRecord = ensureUser(data, member);
+      saveData(data);
+
+      const socials = userRecord.socials || [];
+
+      if (socials.length === 0) {
+        await interaction.reply({
+          content: '📭 You have no linked social accounts.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const lines = socials.map(acc => `• **${formatPlatform(acc.platform)}** — @${acc.username}`);
+
+      await interaction.reply({
+        content: `🔗 **Your Linked Accounts**\n\n${lines.join('\n')}`,
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'social_remove') {
+      const data = loadData();
+      const member = interaction.guild
+        ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null)
+        : null;
+
+      if (!member) {
+        await interaction.reply({
+          content: '❌ Could not load your accounts.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const userRecord = ensureUser(data, member);
+      saveData(data);
+
+      const socials = userRecord.socials || [];
+
+      if (socials.length === 0) {
+        await interaction.reply({
+          content: '📭 You have no linked accounts to remove.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const select = new StringSelectMenuBuilder()
+        .setCustomId('social_remove_select')
+        .setPlaceholder('Select account to remove')
+        .addOptions(
+          socials.map((acc, index) => ({
+            label: `${formatPlatform(acc.platform)} - @${acc.username}`,
+            value: String(index)
+          }))
+        );
+
+      await interaction.reply({
+        content: 'Choose the account you want to remove.',
+        components: [new ActionRowBuilder().addComponents(select)],
+        ephemeral: true
+      });
+
+      return;
+    }
+    
+    if (interaction.isStringSelectMenu() && interaction.customId === 'social_remove_select') {
+      const data = loadData();
+      const member = interaction.guild
+        ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null)
+        : null;
+
+      if (!member) {
+        await interaction.reply({
+          content: '❌ Could not load your accounts.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const userRecord = ensureUser(data, member);
+      const socials = userRecord.socials || [];
+      const selectedIndex = Number(interaction.values[0]);
+
+      if (Number.isNaN(selectedIndex) || !socials[selectedIndex]) {
+        await interaction.reply({
+          content: '❌ Invalid account selection.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const selected = socials[selectedIndex];
+      const key = normalizeSocialKey(selected.platform, selected.username);
+
+      delete data.socialAccounts[key];
+      userRecord.socials.splice(selectedIndex, 1);
+
+      saveData(data);
+
+      await interaction.reply({
+        content: `✅ Removed **${formatPlatform(selected.platform)}** account: @${selected.username}`,
+        ephemeral: true
+      });
+
       return;
     }
 
