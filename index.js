@@ -101,6 +101,20 @@ function ensureUser(data, member) {
     };
   }
 
+  if (!data.users[member.id].stats) {
+    data.users[member.id].stats = {
+      videosPosted: 0,
+      videosApproved: 0,
+      videosRejected: 0,
+      totalViews: 0,
+      moneyMade: 0
+    };
+  }
+
+  data.users[member.id].discordName = member.user.username;
+  return data.users[member.id];
+}
+
   data.users[member.id].discordName = member.user.username;
   return data.users[member.id];
 }
@@ -204,12 +218,210 @@ async function updateStaffMessage(guild, app) {
   }
 }
 
+  function formatNumber(num) {
+  const n = Number(num) || 0;
+
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return `${n}`;
+}
+
+function getLeaderboardUsers(data) {
+  return Object.values(data.users)
+    .sort((a, b) => {
+      const viewsA = a.stats?.totalViews || 0;
+      const viewsB = b.stats?.totalViews || 0;
+      return viewsB - viewsA;
+    });
+}
+
+function buildLeaderboardEmbed(data, page = 1, perPage = 10) {
+  const users = getLeaderboardUsers(data);
+  const totalPages = Math.max(1, Math.ceil(users.length / perPage));
+  const safePage = Math.min(Math.max(page, 1), totalPages);
+
+  const start = (safePage - 1) * perPage;
+  const pageUsers = users.slice(start, start + perPage);
+
+  let lines = pageUsers.map((user, index) => {
+    const rank = start + index + 1;
+    const views = user.stats?.totalViews || 0;
+
+    let prefix = `${rank}.`;
+    if (rank === 1) prefix = '🥇';
+    if (rank === 2) prefix = '🥈';
+    if (rank === 3) prefix = '🥉';
+
+    const name = user.discordName || `User ${rank}`;
+    return `${prefix} **${name}**: **${formatNumber(views)}** Views`;
+  });
+
+  if (lines.length === 0) {
+    lines = ['No stats yet.'];
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(0x7ED957)
+    .setDescription(
+      `🎬 **Clip Money** 💰\n\n` +
+      `## Top Clippers All Time 📈\n\n` +
+      `${lines.join('\n')}\n\n` +
+      `**Powered by ❤️ | Creators Elite**`
+    )
+    .setFooter({ text: `Page ${safePage} / ${totalPages}` });
+
+  return {
+    embed,
+    page: safePage,
+    totalPages
+  };
+}
+
+function buildLeaderboardButtons(page, totalPages) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`leaderboard_prev:${page}`)
+        .setLabel('Previous')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page <= 1),
+      new ButtonBuilder()
+        .setCustomId(`leaderboard_next:${page}`)
+        .setLabel('Next')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page >= totalPages),
+      new ButtonBuilder()
+        .setCustomId('leaderboard_mystats')
+        .setLabel('My Stats')
+        .setStyle(ButtonStyle.Primary)
+    )
+  ];
+}
+
 client.once(Events.ClientReady, c => {
   console.log(`Online as ${c.user.tag}`);
 });
 
 client.on(Events.MessageCreate, async message => {
   try {
+        // LEADERBOARD PANEL
+    if (message.content === '!leaderboard') {
+      const data = loadData();
+      const leaderboard = buildLeaderboardEmbed(data, 1, 10);
+
+      await message.channel.send({
+        embeds: [leaderboard.embed],
+        components: buildLeaderboardButtons(leaderboard.page, leaderboard.totalPages)
+      });
+
+      return;
+   }
+
+    // ADMIN: ADD VIEWS
+    if (message.content.startsWith('!addviews')) {
+      if (!isAdmin(message.member)) {
+        await message.reply('❌ You must be an admin to use this command.');
+        return;
+      }
+
+      const args = message.content.trim().split(/\s+/);
+      const mentionedUser = message.mentions.users.first();
+      const views = Number(args[2]);
+
+      if (!mentionedUser || Number.isNaN(views)) {
+        await message.reply('❌ Usage: `!addviews @user 50000`');
+        return;
+      }
+
+      const member = await message.guild.members.fetch(mentionedUser.id).catch(() => null);
+      if (!member) {
+        await message.reply('❌ User not found in server.');
+        return;
+      }
+
+      const data = loadData();
+      const userRecord = ensureUser(data, member);
+
+      userRecord.stats.totalViews += views;
+
+      saveData(data);
+
+      await message.reply(`✅ Added **${views}** views to <@${mentionedUser.id}>.`);
+      return;
+    }
+
+    // ADMIN: APPROVE CLIP
+    if (message.content.startsWith('!approveclip')) {
+      if (!isAdmin(message.member)) {
+        await message.reply('❌ You must be an admin to use this command.');
+        return;
+      }
+
+      const args = message.content.trim().split(/\s+/);
+      const mentionedUser = message.mentions.users.first();
+      const views = Number(args[2]);
+      const amount = Number(args[3]);
+
+      if (!mentionedUser || Number.isNaN(views) || Number.isNaN(amount)) {
+        await message.reply('❌ Usage: `!approveclip @user 50000 80`');
+        return;
+      }
+
+      const member = await message.guild.members.fetch(mentionedUser.id).catch(() => null);
+      if (!member) {
+        await message.reply('❌ User not found in server.');
+        return;
+      }
+
+      const data = loadData();
+      const userRecord = ensureUser(data, member);
+
+      userRecord.stats.videosPosted += 1;
+      userRecord.stats.videosApproved += 1;
+      userRecord.stats.totalViews += views;
+      userRecord.stats.moneyMade += amount;
+
+      saveData(data);
+
+      await message.reply(
+        `✅ Approved clip for <@${mentionedUser.id}>.\nViews added: **${views}**\nMoney added: **$${amount}**`
+      );
+      return;
+    }
+
+    // ADMIN: REJECT CLIP
+    if (message.content.startsWith('!rejectclip')) {
+      if (!isAdmin(message.member)) {
+        await message.reply('❌ You must be an admin to use this command.');
+        return;
+      }
+
+      const mentionedUser = message.mentions.users.first();
+
+      if (!mentionedUser) {
+        await message.reply('❌ Usage: `!rejectclip @user`');
+        return;
+      }
+
+      const member = await message.guild.members.fetch(mentionedUser.id).catch(() => null);
+      if (!member) {
+        await message.reply('❌ User not found in server.');
+        return;
+      }
+
+      const data = loadData();
+      const userRecord = ensureUser(data, member);
+
+      userRecord.stats.videosPosted += 1;
+      userRecord.stats.videosRejected += 1;
+
+      saveData(data);
+
+      await message.reply(`❌ Rejected clip for <@${mentionedUser.id}>.`);
+      return;
+    }
+
     if (message.author.bot) return;
     if (!message.guild) return;
 
@@ -288,7 +500,80 @@ client.on(Events.MessageCreate, async message => {
 
 client.on(Events.InteractionCreate, async interaction => {
   try {
-    if (interaction.isButton() && interaction.customId === 'verify_human') {
+        // LEADERBOARD: PREVIOUS
+    if (interaction.isButton() && interaction.customId.startsWith('leaderboard_prev:')) {
+      const currentPage = Number(interaction.customId.split(':')[1]);
+      const newPage = currentPage - 1;
+
+      const data = loadData();
+      const leaderboard = buildLeaderboardContent(data, newPage, 10);
+
+      await interaction.update({
+        content: leaderboard.content,
+        components: buildLeaderboardButtons(leaderboard.page, leaderboard.totalPages)
+      });
+
+      return;
+    }
+
+    // LEADERBOARD: NEXT
+    if (interaction.isButton() && interaction.customId.startsWith('leaderboard_next:')) {
+      const currentPage = Number(interaction.customId.split(':')[1]);
+      const newPage = currentPage + 1;
+
+      const data = loadData();
+      const leaderboard = buildLeaderboardEmbed(data, newPage, 10);
+
+      await interaction.update({
+        embeds: [leaderboard.embed],
+        components: buildLeaderboardButtons(leaderboard.page, leaderboard.totalPages)
+      });
+
+      return;
+    }
+
+    // LEADERBOARD: MY STATS
+    if (interaction.isButton() && interaction.customId === 'leaderboard_mystats') {
+      const data = loadData();
+      const guildMember = interaction.guild
+        ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null)
+        : null;
+
+      if (!guildMember) {
+        await interaction.reply({
+          content: '❌ Could not load your stats.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const userRecord = ensureUser(data, guildMember);
+      saveData(data);
+
+      const stats = userRecord.stats || {
+        videosPosted: 0,
+        videosApproved: 0,
+        videosRejected: 0,
+        totalViews: 0,
+        moneyMade: 0
+      };
+
+      await interaction.reply({
+        content: `📊 **Your Stats**
+
+**Videos Posted:** ${stats.videosPosted}
+**Videos Approved:** ${stats.videosApproved}
+**Videos Rejected:** ${stats.videosRejected}
+**Total Views:** ${formatNumber(stats.totalViews)}
+**Money Made:** $${stats.moneyMade}
+**Campaigns Joined:** ${userRecord.campaigns?.length || 0}`,
+        ephemeral: true
+      });
+
+      return;
+    }
+     
+      if (interaction.isButton() && interaction.customId === 'verify_human') {
       if (!interaction.guild) {
         await interaction.reply({
           content: '❌ This can only be used in the server.',
