@@ -259,10 +259,10 @@ function buildLeaderboardEmbed(data, page = 1, perPage = 10) {
   const embed = new EmbedBuilder()
     .setColor(0x7ED957)
     .setDescription(
-      `🎬 **Clip Money** 💰\n\n` +
+      `🎬 **Creators Elite** 💎\n\n` +
       `## Top Clippers All Time 📈\n\n` +
       `${lines.join('\n')}\n\n` +
-      `**Powered by ❤️ | Creators Elite**`
+      `**Powered by Creators Elite**`
     )
     .setFooter({ text: `Page ${safePage} / ${totalPages}` });
 
@@ -294,6 +294,57 @@ function buildLeaderboardButtons(page, totalPages) {
   ];
 }
 
+function getUserRank(data, userId) {
+  const users = getLeaderboardUsers(data);
+  const index = users.findIndex(user => user.discordId === userId);
+  return index === -1 ? null : index + 1;
+}
+
+function buildMyStatsEmbed(userRecord, rank) {
+  const stats = userRecord.stats || {
+    videosPosted: 0,
+    videosApproved: 0,
+    videosRejected: 0,
+    totalViews: 0,
+    moneyMade: 0
+  };
+
+  const pendingVideos = Math.max(
+    stats.videosPosted - stats.videosApproved - stats.videosRejected,
+    0
+  );
+
+  const viewsNeeded = Math.max(5000 - stats.totalViews, 0);
+
+  const payoutText =
+    stats.totalViews >= 5000
+      ? `Eligible for payout.\n**Money Made:** $${stats.moneyMade}`
+      : `You need **${formatNumber(viewsNeeded)}** more views to be eligible for payout.`;
+
+  return new EmbedBuilder()
+    .setColor(0x7ED957)
+    .setDescription(
+      `🎬 **Campaign Stats - Michael Carbonara Campaign**\n\n` +
+      `🏆 **Leaderboard**\n` +
+      `${rank ? `#${rank}` : 'No Placement'}\n\n` +
+      `📊 **Total Views**\n` +
+      `${formatNumber(stats.totalViews)}\n\n` +
+      `💰 **Payout**\n` +
+      `${payoutText}\n\n` +
+      `🟢 **Approved Videos**\n` +
+      `${stats.videosApproved}\n\n` +
+      `🟡 **Pending Videos**\n` +
+      `${pendingVideos}\n\n` +
+      `🔴 **Rejected Videos**\n` +
+      `${stats.videosRejected}\n\n` +
+      `🎞️ **View Your Clips**\n` +
+      `Click the button below to check the stats of all your submitted videos.`
+    )
+    .setFooter({
+      text: `Last update | ${new Date().toLocaleString()}`
+    });
+}
+ 
 client.once(Events.ClientReady, c => {
   console.log(`Online as ${c.user.tag}`);
 });
@@ -536,26 +587,30 @@ client.on(Events.InteractionCreate, async interaction => {
       const userRecord = ensureUser(data, guildMember);
       saveData(data);
 
-      const stats = userRecord.stats || {
-        videosPosted: 0,
-        videosApproved: 0,
-        videosRejected: 0,
-        totalViews: 0,
-        moneyMade: 0
-      };
+      const rank = getUserRank(data, interaction.user.id);
+      const statsEmbed = buildMyStatsEmbed(userRecord, rank);
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('view_your_clips')
+          .setLabel('View Your Clips')
+          .setStyle(ButtonStyle.Secondary)
+      );
 
       await interaction.reply({
-        content: `📊 **Your Stats**
-
-**Videos Posted:** ${stats.videosPosted}
-**Videos Approved:** ${stats.videosApproved}
-**Videos Rejected:** ${stats.videosRejected}
-**Total Views:** ${formatNumber(stats.totalViews)}
-**Money Made:** $${stats.moneyMade}
-**Campaigns Joined:** ${userRecord.campaigns?.length || 0}`,
+        embeds: [statsEmbed],
+        components: [row],
         ephemeral: true
       });
 
+      return;
+    }
+     
+    if (interaction.isButton() && interaction.customId === 'view_your_clips') {
+      await interaction.reply({
+        content: '📂 Clip history is not connected yet. This button will show all your submitted clips once clip tracking is added.',
+        ephemeral: true
+      });
       return;
     }
 
