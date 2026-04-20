@@ -603,9 +603,9 @@ client.on(Events.MessageCreate, async message => {
         .setTitle('Manage Your Social Accounts')
         .setDescription(
           `Use the buttons below to manage your social media accounts.\n\n` +
-          `🟢 **Link Account**\nConnect a new social media account.\n\n` +
-          `🟢 **Remove Account**\nUnlink a connected social account.\n\n` +
-          `🟢 **View Accounts**\nView your connected social accounts.\n\n` +
+          `➕ **Link Account**\nConnect a new social media account.\n\n` +
+          `➖ **Remove Account**\nUnlink a connected social account.\n\n` +
+          `🌐 **View Accounts**\nView your connected social accounts.\n\n` +
           `**Powered by Creators Elite**`
        );
 
@@ -755,7 +755,6 @@ client.on(Events.InteractionCreate, async interaction => {
           { label: 'TikTok', value: 'tiktok' },
           { label: 'Instagram', value: 'instagram' },
           { label: 'YouTube', value: 'youtube' },
-          { label: 'Facebook', value: 'facebook' }
         ]);
 
       await interaction.reply({
@@ -854,6 +853,7 @@ client.on(Events.InteractionCreate, async interaction => {
         bioCode: null,
         createdAt: new Date().toISOString(),
         staffMessageId: null
+        sourceChannelId: interaction.channelId
       };
 
       const staffChannel = interaction.guild.channels.cache.get(process.env.SOCIAL_STAFF_CHANNEL_ID);
@@ -1053,7 +1053,7 @@ client.on(Events.InteractionCreate, async interaction => {
           content: '❌ You are not allowed to do this.',
           ephemeral: true
         });
-        return;
+       return;
       }
 
       const requestId = interaction.customId.split(':')[1];
@@ -1069,7 +1069,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
 
       const code = interaction.fields.getTextInputValue('social_staff_code_input').trim();
-
+     
       request.bioCode = code;
       request.status = 'waiting_confirm';
       data.socialLinkRequests[requestId] = request;
@@ -1077,16 +1077,29 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await updateSocialStaffMessage(interaction.guild, request);
 
+      const sourceChannel = interaction.guild.channels.cache.get(request.sourceChannelId);
+      if (!sourceChannel) {
+        await interaction.reply({
+          content: '❌ Original connect-accounts channel not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
       const row = new ActionRowBuilder().addComponents(
-         new ButtonBuilder()
-           .setCustomId(`social_user_confirm:${requestId}`)
-           .setLabel('Confirm Bio Updated')
-           .setStyle(ButtonStyle.Success)
+        new ButtonBuilder()
+          .setCustomId(`social_open_code:${requestId}`)
+          .setLabel('Open Bio Code')
+          .setStyle(ButtonStyle.Primary)
       );
 
+      await sourceChannel.send({
+        content: `<@${request.userId}> your ${formatPlatform(request.platform)} verification code is ready. Click the button below.`,
+        components: [row]
+      });
+
       await interaction.reply({
-        content: `📩 Add this code to your **${formatPlatform(request.platform)}** bio for **@${request.username}**:\n\n\`${code}\`\n\nThen click **Confirm Bio Updated** below.`,
-        components: [row],
+        content: `✅ Code sent to <@${request.userId}> in the connect-accounts channel.`,
         ephemeral: true
       });
 
@@ -1122,6 +1135,43 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await interaction.reply({
         content: '✅ Confirmation submitted. Staff will now review your bio and approve or reject the account.',
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('social_open_code:')) {
+      const requestId = interaction.customId.split(':')[1];
+      const data = loadData();
+      const request = data.socialLinkRequests[requestId];
+
+      if (!request) {
+        await interaction.reply({
+          content: '❌ Request not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (interaction.user.id !== request.userId) {
+        await interaction.reply({
+          content: '❌ This verification code is not for you.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`social_user_confirm:${requestId}`)
+          .setLabel('Confirm Bio Updated')
+          .setStyle(ButtonStyle.Success)
+      );
+
+      await interaction.reply({
+        content: `📩 Add this code to your **${formatPlatform(request.platform)}** bio for **@${request.username}**:\n\n\`${request.bioCode}\`\n\nThen click **Confirm Bio Updated** below.`,
+        components: [row],
         ephemeral: true
       });
 
