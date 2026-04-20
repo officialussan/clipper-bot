@@ -1,4 +1,5 @@
 {
   "users": {},
-  "applications": {}
+  "applications": {},
+  "socialAccounts": {}
 }
