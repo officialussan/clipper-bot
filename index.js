@@ -673,20 +673,6 @@ client.on(Events.MessageCreate, async message => {
 
 client.on(Events.InteractionCreate, async interaction => {
   try {
-
-    // SAFE REPLY FUNCTION (prevents crashes)
-    const safeReply = async (payload) => {
-      if (interaction.replied || interaction.deferred) {
-        return interaction.followUp(payload);
-      } else {
-        return interaction.reply(payload);
-      }
-    };
-
-    // =========================
-    // LEADERBOARD NAVIGATION
-    // =========================
-
     if (interaction.isButton() && interaction.customId.startsWith('leaderboard_prev:')) {
       const currentPage = Number(interaction.customId.split(':')[1]);
       const newPage = currentPage - 1;
@@ -717,23 +703,25 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
-    // =========================
-    // MY STATS
-    // =========================
-
     if (interaction.isButton() && interaction.customId === 'leaderboard_mystats') {
       const data = loadData();
+      const guildMember = interaction.guild
+        ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null)
+        : null;
 
-      const member = await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
-      if (!member) {
-        return safeReply({ content: '❌ Could not load your stats.', ephemeral: true });
+      if (!guildMember) {
+        await interaction.reply({
+          content: '❌ Could not load your stats.',
+          ephemeral: true
+        });
+        return;
       }
 
-      const userRecord = ensureUser(data, member);
+      const userRecord = ensureUser(data, guildMember);
       saveData(data);
 
       const rank = getUserRank(data, interaction.user.id);
-      const embed = buildMyStatsEmbed(userRecord, rank);
+      const statsEmbed = buildMyStatsEmbed(userRecord, rank);
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -742,23 +730,22 @@ client.on(Events.InteractionCreate, async interaction => {
           .setStyle(ButtonStyle.Secondary)
       );
 
-      return safeReply({
-        embeds: [embed],
+      await interaction.reply({
+        embeds: [statsEmbed],
         components: [row],
         ephemeral: true
       });
-    }
 
+      return;
+    }
+     
     if (interaction.isButton() && interaction.customId === 'view_your_clips') {
-      return safeReply({
-        content: '📂 Clip tracking coming soon.',
+      await interaction.reply({
+        content: '📂 Clip history is not connected yet. This button will show all your submitted clips once clip tracking is added.',
         ephemeral: true
       });
+      return;
     }
-
-    // =========================
-    // SOCIAL LINK FLOW
-    // =========================
 
     if (interaction.isButton() && interaction.customId === 'social_link') {
       const select = new StringSelectMenuBuilder()
@@ -767,14 +754,16 @@ client.on(Events.InteractionCreate, async interaction => {
         .addOptions([
           { label: 'TikTok', value: 'tiktok' },
           { label: 'Instagram', value: 'instagram' },
-          { label: 'YouTube', value: 'youtube' }
+          { label: 'YouTube', value: 'youtube' },
         ]);
 
-      return safeReply({
-        content: 'Choose platform',
+      await interaction.reply({
+        content: 'Choose the platform you want to link.',
         components: [new ActionRowBuilder().addComponents(select)],
         ephemeral: true
       });
+
+      return;
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId === 'social_link_platform') {
@@ -795,13 +784,10 @@ client.on(Events.InteractionCreate, async interaction => {
         )
       );
 
-      return interaction.showModal(modal);
+      await interaction.showModal(modal);
+      return;
     }
-
-    // =========================
-    // SUBMIT LINK REQUEST
-    // =========================
-
+    
     if (interaction.isModalSubmit() && interaction.customId.startsWith('social_link_modal:')) {
       const platform = interaction.customId.split(':')[1];
       const username = normalizeUsername(
@@ -809,25 +795,53 @@ client.on(Events.InteractionCreate, async interaction => {
       );
 
       if (!username) {
-        return safeReply({ content: '❌ Username required', ephemeral: true });
+        await interaction.reply({
+          content: '❌ Username cannot be empty.',
+          ephemeral: true
+        });
+        return;
       }
 
       const data = loadData();
-
-      // SAFETY INIT
-      if (!data.socialAccounts) data.socialAccounts = {};
-      if (!data.socialLinkRequests) data.socialLinkRequests = {};
+      ensureUser(data, interaction.member);
+      ensureUserSocials(data, interaction.user.id);
 
       const key = normalizeSocialKey(platform, username);
+      const existing = data.socialAccounts[key];
 
-      if (data.socialAccounts[key]) {
-        return safeReply({
-          content: `❌ Already linked by someone.`,
+      if (existing && existing.ownerId !== interaction.user.id) {
+        await interaction.reply({
+          content: `❌ This ${formatPlatform(platform)} account is already linked by another user.`,
           ephemeral: true
         });
+        return;
       }
 
-      const requestId = `req_${Date.now()}`;
+      if (existing && existing.ownerId === interaction.user.id) {
+        await interaction.reply({
+          content: `❌ You already linked this ${formatPlatform(platform)} account.`,
+          ephemeral: true
+        });
+        return;
+      }  
+
+      const alreadyPending = Object.values(data.socialLinkRequests).find(
+        req =>
+          req.platform === platform &&
+          req.username.toLowerCase() === username.toLowerCase() &&
+          req.status !== 'approved' &&
+          req.status !== 'rejected'
+      );
+
+      if (alreadyPending && alreadyPending.userId !== interaction.user.id) {
+        await interaction.reply({
+          content: `❌ This ${formatPlatform(platform)} account already has a pending verification request.`,
+          ephemeral: true
+        });
+        return;
+      }
+
+      const requestId = makeSocialRequestId();
 
       const request = {
         id: requestId,
@@ -839,51 +853,635 @@ client.on(Events.InteractionCreate, async interaction => {
         bioCode: null,
         createdAt: new Date().toISOString(),
         staffMessageId: null,
-        sourceChannelId: interaction.channelId // ✅ FIXED
+        sourceChannelId: interaction.channelId
       };
 
       const staffChannel = interaction.guild.channels.cache.get(process.env.SOCIAL_STAFF_CHANNEL_ID);
-
       if (!staffChannel) {
-        return safeReply({ content: '❌ Staff channel missing', ephemeral: true });
+        await interaction.reply({
+          content: '❌ Social staff channel not found.',
+          ephemeral: true
+        });
+        return;
       }
 
-      const msg = await staffChannel.send({
-        content: `📥 Social Request\nUser: <@${request.userId}>\nPlatform: ${platform}\nUsername: @${username}`,
-        components: [
-          new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`social_staff_send_code:${requestId}`)
-              .setLabel('Send Code')
-              .setStyle(ButtonStyle.Primary)
-          )
-        ]
+      const sent = await staffChannel.send({
+        content: renderSocialStaffContent(request),
+        components: buildSocialStaffButtons(request.id, request.status)
       });
 
-      request.staffMessageId = msg.id;
+      request.staffMessageId = sent.id;
       data.socialLinkRequests[requestId] = request;
       saveData(data);
 
-      return safeReply({
-        content: `✅ Request submitted.`,
+      await interaction.reply({
+        content: `✅ Your ${formatPlatform(platform)} account verification request was submitted. Please wait for staff to send your bio code.`,
         ephemeral: true
       });
+
+      return;
     }
 
-    // =========================
-    // STAFF SEND CODE
-    // =========================
+    if (interaction.isButton() && interaction.customId === 'social_view') {
+      const data = loadData();
+      const member = interaction.guild
+        ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null)
+        : null;
+
+      if (!member) {
+        await interaction.reply({
+          content: '❌ Could not load your accounts.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const userRecord = ensureUser(data, member);
+      saveData(data);
+
+      const socials = userRecord.socials || [];
+
+      if (socials.length === 0) {
+        await interaction.reply({
+          content: '📭 You have no linked social accounts.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const lines = socials.map(acc => `• **${formatPlatform(acc.platform)}** — @${acc.username}`);
+
+      await interaction.reply({
+        content: `🔗 **Your Linked Accounts**\n\n${lines.join('\n')}`,
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'social_remove') {
+      const data = loadData();
+      const member = interaction.guild
+        ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null)
+        : null;
+
+      if (!member) {
+        await interaction.reply({
+          content: '❌ Could not load your accounts.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const userRecord = ensureUser(data, member);
+      saveData(data);
+
+      const socials = userRecord.socials || [];
+
+      if (socials.length === 0) {
+        await interaction.reply({
+          content: '📭 You have no linked accounts to remove.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const select = new StringSelectMenuBuilder()
+        .setCustomId('social_remove_select')
+        .setPlaceholder('Select account to remove')
+        .addOptions(
+          socials.map((acc, index) => ({
+            label: `${formatPlatform(acc.platform)} - @${acc.username}`,
+            value: String(index)
+          }))
+        );
+
+      await interaction.reply({
+        content: 'Choose the account you want to remove.',
+        components: [new ActionRowBuilder().addComponents(select)],
+        ephemeral: true
+      });
+
+      return;
+    }
+    
+    if (interaction.isStringSelectMenu() && interaction.customId === 'social_remove_select') {
+      const data = loadData();
+      const member = interaction.guild
+        ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null)
+        : null;
+
+      if (!member) {
+        await interaction.reply({
+          content: '❌ Could not load your accounts.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const userRecord = ensureUser(data, member);
+      const socials = userRecord.socials || [];
+      const selectedIndex = Number(interaction.values[0]);
+
+      if (Number.isNaN(selectedIndex) || !socials[selectedIndex]) {
+        await interaction.reply({
+          content: '❌ Invalid account selection.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const selected = socials[selectedIndex];
+      const key = normalizeSocialKey(selected.platform, selected.username);
+
+      delete data.socialAccounts[key];
+      userRecord.socials.splice(selectedIndex, 1);
+
+      saveData(data);
+
+      await interaction.reply({
+        content: `✅ Removed **${formatPlatform(selected.platform)}** account: @${selected.username}`,
+        ephemeral: true
+      });
+
+      return;
+    }
 
     if (interaction.isButton() && interaction.customId.startsWith('social_staff_send_code:')) {
-      if (!isAdmin(interaction.member)) {
-        return safeReply({ content: '❌ Not allowed', ephemeral: true });
+      if (!interaction.guild || !isAdmin(interaction.member)) {
+        await interaction.reply({
+          content: '❌ You are not allowed to do this.',
+          ephemeral: true
+        });
+        return;
       }
 
       const requestId = interaction.customId.split(':')[1];
+      const data = loadData();
+      const request = data.socialLinkRequests[requestId];
+
+      if (!request) {
+        await interaction.reply({
+          content: '❌ Request not found.',
+          ephemeral: true
+        });
+        return;
+      }
 
       const modal = new ModalBuilder()
         .setCustomId(`social_staff_code_modal:${requestId}`)
-        .setTitle('Send Code');
+        .setTitle('Send Bio Code');
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('social_staff_code_input')
+            .setLabel('Enter code for bio')
+            .setPlaceholder('SOC-4821')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+        )
+      );
+ 
+      await interaction.showModal(modal);
+      return;
+    }
+    
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('social_staff_code_modal:')) {
+      if (!interaction.guild || !isAdmin(interaction.member)) {
+        await interaction.reply({
+          content: '❌ You are not allowed to do this.',
+          ephemeral: true
+        });
+       return;
+      }
+
+      const requestId = interaction.customId.split(':')[1];
+      const data = loadData();
+      const request = data.socialLinkRequests[requestId];
+
+      if (!request) {
+        await interaction.reply({
+          content: '❌ Request not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const code = interaction.fields.getTextInputValue('social_staff_code_input').trim();
+     
+      request.bioCode = code;
+      request.status = 'waiting_confirm';
+      data.socialLinkRequests[requestId] = request;
+      saveData(data);
+
+      await updateSocialStaffMessage(interaction.guild, request);
+
+      const sourceChannel = interaction.guild.channels.cache.get(request.sourceChannelId);
+      if (!sourceChannel) {
+        await interaction.reply({
+          content: '❌ Original connect-accounts channel not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`social_open_code:${requestId}`)
+          .setLabel('Open Bio Code')
+          .setStyle(ButtonStyle.Primary)
+      );
+
+      await sourceChannel.send({
+        content: `<@${request.userId}> your ${formatPlatform(request.platform)} verification code is ready. Click the button below.`,
+        components: [row]
+      });
+
+      await interaction.reply({
+        content: `✅ Code sent to <@${request.userId}> in the connect-accounts channel.`,
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('social_user_confirm:')) {
+      const requestId = interaction.customId.split(':')[1];
+      const data = loadData();
+      const request = data.socialLinkRequests[requestId];
+
+      if (!request) {
+        await interaction.reply({
+          content: '❌ Request not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (interaction.user.id !== request.userId) {
+        await interaction.reply({
+          content: '❌ This confirmation is not for you.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      request.status = 'verifying';
+      data.socialLinkRequests[requestId] = request;
+      saveData(data);
+
+      await updateSocialStaffMessage(interaction.guild, request);
+
+      await interaction.reply({
+        content: '✅ Confirmation submitted. Staff will now review your bio and approve or reject the account.',
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('social_open_code:')) {
+      const requestId = interaction.customId.split(':')[1];
+      const data = loadData();
+      const request = data.socialLinkRequests[requestId];
+
+      if (!request) {
+        await interaction.reply({
+          content: '❌ Request not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (interaction.user.id !== request.userId) {
+        await interaction.reply({
+          content: '❌ This verification code is not for you.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`social_user_confirm:${requestId}`)
+          .setLabel('Confirm Bio Updated')
+          .setStyle(ButtonStyle.Success)
+      );
+
+      await interaction.reply({
+        content: `📩 Add this code to your **${formatPlatform(request.platform)}** bio for **@${request.username}**:\n\n\`${request.bioCode}\`\n\nThen click **Confirm Bio Updated** below.`,
+        components: [row],
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('social_staff_accept:')) {
+      if (!interaction.guild || !isAdmin(interaction.member)) {
+        await interaction.reply({
+          content: '❌ You are not allowed to do this.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const requestId = interaction.customId.split(':')[1];
+      const data = loadData();
+      const request = data.socialLinkRequests[requestId];
+
+      if (!request) {
+        await interaction.reply({
+          content: '❌ Request not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const member = await interaction.guild.members.fetch(request.userId).catch(() => null);
+      if (!member) {
+        await interaction.reply({
+          content: '❌ User not found in server.',
+          ephemeral: true
+        });
+        return;
+      }
+  
+      ensureUser(data, member);
+      ensureUserSocials(data, request.userId);
+
+      const key = normalizeSocialKey(request.platform, request.username);
+      const existing = data.socialAccounts[key];
+
+      if (existing && existing.ownerId !== request.userId) {
+        await interaction.reply({
+          content: '❌ This account was linked by another user before approval.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      data.socialAccounts[key] = {
+        ownerId: request.userId,
+        platform: request.platform,
+        username: request.username,
+        addedAt: new Date().toISOString()
+      };
+   
+      const socials = data.users[request.userId].socials;
+      const alreadyExists = socials.some(
+        acc =>
+          acc.platform === request.platform &&
+          acc.username.toLowerCase() === request.username.toLowerCase()
+      );
+
+      if (!alreadyExists) {
+        socials.push({
+          platform: request.platform,
+          username: request.username
+        });
+      }
+
+      request.status = 'approved';
+      data.socialLinkRequests[requestId] = request;
+      saveData(data);
+
+      await updateSocialStaffMessage(interaction.guild, request);
+
+      await interaction.reply({
+        content: `✅ Approved ${formatPlatform(request.platform)} account: @${request.username}`,
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('social_staff_reject:')) {
+      if (!interaction.guild || !isAdmin(interaction.member)) {
+        await interaction.reply({
+          content: '❌ You are not allowed to do this.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const requestId = interaction.customId.split(':')[1];
+      const data = loadData();
+      const request = data.socialLinkRequests[requestId];
+
+      if (!request) {
+        await interaction.reply({
+          content: '❌ Request not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      request.status = 'rejected';
+      data.socialLinkRequests[requestId] = request;
+      saveData(data);
+ 
+      await updateSocialStaffMessage(interaction.guild, request);
+
+      await interaction.reply({
+        content: `❌ Rejected ${formatPlatform(request.platform)} account: @${request.username}`,
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'verify_human') {
+      if (!interaction.guild) {
+        await interaction.reply({
+          content: '❌ This can only be used in the server.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const data = loadData();
+      const userRecord = ensureUser(data, interaction.member);
+      userRecord.verified = true;
+      saveData(data);
+
+      const rolesToAdd = [];
+      const verifiedRole = interaction.guild.roles.cache.get(VERIFIED_ROLE_ID);
+      const clipperRole = interaction.guild.roles.cache.get(CLIPPER_ROLE_ID);
+
+      if (verifiedRole && !interaction.member.roles.cache.has(VERIFIED_ROLE_ID)) {
+        rolesToAdd.push(verifiedRole);
+      }
+
+      if (clipperRole && !interaction.member.roles.cache.has(CLIPPER_ROLE_ID)) {
+        rolesToAdd.push(clipperRole);
+      }
+
+      if (rolesToAdd.length > 0) {
+        await interaction.member.roles.add(rolesToAdd).catch(() => {});
+      }
+
+      await interaction.reply({
+        content: '✅ Verification successful. You now have access.',
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('join_campaign:')) {
+      const campaignId = interaction.customId.split(':')[1];
+      const campaign = CAMPAIGNS[campaignId];
+
+      if (!campaign) {
+        await interaction.reply({
+          content: '❌ Campaign not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const select = new StringSelectMenuBuilder()
+        .setCustomId(`campaign_platform:${campaign.id}`)
+        .setPlaceholder('Select a platform')
+        .addOptions(
+          campaign.allowedPlatforms.map(p => ({
+            label: formatPlatform(p),
+            value: p
+          }))
+        );
+
+      await interaction.reply({
+        content: `Choose platform for **${campaign.name}**`,
+        components: [new ActionRowBuilder().addComponents(select)],
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('campaign_platform:')) {
+      const [, campaignId] = interaction.customId.split(':');
+      const platform = interaction.values[0];
+      const campaign = CAMPAIGNS[campaignId];
+
+      if (!campaign) {
+        await interaction.reply({
+          content: '❌ Campaign not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const modal = new ModalBuilder()
+        .setCustomId(`campaign_username:${campaignId}:${platform}`)
+        .setTitle('Enter Username');
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('campaign_username_input')
+            .setLabel('Username')
+            .setPlaceholder('@username')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+        )
+      );
+
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('campaign_username:')) {
+      const [, campaignId, platform] = interaction.customId.split(':');
+      const campaign = CAMPAIGNS[campaignId];
+
+      if (!campaign) {
+        await interaction.reply({
+          content: '❌ Campaign not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const username = normalizeUsername(
+        interaction.fields.getTextInputValue('campaign_username_input')
+      );
+
+      if (!username) {
+        await interaction.reply({
+          content: '❌ Username cannot be empty.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const data = loadData();
+      const appId = makeApplicationId();
+
+      const app = {
+        id: appId,
+        guildId: interaction.guild.id,
+        userId: interaction.user.id,
+        campaignId,
+        campaignName: campaign.name,
+        platform,
+        username,
+        status: 'pending',
+        bioCode: null,
+        staffChannelId: campaign.staffChannelId,
+        staffMessageId: null,
+        sourceChannelId: interaction.channelId
+      };
+
+      const staffCh = interaction.guild.channels.cache.get(campaign.staffChannelId);
+      if (!staffCh) {
+        await interaction.reply({
+          content: '❌ Staff channel not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const msg = await staffCh.send({
+        content: renderStaffContent(app),
+        components: buildStaffButtons(appId, 'pending')
+      });
+
+      app.staffMessageId = msg.id;
+      data.applications[appId] = app;
+      saveData(data);
+
+      await interaction.reply({
+        content: '✅ Submitted. Wait for code.',
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('staff_send_code:')) {
+      if (!interaction.guild || !isAdmin(interaction.member)) {
+        await interaction.reply({
+          content: '❌ You are not allowed to do this.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const appId = interaction.customId.split(':')[1];
+      const data = loadData();
+      const app = data.applications[appId];
+
+      if (!app) {
+        await interaction.reply({
+          content: '❌ Application not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const modal = new ModalBuilder()
+        .setCustomId(`staff_code:${appId}`)
+        .setTitle('Enter Code');
 
       modal.addComponents(
         new ActionRowBuilder().addComponents(
@@ -895,60 +1493,215 @@ client.on(Events.InteractionCreate, async interaction => {
         )
       );
 
-      return interaction.showModal(modal);
+      await interaction.showModal(modal);
+      return;
     }
 
-    // =========================
-    // STAFF SUBMIT CODE
-    // =========================
-
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('social_staff_code_modal:')) {
-      if (!isAdmin(interaction.member)) {
-        return safeReply({ content: '❌ Not allowed', ephemeral: true });
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('staff_code:')) {
+      if (!interaction.guild || !isAdmin(interaction.member)) {
+        await interaction.reply({
+          content: '❌ You are not allowed to do this.',
+          ephemeral: true
+        });
+        return;
       }
 
-      const requestId = interaction.customId.split(':')[1];
+      const appId = interaction.customId.split(':')[1];
       const data = loadData();
+      const app = data.applications[appId];
 
-      const request = data.socialLinkRequests?.[requestId];
-      if (!request) {
-        return safeReply({ content: '❌ Not found', ephemeral: true });
+      if (!app) {
+        await interaction.reply({
+          content: '❌ Application not found.',
+          ephemeral: true
+        });
+        return;
       }
 
-      const code = interaction.fields.getTextInputValue('code');
+      const code = interaction.fields.getTextInputValue('code').trim();
 
-      request.bioCode = code;
-      request.status = 'waiting_confirm';
+      app.bioCode = code;
+      app.status = 'waiting_confirm';
+      data.applications[appId] = app;
       saveData(data);
 
-      const sourceChannel = interaction.guild.channels.cache.get(request.sourceChannelId);
+      await updateStaffMessage(interaction.guild, app);
+
+      const sourceChannel = interaction.guild.channels.cache.get(app.sourceChannelId);
+      if (!sourceChannel) {
+        await interaction.reply({
+          content: '❌ Original campaign channel not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const confirmRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`user_confirm:${appId}`)
+          .setLabel('Confirm Bio Updated')
+          .setStyle(ButtonStyle.Success)
+      );
 
       await sourceChannel.send({
-        content: `<@${request.userId}> Add this code:\n\`${code}\``,
-        components: [
-          new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`social_user_confirm:${requestId}`)
-              .setLabel('Confirm Bio Updated')
-              .setStyle(ButtonStyle.Success)
-          )
-        ]
+        content: `📩 <@${app.userId}> your bio code for **${app.campaignName}** is:
+
+\`${code}\`
+
+Add this code to your **${formatPlatform(app.platform)}** bio for **@${app.username}**.
+
+When done, click the button below.`,
+        components: [confirmRow]
       });
 
-      return safeReply({ content: '✅ Code sent', ephemeral: true });
+      await interaction.reply({
+        content: `✅ Code sent to <@${app.userId}>.`,
+        ephemeral: true
+      });
+      return;
     }
 
-  } catch (err) {
-    console.error('Interaction error:', err);
+    if (interaction.isButton() && interaction.customId.startsWith('user_confirm:')) {
+      const appId = interaction.customId.split(':')[1];
+      const data = loadData();
+      const app = data.applications[appId];
+
+      if (!app) {
+        await interaction.reply({
+          content: '❌ Application not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (interaction.user.id !== app.userId) {
+        await interaction.reply({
+          content: '❌ This confirmation is not for you.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      app.status = 'verifying';
+      data.applications[appId] = app;
+      saveData(data);
+
+      await updateStaffMessage(interaction.guild, app);
+
+      await interaction.reply({
+        content: '✅ Submitted. Staff reviewing.',
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('staff_accept:')) {
+      if (!interaction.guild || !isAdmin(interaction.member)) {
+        await interaction.reply({
+          content: '❌ You are not allowed to do this.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const appId = interaction.customId.split(':')[1];
+      const data = loadData();
+      const app = data.applications[appId];
+
+      if (!app) {
+        await interaction.reply({
+          content: '❌ Application not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const member = await interaction.guild.members.fetch(app.userId).catch(() => null);
+      if (!member) {
+        await interaction.reply({
+          content: '❌ User not found in server.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const clipperRole = interaction.guild.roles.cache.get(CLIPPER_ROLE_ID);
+      const campaignRole = interaction.guild.roles.cache.get(CAMPAIGNS[app.campaignId]?.roleId);
+
+      if (clipperRole && !member.roles.cache.has(CLIPPER_ROLE_ID)) {
+        await member.roles.add(clipperRole).catch(() => {});
+      }
+
+      if (campaignRole && !member.roles.cache.has(campaignRole.id)) {
+        await member.roles.add(campaignRole).catch(() => {});
+      }
+
+      app.status = 'approved';
+      data.applications[appId] = app;
+
+      const userRecord = ensureUser(data, member);
+      if (!userRecord.campaigns.includes(app.campaignId)) {
+        userRecord.campaigns.push(app.campaignId);
+      }
+
+      saveData(data);
+      await updateStaffMessage(interaction.guild, app);
+
+      await interaction.reply({
+        content: `✅ <@${app.userId}> was approved for **${app.campaignName}**.`,
+        ephemeral: true
+      });
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('staff_reject:')) {
+      if (!interaction.guild || !isAdmin(interaction.member)) {
+        await interaction.reply({
+          content: '❌ You are not allowed to do this.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const appId = interaction.customId.split(':')[1];
+      const data = loadData();
+      const app = data.applications[appId];
+
+      if (!app) {
+        await interaction.reply({
+          content: '❌ Application not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      app.status = 'rejected';
+      data.applications[appId] = app;
+      saveData(data);
+
+      await updateStaffMessage(interaction.guild, app);
+
+      await interaction.reply({
+        content: `❌ <@${app.userId}> was rejected for **${app.campaignName}**.`,
+        ephemeral: true
+      });
+      return;
+    }
+  } catch (e) {
+    console.log('Interaction error:', e);
 
     if (interaction.isRepliable()) {
-      try {
-        if (interaction.replied || interaction.deferred) {
-          await interaction.followUp({ content: '❌ Error occurred', ephemeral: true });
-        } else {
-          await interaction.reply({ content: '❌ Error occurred', ephemeral: true });
-        }
-      } catch {}
+      if (interaction.replied || interaction.deferred) {
+        await interaction.followUp({
+          content: '❌ Something went wrong.',
+          ephemeral: true
+        }).catch(() => {});
+      } else {
+        await interaction.reply({
+          content: '❌ Something went wrong.',
+          ephemeral: true
+        }).catch(() => {});
+      }
     }
   }
 });
