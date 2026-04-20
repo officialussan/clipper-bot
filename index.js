@@ -105,7 +105,8 @@ function ensureUser(data, member) {
         videosRejected: 0,
         totalViews: 0,
         moneyMade: 0
-      }
+      },
+      campaignStats: {}
     };
   }
 
@@ -119,8 +120,12 @@ function ensureUser(data, member) {
     };
   }
 
-  if (!data.users[member.id].socials) {
-    data.users[member.id].socials = [];
+  if (!data.users[member.id].campaignStats) {
+    data.users[member.id].campaignStats = {};
+  }
+  
+  if (!data.users.[member.id].socials) {
+    data.users[member.id.].socials = {};
   }
 
   data.users[member.id].discordName = member.user.username;
@@ -302,15 +307,12 @@ function buildLeaderboardButtons(page, totalPages) {
         .setLabel('Previous')
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(page <= 1),
+
       new ButtonBuilder()
         .setCustomId(`leaderboard_next:${page}`)
         .setLabel('Next')
         .setStyle(ButtonStyle.Secondary)
-        .setDisabled(page >= totalPages),
-      new ButtonBuilder()
-        .setCustomId('leaderboard_mystats')
-        .setLabel('My Stats')
-        .setStyle(ButtonStyle.Primary)
+        .setDisabled(page >= totalPages)
     )
   ];
 }
@@ -321,49 +323,51 @@ function getUserRank(data, userId) {
   return index === -1 ? null : index + 1;
 }
 
-function buildMyStatsEmbed(userRecord, rank) {
-  const stats = userRecord.stats || {
-    videosPosted: 0,
-    videosApproved: 0,
-    videosRejected: 0,
-    totalViews: 0,
-    moneyMade: 0
-  };
+function ensureCampaignStats(userRecord, campaignId) {
+  if (!userRecord.campaignStats) {
+    userRecord.campaignStats = {};
+  }
+
+  if (!userRecord.campaignStats[campaignId]) {
+    userRecord.campaignStats[campaignId] = {
+      videosPosted: 0,
+      videosApproved: 0,
+      videosRejected: 0,
+      totalViews: 0,
+      moneyMade: 0
+    };
+  }
+
+  return userRecord.campaignStats[campaignId];
+}
+
+function buildCampaignStatsEmbed(userRecord, campaignId, campaignName) {
+  const stats = ensureCampaignStats(userRecord, campaignId);
 
   const pendingVideos = Math.max(
     stats.videosPosted - stats.videosApproved - stats.videosRejected,
     0
   );
 
-  const viewsNeeded = Math.max(5000 - stats.totalViews, 0);
+  const viewsNeeded = Math.max(100000 - stats.totalViews, 0);
 
   const payoutText =
-    stats.totalViews >= 5000
+    stats.totalViews >= 100000
       ? `Eligible for payout.\n**Money Made:** $${stats.moneyMade}`
       : `You need **${formatNumber(viewsNeeded)}** more views to be eligible for payout.`;
 
   return new EmbedBuilder()
     .setColor(0x7ED957)
     .setDescription(
-      `🎬 **Campaign Stats - Michael Carbonara Campaign**\n\n` +
-      `🏆 **Leaderboard**\n` +
-      `${rank ? `#${rank}` : 'No Placement'}\n\n` +
-      `📊 **Total Views**\n` +
-      `${formatNumber(stats.totalViews)}\n\n` +
-      `💰 **Payout**\n` +
-      `${payoutText}\n\n` +
-      `🟢 **Approved Videos**\n` +
-      `${stats.videosApproved}\n\n` +
-      `🟡 **Pending Videos**\n` +
-      `${pendingVideos}\n\n` +
-      `🔴 **Rejected Videos**\n` +
-      `${stats.videosRejected}\n\n` +
-      `🎞️ **View Your Clips**\n` +
-      `Click the button below to check the stats of all your submitted videos.`
+      `🎬 **Campaign Stats - ${campaignName}**\n\n` +
+      `📊 **Total Views**\n${formatNumber(stats.totalViews)}\n\n` +
+      `💰 **Payout**\n${payoutText}\n\n` +
+      `🟢 **Approved Videos**\n${stats.videosApproved}\n\n` +
+      `🟡 **Pending Videos**\n${pendingVideos}\n\n` +
+      `🔴 **Rejected Videos**\n${stats.videosRejected}\n\n` +
+      `🎞️ **View Your Clips**\nClick the button below to check the clips submitted for this campaign.`
     )
-    .setFooter({
-      text: `Last update | ${new Date().toLocaleString()}`
-    });
+    .setFooter({ text: `Last update | ${new Date().toLocaleString()}` });
 }
  function makeSocialRequestId() {
   return `social_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
@@ -590,6 +594,77 @@ client.on(Events.MessageCreate, async message => {
       return;
     }
 
+    if (message.content.startsWith('!submitpanel')) {
+  if (!isAdmin(message.member)) {
+    await message.reply('❌ You must be an admin to use this command.');
+    return;
+  }
+
+  const args = message.content.trim().split(/\s+/);
+  const campaignId = args[1];
+  const campaign = CAMPAIGNS[campaignId];
+
+  if (!campaign) {
+    await message.reply(`❌ Usage: !submitpanel campaign_id`);
+    return;
+  }
+
+  await message.delete().catch(() => {});
+
+  const embed = new EmbedBuilder()
+    .setColor(0x7ED957)
+    .setDescription(
+      `🎬 **${campaign.name}**\n\n` +
+      `Track Your Campaign Clips\n\n` +
+      `Use the buttons below to manage your account for **${campaign.name}** campaign.\n\n` +
+      `⬆️ **Submit Clip**\nSubmit your clips manually for campaign tracking.\n\n` +
+      `👥 **My Stats**\nCheck your total stats, clips and payout.\n\n` +
+      `🗑️ **Remove Clip**\nRemove one or more clips for campaign tracking.\n\n` +
+      `⚙️ **Manage Account**\nEdit and manage your clipper account.\n\n` +
+      `**Powered by Creators Elite**`
+    );
+
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`scan_profile:${campaignId}`)
+      .setLabel('Scan Your Profile')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`submit_clip:${campaignId}`)
+      .setLabel('Submit Clip')
+      .setStyle(ButtonStyle.Success)
+  );
+
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`campaign_stats:${campaignId}`)
+      .setLabel('My Stats')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId(`remove_clip:${campaignId}`)
+      .setLabel('Remove Clip')
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  const row3 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`manage_account:${campaignId}`)
+      .setLabel('Manage Account')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`leave_campaign:${campaignId}`)
+      .setLabel('Leave Campaign')
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  await message.channel.send({
+    embeds: [embed],
+    components: [row1, row2, row3]
+  });
+
+  return;
+}
+
     if (message.content === '!socialpanel') {
       if (!isAdmin(message.member)) {
         await message.reply('❌ You must be an admin to use this command.');
@@ -698,42 +773,6 @@ client.on(Events.InteractionCreate, async interaction => {
       await interaction.update({
         embeds: [leaderboard.embed],
         components: buildLeaderboardButtons(leaderboard.page, leaderboard.totalPages)
-      });
-
-      return;
-    }
-
-    if (interaction.isButton() && interaction.customId === 'leaderboard_mystats') {
-      const data = loadData();
-      const guildMember = interaction.guild
-        ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null)
-        : null;
-
-      if (!guildMember) {
-        await interaction.reply({
-          content: '❌ Could not load your stats.',
-          ephemeral: true
-        });
-        return;
-      }
-
-      const userRecord = ensureUser(data, guildMember);
-      saveData(data);
-
-      const rank = getUserRank(data, interaction.user.id);
-      const statsEmbed = buildMyStatsEmbed(userRecord, rank);
-
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('view_your_clips')
-          .setLabel('View Your Clips')
-          .setStyle(ButtonStyle.Secondary)
-      );
-
-      await interaction.reply({
-        embeds: [statsEmbed],
-        components: [row],
-        ephemeral: true
       });
 
       return;
@@ -1286,6 +1325,41 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await interaction.reply({
         content: `❌ Rejected ${formatPlatform(request.platform)} account: @${request.username}`,
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('campaign_stats:')) {
+      const campaignId = interaction.customId.split(':')[1];
+      const campaign = CAMPAIGNS[campaignId];
+
+      if (!campaign) {
+        await interaction.reply({
+          content: '❌ Campaign not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const data = loadData();
+      const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+
+      if (!member) {
+        await interaction.reply({
+          content: '❌ Could not load your stats.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const userRecord = ensureUser(data, member);
+      const embed = buildCampaignStatsEmbed(userRecord, campaignId, campaign.name);
+      saveData(data);
+
+      await interaction.reply({
+        embeds: [embed],
         ephemeral: true
       });
 
