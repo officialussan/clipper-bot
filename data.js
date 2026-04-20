@@ -2,4 +2,5 @@
   "users": {},
   "applications": {},
   "socialAccounts": {}
+  "socialLinkRequests": {}
 }
