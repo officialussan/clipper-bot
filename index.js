@@ -795,11 +795,11 @@ client.on(Events.InteractionCreate, async interaction => {
       );
 
       if (!username) {
-         await interaction.reply({
-           content: '❌ Username cannot be empty.',
-           ephemeral: true
-         });
-         return;
+        await interaction.reply({
+          content: '❌ Username cannot be empty.',
+          ephemeral: true
+        });
+        return;
       }
 
       const data = loadData();
