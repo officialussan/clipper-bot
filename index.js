@@ -430,6 +430,33 @@ function buildSocialStaffButtons(id, status) {
   return [];
 }
 
+function ensureCampaignPlatformStats(userRecord, campaignId, platform, username = '') {
+  if (!userRecord.campaignStats) {
+    userRecord.campaignStats = {};
+  }
+
+  if (!userRecord.campaignStats[campaignId]) {
+    userRecord.campaignStats[campaignId] = {};
+  }
+
+  if (!userRecord.campaignStats[campaignId][platform]) {
+    userRecord.campaignStats[campaignId][platform] = {
+      username,
+      videosPosted: 0,
+      videosApproved: 0,
+      videosRejected: 0,
+      totalViews: 0,
+      moneyMade: 0
+    };
+  }
+
+  if (username && !userRecord.campaignStats[campaignId][platform].username) {
+    userRecord.campaignStats[campaignId][platform].username = username;
+  }
+
+  return userRecord.campaignStats[campaignId][platform];
+}
+
 async function updateSocialStaffMessage(guild, request) {
   const ch = guild.channels.cache.get(process.env.SOCIAL_STAFF_CHANNEL_ID);
   if (!ch) return;
