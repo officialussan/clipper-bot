@@ -555,6 +555,13 @@ async function updateClipStaffMessage(guild, clip) {
   }
 }
 
+function extractLinksFromText(text) {
+  return String(text)
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+}
+
 async function updateSocialStaffMessage(guild, request) {
   const ch = guild.channels.cache.get(process.env.SOCIAL_STAFF_CHANNEL_ID);
   if (!ch) return;
@@ -1051,7 +1058,7 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.isButton() && interaction.customId.startsWith('submit_clip:')) {
       const campaignId = interaction.customId.split(':')[1];
       const campaign = CAMPAIGNS[campaignId];
-   
+
       if (!campaign) {
         await interaction.reply({
           content: '❌ Campaign not found.',
@@ -1062,16 +1069,19 @@ client.on(Events.InteractionCreate, async interaction => {
 
       const modal = new ModalBuilder()
         .setCustomId(`submit_clip_modal:${campaignId}`)
-        .setTitle('Submit Clip');
+        .setTitle('Submit your Clips');
 
       modal.addComponents(
         new ActionRowBuilder().addComponents(
           new TextInputBuilder()
-            .setCustomId('clip_link')
-            .setLabel('Video Link')
-            .setPlaceholder('https://www.tiktok.com/...')
-            .setStyle(TextInputStyle.Short)
+            .setCustomId('clip_links')
+            .setLabel('Videos URL')
+            .setPlaceholder(
+              'Paste up to 20 links, one per line\n\nhttps://tiktok.com/...\nhttps://youtube.com/...\nhttps://instagram.com/...'
+            )
+            .setStyle(TextInputStyle.Paragraph)
             .setRequired(true)
+            .setMaxLength(4000)
         )
       );
 
@@ -1091,11 +1101,29 @@ client.on(Events.InteractionCreate, async interaction => {
         return;
       }
 
-      const videoUrl = interaction.fields.getTextInputValue('clip_link').trim();
+      const rawLinks = interaction.fields.getTextInputValue('clip_links');
+      const links = extractLinksFromText(rawLinks);
 
-      if (!isValidUrl(videoUrl)) {
+      if (links.length === 0) {
         await interaction.reply({
-          content: '❌ Please enter a valid video URL.',
+          content: '❌ Please paste at least one link.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (links.length > 20) {
+        await interaction.reply({
+          content: '❌ You can submit up to 20 links at once.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const invalidLinks = links.filter(link => !isValidUrl(link));
+      if (invalidLinks.length > 0) {
+        await interaction.reply({
+          content: `❌ Some links are invalid.\n\nFirst invalid link:\n${invalidLinks[0]}`,
           ephemeral: true
         });
         return;
@@ -1114,73 +1142,75 @@ client.on(Events.InteractionCreate, async interaction => {
 
       const userRecord = ensureUser(data, member);
 
-      if (!userRecord.campaignStats || !userRecord.campaignStats[campaignId]) {
+      if (!data.clips) data.clips = {};
+  
+      const campaignAccounts = userRecord.campaignStats?.[campaignId] || {};
+      const platforms = Object.keys(campaignAccounts);
+
+      if (platforms.length === 0) {
         await interaction.reply({
-          content: '❌ You have not set up a campaign account for this campaign yet.',
+          content: '❌ You do not have any campaign account set for this campaign yet.',
           ephemeral: true
         });
         return;
       }
 
-      const campaignPlatforms = Object.keys(userRecord.campaignStats[campaignId]);
-
-      if (campaignPlatforms.length === 0) {
+      if (platforms.length > 1) {
         await interaction.reply({
-          content: '❌ No linked campaign account found for this campaign.',
+          content: '❌ You have multiple campaign accounts for this campaign. Add platform selection next before using multi-link submission.',
           ephemeral: true
         });
         return;
       }
 
-      if (campaignPlatforms.length > 1) {
-        await interaction.reply({
-          content: '❌ Multiple campaign accounts found. Submit-clip account selection needs to be added next.',
-          ephemeral: true
-        });
-        return;
-      }
-
-      const platform = campaignPlatforms[0];
-      const platformStats = userRecord.campaignStats[campaignId][platform];
+      const platform = platforms[0];
+      const platformStats = campaignAccounts[platform];
       const username = platformStats.username || 'unknown';
 
-      const clipId = makeClipId();
-
-      const clip = {
-        id: clipId,
-        userId: interaction.user.id,
-        campaignId,
-        campaignName: campaign.name,
-        platform,
-        username,
-        videoUrl,
-        status: 'pending',
-        views: 0,
-        moneyMade: 0,
-        submittedAt: new Date().toISOString(),
-        staffMessageId: null
-      };
-
-      data.clips[clipId] = clip;
-      platformStats.videosPosted += 1;
-
       const staffChannel = interaction.guild.channels.cache.get(campaign.staffChannelId);
-      if (staffChannel) {
-        const sent = await staffChannel.send({
-          content: renderClipStaffContent(clip),
-          components: buildClipStaffButtons(clip.id, clip.status)
-        }).catch(() => null);
 
-        if (sent) {
-          clip.staffMessageId = sent.id;
+      let submittedCount = 0;
+
+      for (const videoUrl of links) {
+        const clipId = makeClipId();
+
+        const clip = {
+          id: clipId,
+          userId: interaction.user.id,
+          campaignId,
+          campaignName: campaign.name,
+          platform,
+          username,
+          videoUrl,
+          status: 'pending',
+          views: 0,
+          moneyMade: 0,
+          submittedAt: new Date().toISOString(),
+          staffMessageId: null
+        };
+
+        data.clips[clipId] = clip;
+        platformStats.videosPosted += 1;
+
+        if (staffChannel) {
+          const sent = await staffChannel.send({
+            content: renderClipStaffContent(clip),
+            components: buildClipStaffButtons(clip.id, clip.status)
+          }).catch(() => null);
+
+          if (sent) {
+            clip.staffMessageId = sent.id;
+            data.clips[clipId] = clip;
+          }
         }
+
+        submittedCount += 1;
       }
 
-      data.clips[clipId] = clip;
       saveData(data);
 
       await interaction.reply({
-        content: `✅ Clip submitted successfully for **${campaign.name}**.`,
+        content: `✅ Submitted **${submittedCount}** clip(s) for **${campaign.name}** on **${formatPlatform(platform)}** (@${username}).`,
         ephemeral: true
       });
 
