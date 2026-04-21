@@ -595,75 +595,72 @@ client.on(Events.MessageCreate, async message => {
     }
 
     if (message.content.startsWith('!submitpanel')) {
-  if (!isAdmin(message.member)) {
-    await message.reply('❌ You must be an admin to use this command.');
-    return;
-  }
+      if (!isAdmin(message.member)) {
+        await message.reply('❌ You must be an admin to use this command.');
+        return;
+      }
 
-  const args = message.content.trim().split(/\s+/);
-  const campaignId = args[1];
-  const campaign = CAMPAIGNS[campaignId];
+      const args = message.content.trim().split(/\s+/);
+      const campaignId = args[1];
+      const campaign = CAMPAIGNS[campaignId];
 
-  if (!campaign) {
-    await message.reply(`❌ Usage: !submitpanel campaign_id`);
-    return;
-  }
+      if (!campaign) {
+        await message.reply('❌ Usage: !submitpanel campaign_id');
+        return;
+      }
 
-  await message.delete().catch(() => {});
+      await message.delete().catch(() => {});
 
-  const embed = new EmbedBuilder()
-    .setColor(0x7ED957)
-    .setDescription(
-      `🎬 **${campaign.name}**\n\n` +
-      `Track Your Campaign Clips\n\n` +
-      `Use the buttons below to manage your account for **${campaign.name}** campaign.\n\n` +
-      `⬆️ **Submit Clip**\nSubmit your clips manually for campaign tracking.\n\n` +
-      `👥 **My Stats**\nCheck your total stats, clips and payout.\n\n` +
-      `🗑️ **Remove Clip**\nRemove one or more clips for campaign tracking.\n\n` +
-      `⚙️ **Manage Account**\nEdit and manage your clipper account.\n\n` +
-      `**Powered by Creators Elite**`
-    );
+      const embed = new EmbedBuilder()
+        .setColor(0x7ED957)
+        .setDescription(
+          `🎬 **${campaign.name}**\n\n` +
+          `Track Your Campaign Clips\n\n` +
+          `Use the buttons below to manage your account for **${campaign.name}** campaign.\n\n` +
+          `⬆️ **Submit Clip**\nSubmit your clips manually for campaign tracking.\n\n` +
+          `👥 **My Stats**\nCheck your total stats, clips and payout.\n\n` +
+          `🗑️ **Remove Clip**\nRemove one or more clips for campaign tracking.\n\n` +
+          `⚙️ **Manage Account**\nEdit and manage your clipper account.\n\n` +
+          `⚠️ **Leave Campaign**\nLeave this campaign.\n\n` +
+          `**Powered by ❤️ | Creators Elite**`
+        );
 
-  const row1 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`scan_profile:${campaignId}`)
-      .setLabel('Scan Your Profile')
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId(`submit_clip:${campaignId}`)
-      .setLabel('Submit Clip')
-      .setStyle(ButtonStyle.Success)
-  );
+      const row1 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`submit_clip:${campaignId}`)
+          .setLabel('Submit Clip')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`campaign_stats:${campaignId}`)
+          .setLabel('My Stats')
+          .setStyle(ButtonStyle.Primary)
+        );
 
-  const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`campaign_stats:${campaignId}`)
-      .setLabel('My Stats')
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
-      .setCustomId(`remove_clip:${campaignId}`)
-      .setLabel('Remove Clip')
-      .setStyle(ButtonStyle.Secondary)
-  );
+      const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`remove_clip:${campaignId}`)
+          .setLabel('Remove Clip')
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId(`manage_account:${campaignId}`)
+          .setLabel('Manage Account')
+          .setStyle(ButtonStyle.Secondary)
+        );
 
-  const row3 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`manage_account:${campaignId}`)
-      .setLabel('Manage Account')
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId(`leave_campaign:${campaignId}`)
-      .setLabel('Leave Campaign')
-      .setStyle(ButtonStyle.Danger)
-  );
+      const row3 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`leave_campaign:${campaignId}`)
+          .setLabel('Leave Campaign')
+          .setStyle(ButtonStyle.Danger)
+      );
 
-  await message.channel.send({
-    embeds: [embed],
-    components: [row1, row2, row3]
-  });
+      await message.channel.send({
+        embeds: [embed],
+        components: [row1, row2, row3]
+      });
 
-  return;
-}
+      return;
+    }
 
     if (message.content === '!socialpanel') {
       if (!isAdmin(message.member)) {
