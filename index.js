@@ -29,14 +29,6 @@ const client = new Client({
 const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID;
 const CLIPPER_ROLE_ID = process.env.CLIPPER_ROLE_ID;
 
-const CAMPAIGNS = {
-  michael: {
-    name: 'Michael Carbonara Campaign',
-    payoutThreshold: 100000,
-    staffChannelId: process.env.MICHAEL_STAFF_CHANNEL_ID,
-    roleId: process.env.MICHAEL_ROLE_ID
-  },
-
 const dataFilePath = path.join(__dirname, 'data.json');
 
 const CAMPAIGNS = {
@@ -44,6 +36,7 @@ const CAMPAIGNS = {
     id: 'emoney_shopping',
     name: 'Michael Carbonara Campaign',
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
+    payoutThreshold: 100000,
     staffChannelId: process.env.EMONEY_STAFF_CHANNEL_ID,
     roleId: process.env.EMONEY_CAMPAIGN_ROLE_ID,
     panelText: `🎙️ **Earn Money Posting Political Clips – Michael Carbonara Campaign**
@@ -129,15 +122,16 @@ function ensureUser(data, member) {
   }
 
   if (!data.users[member.id].campaignStats) {
-  data.users[member.id].campaignStats = {};
-}
+    data.users[member.id].campaignStats = {};
+  }
 
-if (!data.users[member.id].socials) {
-  data.users[member.id].socials = [];
-}
+  if (!data.users[member.id].socials) {
+    data.users[member.id].socials = [];
+  }
 
-data.users[member.id].discordName = member.user.username;
-return data.users[member.id];
+  data.users[member.id].discordName = member.user.username;
+  return data.users[member.id];
+}
 
 function isAdmin(member) {
   return member.permissions.has(PermissionsBitField.Flags.Administrator);
