@@ -456,6 +456,28 @@ function renderClipStaffContent(clip) {
 **Status:** ${clip.status}`;
 }
 
+function getUserCampaignClips(data, userId, campaignId) {
+  if (!data.clips) data.clips = {};
+
+  return Object.values(data.clips).filter(
+    clip => clip.userId === userId && clip.campaignId === campaignId
+  );
+}
+
+function renderCampaignAccounts(userRecord, campaignId) {
+  const campaignStats = userRecord.campaignStats?.[campaignId] || {};
+  const platforms = Object.keys(campaignStats);
+
+  if (platforms.length === 0) {
+    return 'No campaign accounts set yet.';
+  }
+
+  return platforms.map(platform => {
+    const acc = campaignStats[platform];
+    return `• **${formatPlatform(platform)}** — @${acc.username || 'unknown'}`;
+  }).join('\n');
+}
+
 function ensureCampaignPlatformStats(userRecord, campaignId, platform, username = '') {
   if (!userRecord.campaignStats) {
     userRecord.campaignStats = {};
@@ -1546,6 +1568,200 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await interaction.reply({
         embeds: [embed],
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('remove_clip:')) {
+      const campaignId = interaction.customId.split(':')[1];
+      const data = loadData();
+
+      const clips = getUserCampaignClips(data, interaction.user.id, campaignId);
+
+      if (clips.length === 0) {
+        await interaction.reply({
+          content: '📭 You have no submitted clips for this campaign.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const select = new StringSelectMenuBuilder()
+        .setCustomId(`remove_clip_select:${campaignId}`)
+        .setPlaceholder('Select clip to remove')
+        .addOptions(
+          clips.slice(0, 25).map(clip => ({
+            label: `${formatPlatform(clip.platform)} - ${clip.username}`.slice(0, 100),
+            description: clip.videoUrl.slice(0, 100),
+            value: clip.id
+          }))
+        );
+
+      await interaction.reply({
+        content: 'Choose the clip you want to remove.',
+        components: [new ActionRowBuilder().addComponents(select)],
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('remove_clip_select:')) {
+      const campaignId = interaction.customId.split(':')[1];
+      const clipId = interaction.values[0];
+      const data = loadData();
+
+      if (!data.clips || !data.clips[clipId]) {
+        await interaction.reply({
+          content: '❌ Clip not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const clip = data.clips[clipId];
+
+      if (clip.userId !== interaction.user.id) {
+        await interaction.reply({
+          content: '❌ You can only remove your own clips.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+      if (!member) {
+        await interaction.reply({
+          content: '❌ User not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const userRecord = ensureUser(data, member);
+      const platformStats = userRecord.campaignStats?.[campaignId]?.[clip.platform];
+
+      if (platformStats) {
+        platformStats.videosPosted = Math.max(0, (platformStats.videosPosted || 0) - 1);
+
+        if (clip.status === 'approved') {
+          platformStats.videosApproved = Math.max(0, (platformStats.videosApproved || 0) - 1);
+          platformStats.totalViews = Math.max(0, (platformStats.totalViews || 0) - (clip.views || 0));
+          platformStats.moneyMade = Math.max(0, (platformStats.moneyMade || 0) - (clip.moneyMade || 0));
+        }
+
+        if (clip.status === 'rejected') {
+          platformStats.videosRejected = Math.max(0, (platformStats.videosRejected || 0) - 1);
+        }
+      }
+
+      delete data.clips[clipId];
+      saveData(data);
+
+      await interaction.reply({
+        content: `✅ Removed clip: ${clip.videoUrl}`,
+        ephemeral: true
+      });
+ 
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('manage_account:')) {
+      const campaignId = interaction.customId.split(':')[1];
+      const campaign = CAMPAIGNS[campaignId];
+
+      if (!campaign) {
+        await interaction.reply({
+          content: '❌ Campaign not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const data = loadData();
+      const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+
+      if (!member) {
+        await interaction.reply({
+          content: '❌ Could not load your account.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const userRecord = ensureUser(data, member);
+      const accountText = renderCampaignAccounts(userRecord, campaignId);
+
+      await interaction.reply({
+        content:
+          `⚙️ **Manage Campaign Account - ${campaign.name}**\n\n` +
+          `**Current campaign accounts:**\n${accountText}\n\n` +
+          `Use the campaign join flow to add a new platform account for this campaign.`,
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('leave_campaign:')) {
+      const campaignId = interaction.customId.split(':')[1];
+      const campaign = CAMPAIGNS[campaignId];
+
+      if (!campaign) {
+        await interaction.reply({
+          content: '❌ Campaign not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const data = loadData();
+      const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+
+      if (!member) {
+        await interaction.reply({
+          content: '❌ User not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const userRecord = ensureUser(data, member);
+
+      // remove campaign from user's campaign list
+      if (Array.isArray(userRecord.campaigns)) {
+        userRecord.campaigns = userRecord.campaigns.filter(c => {
+          if (typeof c === 'string') return c !== campaignId;
+          return c.campaignId !== campaignId;
+        });
+      }
+
+      // remove campaign-specific stats
+      if (userRecord.campaignStats && userRecord.campaignStats[campaignId]) {
+        delete userRecord.campaignStats[campaignId];
+      }
+
+      // remove clips for this user in this campaign
+      if (data.clips) {
+        for (const [clipId, clip] of Object.entries(data.clips)) {
+          if (clip.userId === interaction.user.id && clip.campaignId === campaignId) {
+            delete data.clips[clipId];
+          }
+        }
+      }
+
+      saveData(data);
+
+      // remove role
+      const campaignRole = interaction.guild.roles.cache.get(campaign.roleId);
+      if (campaignRole && member.roles.cache.has(campaignRole.id)) {
+        await member.roles.remove(campaignRole).catch(() => {});
+      }
+
+      await interaction.reply({
+        content: `✅ You left **${campaign.name}**. Your campaign stats and submitted clips for this campaign were removed.`,
         ephemeral: true
       });
 
