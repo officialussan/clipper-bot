@@ -29,6 +29,14 @@ const client = new Client({
 const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID;
 const CLIPPER_ROLE_ID = process.env.CLIPPER_ROLE_ID;
 
+const CAMPAIGNS = {
+  michael: {
+    name: 'Michael Carbonara Campaign',
+    payoutThreshold: 100000,
+    staffChannelId: process.env.MICHAEL_STAFF_CHANNEL_ID,
+    roleId: process.env.MICHAEL_ROLE_ID
+  },
+
 const dataFilePath = path.join(__dirname, 'data.json');
 
 const CAMPAIGNS = {
@@ -121,16 +129,15 @@ function ensureUser(data, member) {
   }
 
   if (!data.users[member.id].campaignStats) {
-    data.users[member.id].campaignStats = {};
-  }
-  
-  if (!data.users.[member.id].socials) {
-    data.users[member.id.].socials = {};
-  }
-
-  data.users[member.id].discordName = member.user.username;
-  return data.users[member.id];
+  data.users[member.id].campaignStats = {};
 }
+
+if (!data.users[member.id].socials) {
+  data.users[member.id].socials = [];
+}
+
+data.users[member.id].discordName = member.user.username;
+return data.users[member.id];
 
 function isAdmin(member) {
   return member.permissions.has(PermissionsBitField.Flags.Administrator);
@@ -344,24 +351,27 @@ function ensureCampaignStats(userRecord, campaignId) {
 function buildCampaignStatsEmbed(userRecord, campaignId, campaignName) {
   const stats = ensureCampaignStats(userRecord, campaignId);
 
+  const campaign = CAMPAIGNS[campaignId];
+  const payoutThreshold = campaign?.payoutThreshold || 100000;
+
   const pendingVideos = Math.max(
     stats.videosPosted - stats.videosApproved - stats.videosRejected,
     0
   );
 
-  const viewsNeeded = Math.max(100000 - stats.totalViews, 0);
+  const viewsNeeded = Math.max(payoutThreshold - stats.totalViews, 0);
 
   const payoutText =
-    stats.totalViews >= 100000
-      ? `Eligible for payout.\n**Money Made:** $${stats.moneyMade}`
-      : `You need **${formatNumber(viewsNeeded)}** more views to be eligible for payout.`;
+    stats.totalViews >= payoutThreshold
+      ? `Eligible for payout.\n**Money Made:** $${formatNumber(stats.moneyMade)}`
+      : `You need **${formatNumber(viewsNeeded)}** more views to reach **${formatNumber(payoutThreshold)}** views for payout.`;
 
   return new EmbedBuilder()
     .setColor(0x7ED957)
     .setDescription(
       `🎬 **Campaign Stats - ${campaignName}**\n\n` +
       `📊 **Total Views**\n${formatNumber(stats.totalViews)}\n\n` +
-      `💰 **Payout**\n${payoutText}\n\n` +
+      `💰 **Payout (Target: ${formatNumber(payoutThreshold)} Views)**\n${payoutText}\n\n` +
       `🟢 **Approved Videos**\n${stats.videosApproved}\n\n` +
       `🟡 **Pending Videos**\n${pendingVideos}\n\n` +
       `🔴 **Rejected Videos**\n${stats.videosRejected}\n\n` +
@@ -369,7 +379,8 @@ function buildCampaignStatsEmbed(userRecord, campaignId, campaignName) {
     )
     .setFooter({ text: `Last update | ${new Date().toLocaleString()}` });
 }
- function makeSocialRequestId() {
+ 
+function makeSocialRequestId() {
   return `social_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 }
 
@@ -622,7 +633,7 @@ client.on(Events.MessageCreate, async message => {
           `🗑️ **Remove Clip**\nRemove one or more clips for campaign tracking.\n\n` +
           `⚙️ **Manage Account**\nEdit and manage your clipper account.\n\n` +
           `⚠️ **Leave Campaign**\nLeave this campaign.\n\n` +
-          `**Powered by ❤️ | Creators Elite**`
+          `**Powered by Creators Elite**`
         );
 
       const row1 = new ActionRowBuilder().addComponents(
