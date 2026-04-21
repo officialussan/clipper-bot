@@ -175,15 +175,16 @@ function getStatusLabel(status) {
   }[status] || status;
 }
 
-function renderStaffContent(app) {
-  return `📥 **Campaign Application**
+function renderClipStaffContent(clip) {
+  return `📥 **New Clip Submission**
 
-User: <@${app.userId}>
-Campaign: ${app.campaignName}
-Platform: ${formatPlatform(app.platform)}
-Username: @${app.username}
-Status: ${getStatusLabel(app.status)}
-${app.bioCode ? `Code: \`${app.bioCode}\`` : ''}`;
+**User:** <@${clip.userId}>
+**Campaign:** ${clip.campaignName}
+**Platform:** ${formatPlatform(clip.platform)}
+**Username:** @${clip.username}
+**Link:** ${clip.videoUrl}
+**Status:** ${clip.status}
+${clip.views ? `**Views:** ${formatNumber(clip.views)}\n` : ''}${clip.moneyMade ? `**Payout:** $${clip.moneyMade}\n` : ''}`;
 }
 
 function buildStaffButtons(id, status) {
@@ -478,6 +479,37 @@ function renderCampaignAccounts(userRecord, campaignId) {
   }).join('\n');
 }
 
+function buildClipStaffButtons(clipId, status) {
+  if (status === 'pending') {
+    return [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`clip_approve:${clipId}`)
+          .setLabel('Approve')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`clip_reject:${clipId}`)
+          .setLabel('Reject')
+          .setStyle(ButtonStyle.Danger)
+      )
+    ];
+  }
+
+  if (status === 'approved' || status === 'rejected') {
+    return [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`clip_done:${clipId}`)
+          .setLabel(status === 'approved' ? 'Approved' : 'Rejected')
+          .setStyle(status === 'approved' ? ButtonStyle.Success : ButtonStyle.Danger)
+          .setDisabled(true)
+      )
+    ];
+  }
+
+  return [];
+}
+
 function ensureCampaignPlatformStats(userRecord, campaignId, platform, username = '') {
   if (!userRecord.campaignStats) {
     userRecord.campaignStats = {};
@@ -503,6 +535,24 @@ function ensureCampaignPlatformStats(userRecord, campaignId, platform, username 
   }
 
   return userRecord.campaignStats[campaignId][platform];
+}
+
+async function updateClipStaffMessage(guild, clip) {
+  const campaign = CAMPAIGNS[clip.campaignId];
+  if (!campaign) return;
+
+  const ch = guild.channels.cache.get(campaign.staffChannelId);
+  if (!ch || !clip.staffMessageId) return;
+
+  try {
+    const msg = await ch.messages.fetch(clip.staffMessageId);
+    await msg.edit({
+      content: renderClipStaffContent(clip),
+      components: buildClipStaffButtons(clip.id, clip.status)
+    });
+  } catch (error) {
+    console.log('Could not update clip staff message:', error.message);
+  }
 }
 
 async function updateSocialStaffMessage(guild, request) {
@@ -1105,24 +1155,234 @@ client.on(Events.InteractionCreate, async interaction => {
         username,
         videoUrl,
         status: 'pending',
-        submittedAt: new Date().toISOString()
+        views: 0,
+        moneyMade: 0,
+        submittedAt: new Date().toISOString(),
+        staffMessageId: null
       };
 
       data.clips[clipId] = clip;
-
       platformStats.videosPosted += 1;
-
-      saveData(data);
 
       const staffChannel = interaction.guild.channels.cache.get(campaign.staffChannelId);
       if (staffChannel) {
-        await staffChannel.send({
-          content: renderClipStaffContent(clip)
-        }).catch(() => {});
+        const sent = await staffChannel.send({
+          content: renderClipStaffContent(clip),
+          components: buildClipStaffButtons(clip.id, clip.status)
+        }).catch(() => null);
+
+        if (sent) {
+          clip.staffMessageId = sent.id;
+        }
       }
+
+      data.clips[clipId] = clip;
+      saveData(data);
 
       await interaction.reply({
         content: `✅ Clip submitted successfully for **${campaign.name}**.`,
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('clip_approve:')) {
+      if (!interaction.guild || !isAdmin(interaction.member)) {
+        await interaction.reply({
+          content: '❌ You are not allowed to do this.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const clipId = interaction.customId.split(':')[1];
+      const data = loadData();
+      const clip = data.clips?.[clipId];
+
+      if (!clip) {
+        await interaction.reply({
+          content: '❌ Clip not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const modal = new ModalBuilder()
+        .setCustomId(`clip_approve_modal:${clipId}`)
+        .setTitle('Approve Clip');
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('clip_views')
+            .setLabel('Views')
+            .setPlaceholder('50000')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+        ),
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('clip_payout')
+            .setLabel('Payout in dollars')
+            .setPlaceholder('80')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+        )
+      );
+ 
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('clip_approve_modal:')) {
+      if (!interaction.guild || !isAdmin(interaction.member)) {
+        await interaction.reply({
+          content: '❌ You are not allowed to do this.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const clipId = interaction.customId.split(':')[1];
+      const data = loadData();
+      const clip = data.clips?.[clipId];
+
+      if (!clip) {
+        await interaction.reply({
+          content: '❌ Clip not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const views = Number(interaction.fields.getTextInputValue('clip_views').trim());
+      const payout = Number(interaction.fields.getTextInputValue('clip_payout').trim());
+
+      if (Number.isNaN(views) || views < 0 || Number.isNaN(payout) || payout < 0) {
+        await interaction.reply({
+          content: '❌ Enter valid numbers for views and payout.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const member = await interaction.guild.members.fetch(clip.userId).catch(() => null);
+      if (!member) {
+        await interaction.reply({
+          content: '❌ User not found in server.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const userRecord = ensureUser(data, member);
+      const platformStats = ensureCampaignPlatformStats(
+        userRecord,
+        clip.campaignId,
+        clip.platform,
+        clip.username
+      );
+
+      // prevent double-approval
+      if (clip.status === 'approved') {
+        await interaction.reply({
+          content: '❌ This clip is already approved.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      // if it was rejected before, undo rejected count
+      if (clip.status === 'rejected') {
+        platformStats.videosRejected = Math.max(0, (platformStats.videosRejected || 0) - 1);
+      }
+
+      clip.status = 'approved';
+      clip.views = views;
+      clip.moneyMade = payout;
+      data.clips[clipId] = clip;
+
+      platformStats.videosApproved += 1;
+      platformStats.totalViews += views;
+      platformStats.moneyMade += payout;
+
+      saveData(data);
+      await updateClipStaffMessage(interaction.guild, clip);
+
+      await interaction.reply({
+        content: `✅ Clip approved.\nViews: **${formatNumber(views)}**\nPayout: **$${payout}**`,
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('clip_reject:')) {
+      if (!interaction.guild || !isAdmin(interaction.member)) {
+        await interaction.reply({
+          content: '❌ You are not allowed to do this.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const clipId = interaction.customId.split(':')[1];
+      const data = loadData();
+      const clip = data.clips?.[clipId];
+
+      if (!clip) {
+        await interaction.reply({
+          content: '❌ Clip not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const member = await interaction.guild.members.fetch(clip.userId).catch(() => null);
+      if (!member) {
+        await interaction.reply({
+          content: '❌ User not found in server.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const userRecord = ensureUser(data, member);
+      const platformStats = ensureCampaignPlatformStats(
+        userRecord,
+        clip.campaignId,
+        clip.platform,
+        clip.username
+      );
+
+      if (clip.status === 'rejected') {
+        await interaction.reply({
+          content: '❌ This clip is already rejected.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      // if it was approved before, undo approved stats
+      if (clip.status === 'approved') {
+        platformStats.videosApproved = Math.max(0, (platformStats.videosApproved || 0) - 1);
+        platformStats.totalViews = Math.max(0, (platformStats.totalViews || 0) - (clip.views || 0));
+        platformStats.moneyMade = Math.max(0, (platformStats.moneyMade || 0) - (clip.moneyMade || 0));
+      }
+
+      clip.status = 'rejected';
+      clip.views = 0;
+      clip.moneyMade = 0;
+      data.clips[clipId] = clip;
+
+      platformStats.videosRejected += 1;
+
+      saveData(data);
+      await updateClipStaffMessage(interaction.guild, clip);
+
+      await interaction.reply({
+        content: `❌ Clip rejected.`,
         ephemeral: true
       });
 
