@@ -75,7 +75,8 @@ function loadData() {
         users: {},
         applications: {},
         socialAccounts: {},
-        socialLinkRequests: {}
+        socialLinkRequests: {},
+        clips: {}
       }, null, 2)
     );
   }
@@ -85,6 +86,7 @@ function loadData() {
   if (!raw.applications) raw.applications = {};
   if (!raw.socialAccounts) raw.socialAccounts = {};
   if (!raw.socialLinkRequests) raw.socialLinkRequests = {};
+  if (!raw.clips) raw.clips = {};
   return raw;
 }
 
@@ -428,6 +430,30 @@ function buildSocialStaffButtons(id, status) {
   }
 
   return [];
+}
+
+function makeClipId() {
+  return `clip_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+}
+
+function isValidUrl(value) {
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function renderClipStaffContent(clip) {
+  return `📥 **New Clip Submission**
+
+**User:** <@${clip.userId}>
+**Campaign:** ${clip.campaignName}
+**Platform:** ${formatPlatform(clip.platform)}
+**Username:** @${clip.username}
+**Link:** ${clip.videoUrl}
+**Status:** ${clip.status}`;
 }
 
 function ensureCampaignPlatformStats(userRecord, campaignId, platform, username = '') {
@@ -944,6 +970,137 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await interaction.reply({
         content: `✅ Your ${formatPlatform(platform)} account verification request was submitted. Please wait for staff to send your bio code.`,
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('submit_clip:')) {
+      const campaignId = interaction.customId.split(':')[1];
+      const campaign = CAMPAIGNS[campaignId];
+   
+      if (!campaign) {
+        await interaction.reply({
+          content: '❌ Campaign not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const modal = new ModalBuilder()
+        .setCustomId(`submit_clip_modal:${campaignId}`)
+        .setTitle('Submit Clip');
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('clip_link')
+            .setLabel('Video Link')
+            .setPlaceholder('https://www.tiktok.com/...')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+        )
+      );
+
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('submit_clip_modal:')) {
+      const campaignId = interaction.customId.split(':')[1];
+      const campaign = CAMPAIGNS[campaignId];
+
+      if (!campaign) {
+        await interaction.reply({
+          content: '❌ Campaign not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const videoUrl = interaction.fields.getTextInputValue('clip_link').trim();
+
+      if (!isValidUrl(videoUrl)) {
+        await interaction.reply({
+          content: '❌ Please enter a valid video URL.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const data = loadData();
+      const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+
+      if (!member) {
+        await interaction.reply({
+          content: '❌ User not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const userRecord = ensureUser(data, member);
+
+      if (!userRecord.campaignStats || !userRecord.campaignStats[campaignId]) {
+        await interaction.reply({
+          content: '❌ You have not set up a campaign account for this campaign yet.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const campaignPlatforms = Object.keys(userRecord.campaignStats[campaignId]);
+
+      if (campaignPlatforms.length === 0) {
+        await interaction.reply({
+          content: '❌ No linked campaign account found for this campaign.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (campaignPlatforms.length > 1) {
+        await interaction.reply({
+          content: '❌ Multiple campaign accounts found. Submit-clip account selection needs to be added next.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const platform = campaignPlatforms[0];
+      const platformStats = userRecord.campaignStats[campaignId][platform];
+      const username = platformStats.username || 'unknown';
+
+      const clipId = makeClipId();
+
+      const clip = {
+        id: clipId,
+        userId: interaction.user.id,
+        campaignId,
+        campaignName: campaign.name,
+        platform,
+        username,
+        videoUrl,
+        status: 'pending',
+        submittedAt: new Date().toISOString()
+      };
+
+      data.clips[clipId] = clip;
+
+      platformStats.videosPosted += 1;
+
+      saveData(data);
+
+      const staffChannel = interaction.guild.channels.cache.get(campaign.staffChannelId);
+      if (staffChannel) {
+        await staffChannel.send({
+          content: renderClipStaffContent(clip)
+        }).catch(() => {});
+      }
+
+      await interaction.reply({
+        content: `✅ Clip submitted successfully for **${campaign.name}**.`,
         ephemeral: true
       });
 
