@@ -109,12 +109,16 @@ function ensureUser(data, member) {
         totalViews: 0,
         moneyMade: 0
       },
-      campaignStats: {}
+      campaignStats: {},
+      campaignAccounts:{}
     };
   }
 
-  if (!data.users[member.id].stats) {
-    data.users[member.id].stats = {
+  const user = data.users[member.id];
+
+  // ✅ Always enforce structure (this is what you were trying to add)
+  if (!user.stats) {
+    user.stats = {
       videosPosted: 0,
       videosApproved: 0,
       videosRejected: 0,
@@ -124,14 +128,18 @@ function ensureUser(data, member) {
   }
 
   if (!data.users[member.id].campaignStats) {
-    data.users[member.id].campaignStats = {};
-  }
+  data.users[member.id].campaignStats = {};
+}
 
-  if (!data.users[member.id].socials) {
-    data.users[member.id].socials = [];
-  }
+if (!data.users[member.id].campaignAccounts) {
+  data.users[member.id].campaignAccounts = {};
+}
 
-  data.users[member.id].discordName = member.user.username;
+if (!data.users[member.id].socials) {
+  data.users[member.id].socials = [];
+}
+
+  user.discordName = member.user.username;
   return data.users[member.id];
 }
 
@@ -560,6 +568,22 @@ function extractLinksFromText(text) {
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean);
+}
+
+function ensureCampaignAccount(userRecord, campaignId, platform, username) {
+  if (!userRecord.campaignAccounts) {
+    userRecord.campaignAccounts = {};
+  }
+
+  if (!userRecord.campaignAccounts[campaignId]) {
+    userRecord.campaignAccounts[campaignId] = {};
+  }
+
+  userRecord.campaignAccounts[campaignId][platform] = {
+    username
+  };
+
+  return userRecord.campaignAccounts[campaignId][platform];
 }
 
 function getCampaignPlatformsForUser(userRecord, campaignId) {
@@ -2482,9 +2506,24 @@ When done, click the button below.`,
       data.applications[appId] = app;
 
       const userRecord = ensureUser(data, member);
+
       if (!userRecord.campaigns.includes(app.campaignId)) {
-        userRecord.campaigns.push(app.campaignId);
+      userRecord.campaigns.push(app.campaignId);
       }
+
+      ensureCampaignAccount(
+        userRecord,
+        app.campaignId,
+        app.platform,
+        app.username
+      );
+
+      ensureCampaignPlatformStats(
+        userRecord,
+        app.campaignId,
+        app.platform,
+        app.username
+      );
 
       saveData(data);
       await updateStaffMessage(interaction.guild, app);
