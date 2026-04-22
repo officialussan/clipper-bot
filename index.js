@@ -562,6 +562,11 @@ function extractLinksFromText(text) {
     .filter(Boolean);
 }
 
+function getCampaignPlatformsForUser(userRecord, campaignId) {
+  const campaignStats = userRecord.campaignStats?.[campaignId] || {};
+  return Object.keys(campaignStats).filter(platform => campaignStats[platform]);
+}
+
 async function updateSocialStaffMessage(guild, request) {
   const ch = guild.channels.cache.get(process.env.SOCIAL_STAFF_CHANNEL_ID);
   if (!ch) return;
@@ -1056,37 +1061,108 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('submit_clip:')) {
-      const campaignId = interaction.customId.split(':')[1];
-      const campaign = CAMPAIGNS[campaignId];
+      try {
+        const campaignId = interaction.customId.split(':')[1];
+        const campaign = CAMPAIGNS[campaignId];
 
-      if (!campaign) {
+        if (!campaign) {
+          await interaction.reply({
+            content: '❌ Campaign not found.',
+            ephemeral: true
+          });
+          return;
+        }
+
+        if (!interaction.guild) {
+          await interaction.reply({
+            content: '❌ This can only be used in a server.',
+            ephemeral: true
+          });
+          return;
+        }
+
+        const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+
+        if (!member) {
+          await interaction.reply({
+            content: '❌ Could not load your account.',
+            ephemeral: true
+          });
+          return;
+        }
+
+        const data = loadData();
+        const userRecord = ensureUser(data, member);
+
+        if (!userRecord.campaignStats) {
+          userRecord.campaignStats = {};
+        }
+
+        const campaignPlatforms = Object.keys(userRecord.campaignStats[campaignId] || {});
+
+        if (campaignPlatforms.length === 0) {
+          await interaction.reply({
+            content: '❌ You do not have any platform account set for this campaign yet.',
+            ephemeral: true
+          });
+          return;
+        }
+
+        if (campaignPlatforms.length === 1) {
+          const platform = campaignPlatforms[0];
+  
+          const modal = new ModalBuilder()
+            .setCustomId(`submit_clip_modal:${campaignId}:${platform}`)
+            .setTitle('Submit your Clips');
+
+          modal.addComponents(
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId('clip_links')
+                .setLabel('Videos URL')
+                .setPlaceholder('Paste up to 20 links, one per line')
+                .setStyle(TextInputStyle.Paragraph)
+                .setRequired(true)
+                .setMaxLength(4000)
+            )
+          );
+
+          await interaction.showModal(modal);
+          return;
+        }
+
+        const select = new StringSelectMenuBuilder()
+          .setCustomId(`submit_clip_platform_select:${campaignId}`)
+          .setPlaceholder('Choose account/platform for this clip')
+          .addOptions(
+            campaignPlatforms.map(platform => ({
+              label: `${formatPlatform(platform)} - @${userRecord.campaignStats[campaignId][platform].username}`.slice(0, 100),
+              value: platform
+            }))
+          );
+
         await interaction.reply({
-          content: '❌ Campaign not found.',
+          content: 'Choose which platform account this clip belongs to.',
+          components: [new ActionRowBuilder().addComponents(select)],
           ephemeral: true
         });
+    
         return;
+        } catch (error) {
+        console.error('submit_clip button error:', error);
+
+        if (interaction.replied || interaction.deferred) {
+          await interaction.followUp({
+            content: '❌ Something went wrong opening Submit Clip.',
+            ephemeral: true
+          }).catch(() => {});
+        } else {
+          await interaction.reply({
+            content: '❌ Something went wrong opening Submit Clip.',
+            ephemeral: true
+          }).catch(() => {});
+        }
       }
-
-      const modal = new ModalBuilder()
-        .setCustomId(`submit_clip_modal:${campaignId}`)
-        .setTitle('Submit your Clips');
-
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('clip_links')
-            .setLabel('Videos URL')
-            .setPlaceholder(
-              'Paste up to 20 links, one per line\n\nhttps://tiktok.com/...\nhttps://youtube.com/...\nhttps://instagram.com/...'
-            )
-            .setStyle(TextInputStyle.Paragraph)
-            .setRequired(true)
-            .setMaxLength(4000)
-        )
-      );
-
-      await interaction.showModal(modal);
-      return;
     }
 
     if (interaction.isModalSubmit() && interaction.customId.startsWith('submit_clip_modal:')) {
@@ -2454,7 +2530,7 @@ When done, click the button below.`,
       return;
     }
   } catch (e) {
-    console.log('Interaction error:', e);
+    console.error('Interaction error:', e);
 
     if (interaction.isRepliable()) {
       if (interaction.replied || interaction.deferred) {
