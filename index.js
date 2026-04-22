@@ -728,6 +728,47 @@ client.on(Events.MessageCreate, async message => {
       return;
     }
 
+    if (message.content.startsWith('!fixcampaignaccount')) {
+      if (!isAdmin(message.member)) {
+        await message.reply('❌ You must be an admin to use this command.');
+        return;
+      }
+
+      const args = message.content.trim().split(/\s+/);
+      const mentionedUser = message.mentions.users.first();
+      const campaignId = args[2];
+      const platform = args[3];
+      const username = args[4];
+
+      if (!mentionedUser || !campaignId || !platform || !username) {
+        await message.reply('❌ Usage: `!fixcampaignaccount @user emoney_shopping tiktok Dijanobs7rq`');
+        return;
+      }
+
+      const member = await message.guild.members.fetch(mentionedUser.id).catch(() => null);
+      if (!member) {
+        await message.reply('❌ User not found in server.');
+        return;
+      }
+
+      const data = loadData();
+      const userRecord = ensureUser(data, member);
+
+      ensureCampaignAccount(userRecord, campaignId, platform, username);
+      ensureCampaignPlatformStats(userRecord, campaignId, platform, username);
+   
+      if (!userRecord.campaigns.includes(campaignId)) {
+        userRecord.campaigns.push(campaignId);
+      }
+ 
+      saveData(data);
+
+      await message.reply(
+        `✅ Fixed campaign account for <@${mentionedUser.id}> in **${campaignId}** on **${platform}**.`
+      );
+      return;
+    }
+
     if (message.content === '!verifypanel') {
       if (!isAdmin(message.member)) {
         await message.reply('❌ You must be an admin to use this command.');
