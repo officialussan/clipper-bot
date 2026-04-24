@@ -2475,12 +2475,12 @@ client.on(Events.InteractionCreate, async interaction => {
       }
 
       const select = new StringSelectMenuBuilder()
-        .setCustomId(`campaign_platform:${campaign.id}`)
-        .setPlaceholder('Select a platform')
+        .setCustomId(`campaign_connect_platform:${campaign.id}`)
+        .setPlaceholder('Choose platform')
         .addOptions(
-          campaign.allowedPlatforms.map(p => ({
-            label: formatPlatform(p),
-            value: p
+          campaign.allowedPlatforms.map(platform => ({
+            label: formatPlatform(platform),
+            value: platform
           }))
         );
 
@@ -2489,6 +2489,7 @@ client.on(Events.InteractionCreate, async interaction => {
         components: [new ActionRowBuilder().addComponents(select)],
         ephemeral: true
       });
+
       return;
     }
 
