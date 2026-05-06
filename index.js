@@ -65,6 +65,39 @@ All you have to do is **register for the campaign below** and follow the guideli
 
 🚀 **Join the Campaign**
 Click the button below to start clipping and earning:`
+  },
+
+emoney: {
+  id: 'emoney',
+  name: 'eMoney Shopping',
+  externalJoinUrl: 'https://discord.gg/UBwV3dmXk',
+
+   panelText: `🛍️ **Earn Money Posting Clips & Edits – eMoney Shopping**
+
+Earn money by posting clips and edited content for *eMoney Shopping Coupons* — **“The Resell Universe.”**
+
+All you have to do is **register for the campaign below** and follow the guidelines to start earning.
+
+📊 **Campaign Overview**
+
+• **Content:** Daily content will be provided through a shared Drive folder
+• **Platforms:** TikTok, Instagram, YouTube & Facebook
+• **Requirement:** Videos must be posted across all selected platforms
+• **Target Audience:** Tier 1 countries only
+• **Editing Style:** All edits must follow the campaign editing style
+• **Consistency Rule:** Inactive or inconsistent posting may result in removal from the campaign
+• **Submission Rule:** Video links must be submitted after posting
+
+💰 **Payment Details**
+
+> **Payout Schedule:** Monthly
+> **First Month Rate:** $1 per 1,000 views
+> **Payment Methods:** PayPal & Whop
+> **Eligible Views:** Tier 1 countries only
+
+🚀 **Join the Campaign**
+
+Click the button below to start clipping and earning.`
   }
 };
 
@@ -1211,12 +1244,21 @@ client.on(Events.MessageCreate, async message => {
 
       await message.delete().catch(() => {});
 
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
+      let button;
+
+      if (campaign.externalJoinUrl) {
+        button = new ButtonBuilder()
+          .setLabel('Join Campaign')
+          .setStyle(ButtonStyle.Link)
+          .setURL(campaign.externalJoinUrl);
+      } else {
+        button = new ButtonBuilder()
           .setCustomId(`join_campaign:${campaign.id}`)
           .setLabel('Join Campaign')
-          .setStyle(ButtonStyle.Success)
-      );
+          .setStyle(ButtonStyle.Success);
+      }
+
+      const row = new ActionBuilder().addComponents(button);
 
       await message.channel.send({
         content: campaign.panelText,
