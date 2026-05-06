@@ -71,7 +71,6 @@ Click the button below to start clipping and earning:`
     id: 'emoney',
     name: 'eMoney Shopping',
     externalJoinUrl: 'https://discord.gg/UBwV3dmXk',
-
     panelText: `🛍️ **Earn Money Posting Clips & Edits – eMoney Shopping**
 
 Earn money by posting clips and edited content for *eMoney Shopping Coupons* — **“The Resell Universe.”**
