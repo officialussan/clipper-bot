@@ -1241,6 +1241,11 @@ client.on(Events.MessageCreate, async message => {
 
       const campaign = CAMPAIGNS[campaignId];
 
+      if (!campaign.panelText) {
+        await message.channel.send(`❌ Campaign **${campaignId}** has no panelText.`);
+        return;
+      }
+
       await message.delete().catch(() => {});
 
       let button;
@@ -1257,7 +1262,7 @@ client.on(Events.MessageCreate, async message => {
           .setStyle(ButtonStyle.Success);
       }
 
-      const row = new ActionBuilder().addComponents(button);
+      const row = new ActionRowBuilder().addComponents(button);
 
       await message.channel.send({
         content: campaign.panelText,
