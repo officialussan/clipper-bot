@@ -2501,26 +2501,49 @@ client.on(Events.InteractionCreate, async interaction => {
       userRecord.verified = true;
       saveData(data);
 
-      const rolesToAdd = [];
       const verifiedRole = interaction.guild.roles.cache.get(VERIFIED_ROLE_ID);
       const clipperRole = interaction.guild.roles.cache.get(CLIPPER_ROLE_ID);
 
-      if (verifiedRole && !interaction.member.roles.cache.has(VERIFIED_ROLE_ID)) {
-        rolesToAdd.push(verifiedRole);
+      if (!verifiedRole) {
+        await interaction.reply({
+          content: '❌ VERIFIED_ROLE_ID is missing or wrong.',
+          ephemeral: true
+        });
+        return;
       }
 
-      if (clipperRole && !interaction.member.roles.cache.has(CLIPPER_ROLE_ID)) {
-        rolesToAdd.push(clipperRole);
+      if (!clipperRole) {
+        await interaction.reply({
+          content: '❌ CLIPPER_ROLE_ID is missing or wrong.',
+          ephemeral: true
+        });
+        return;
       }
 
-      if (rolesToAdd.length > 0) {
-        await interaction.member.roles.add(rolesToAdd).catch(() => {});
+      try {
+        if (!interaction.member.roles.cache.has(VERIFIED_ROLE_ID)) {
+          await interaction.member.roles.add(verifiedRole);
+        }
+
+        if (!interaction.member.roles.cache.has(CLIPPER_ROLE_ID)) {
+          await interaction.member.roles.add(clipperRole);
+        }
+
+        await interaction.reply({
+          content: '✅ Verification successful. You now have access and the clipper role.',
+          ephemeral: true
+        });
+      } catch (error) {
+        console.error('Role add error:', error);
+
+        await interaction.reply({
+          content:
+            '❌ Verification saved, but I could not add the role.\n\n' +
+            'Check: bot has Manage Roles permission, bot role is above Clipper role, and role IDs are correct.',
+          ephemeral: true
+        });
       }
 
-      await interaction.reply({
-        content: '✅ Verification successful. You now have access.',
-        ephemeral: true
-      });
       return;
     }
 
