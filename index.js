@@ -1602,6 +1602,7 @@ client.on(Events.InteractionCreate, async interaction => {
       await sourceChannel.send({
         content: `<@${request.userId}> your ${formatPlatform(request.platform)} code for **${request.campaignName}** is ready.`,
         components: [row]
+        ephemeral: true
       });
 
       await interaction.reply({
