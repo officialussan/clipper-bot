@@ -67,6 +67,62 @@ All you have to do is **register for the campaign below** and follow the guideli
 Click the button below to start clipping and earning:`
   },
 
+  tony: {
+    id: 'tony',
+
+    name: 'Tony Robbins Clipping Campaign',
+
+    allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
+
+    payoutThreshold: 25000,
+
+    staffChannelId: process.env.TONY_STAFF_CHANNEL_ID,
+ 
+    roleId: process.env.TONY_ROLE_ID,
+
+    entryChannelId: process.env.TONY_ENTRY_CHANNEL_ID,
+
+    panelText: `# 🎙️ **Earn Money Posting Clips – Tony Robbins Clipping Campaign**
+
+Earn money by posting high-retention clips and edits from Tony Robbins content across short-form platforms. Your goal is simple: create engaging clips, generate views, and grow your pages while earning from performance.
+
+All you have to do is **register for the campaign below** and follow the guidelines to start earning.
+
+---
+
+## 📊 Campaign Overview
+
+• **Content:** Any content from the Tony Robbins YouTube channel. Light B-rolls and cinematic edits are allowed.
+
+• **Platforms:** TikTok, Instagram Reels & YouTube Shorts
+
+• **Requirement:** All uploaded videos must follow the campaign rules → <#1504129290449588244>
+
+• **Editing Style:** Deliver value, maintain strong retention, and present Tony Robbins positively.
+
+• **Campaign Goal:** Post powerful, motivational, and respectful clips of Tony Robbins (and occasionally Sage Robbins).
+
+• **Strict Rule:** Low-quality, spam, or misleading edits may result in removal from the campaign.
+
+---
+
+## 💰 Payment Details
+
+> **Campaign Budget:** $4,687 per week  
+> **Rate:** $400 per 1M eligible views  
+> **Eligible Views:** Tier 1 countries only  
+> **Payout Schedule:** Weekly  
+> **Payment Method:** Crypto
+> **Minimum Payout:** $10
+
+---
+
+## 🚀 Join the Campaign
+
+Click the button below to start clipping and earning.`
+
+  },
+
   emoney: {
     id: 'emoney',
     name: 'eMoney Shopping',
