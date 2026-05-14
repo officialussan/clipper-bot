@@ -1586,32 +1586,43 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await updateCampaignAccountStaffMessage(interaction.guild, request);
 
-      const sourceChannel = interaction.guild.channels.cache.get(request.sourceChannelId);
-      if (!sourceChannel) {
-        await interaction.reply({ content: '❌ Original campaign channel not found.', ephemeral: true });
-        return;
-      }
-
-      const row = new ActionRowBuilder().addComponents(
+      const confirmRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId(`campaign_open_code:${requestId}`)
-          .setLabel('Open Bio Code')
-          .setStyle(ButtonStyle.Primary)
+          .setCustomId(`campaign_user_confirm:${requestId}`)
+          .setLabel('Confirm Bio Updated')
+          .setStyle(ButtonStyle.Success)
       );
 
-      await sourceChannel.send({
-        content: `<@${request.userId}> your ${formatPlatform(request.platform)} code for **${request.campaignName}** is ready.`,
-        components: [row]
-        ephemeral: true
-      });
+      const targetMember = await interaction.guild.members
+        .fetch(request.userId)
+        .catch(() => null);
+
+      if (targetMember) {
+        await targetMember.send({
+          content:
+            `✅ Your ${formatPlatform(request.platform)} bio verification code for **${request.campaignName}** is ready.\n\n` +
+            `Username: @${request.username}\n\n` +
+            `Add this code to your bio:\n\n` +
+            `\`${request.bioCode}\`\n\n` +
+            `After updating your bio, click **Confirm Bio Updated** below.`,
+          components: [confirmRow]
+        }).catch(async () => {
+          const sourceChannel = interaction.guild.channels.cache.get(request.sourceChannelId);
+
+          if (sourceChannel) {
+            await sourceChannel.send({
+              content: `<@${request.userId}> I could not DM you. Please enable DMs from server members, then ask staff to resend your code.`
+            }).catch(() => {});
+          }
+        });
+      }
 
       await interaction.reply({
-        content: `✅ Code sent to <@${request.userId}>.`,
+        content: `✅ Bio code sent to <@${request.userId}> via DM.`,
         ephemeral: true
       });
 
-      return;
-    }
+    return;
 
     if (interaction.isButton() && interaction.customId.startsWith('campaign_open_code:')) {
       const requestId = interaction.customId.split(':')[1];
@@ -1653,12 +1664,18 @@ client.on(Events.InteractionCreate, async interaction => {
       const request = data.campaignAccountRequests[requestId];
 
       if (!request) {
-        await interaction.reply({ content: '❌ Request not found.', ephemeral: true });
+        await interaction.reply({
+          content: '❌ Request not found.',
+          ephemeral: true
+        });
         return;
       }
-
+  
       if (interaction.user.id !== request.userId) {
-        await interaction.reply({ content: '❌ This confirmation is not for you.', ephemeral: true });
+        await interaction.reply({
+          content: '❌ This confirmation is not for you.',
+          ephemeral: true
+        });
         return;
       }
 
@@ -1666,10 +1683,14 @@ client.on(Events.InteractionCreate, async interaction => {
       data.campaignAccountRequests[requestId] = request;
       saveData(data);
 
-      await updateCampaignAccountStaffMessage(interaction.guild, request);
+      const guild = client.guilds.cache.get(request.guildId);
+
+      if (guild) {
+        await updateCampaignAccountStaffMessage(guild, request);
+      }
 
       await interaction.reply({
-        content: '✅ Confirmation submitted. Staff will review your bio.',
+        content: '✅ Confirmation submitted. Staff will now review your bio.',
         ephemeral: true
       });
 
@@ -1730,6 +1751,13 @@ client.on(Events.InteractionCreate, async interaction => {
 
       saveData(data);
       await updateCampaignAccountStaffMessage(interaction.guild, request);
+      
+      await member.send(
+        `✅ **Campaign Approved**\n\n` +
+        `You have been approved for **${request.campaignName}**.\n\n` +
+        `Your **${formatPlatform(request.platform)}** account **@${request.username}** has been verified and added to the campaign.\n\n` +
+        `You can now access the campaign channels and start submitting clips.`
+      ).catch(() => {});
 
       const approvedMessage =
         `✅ **Campaign Approved**\n\n` +
@@ -1775,6 +1803,18 @@ client.on(Events.InteractionCreate, async interaction => {
       saveData(data);
 
       await updateCampaignAccountStaffMessage(interaction.guild, request);
+
+      const member = await interaction.guild.members
+        .fetch(request.userId)
+        .catch(() => null);
+
+      if (member) {
+        await member.send(
+          `❌ **Campaign Account Rejected**\n\n` +
+          `Your **${formatPlatform(request.platform)}** account **@${request.username}** for **${request.campaignName}** was rejected.\n\n` +
+          `Please check your bio code and try again if needed.`
+        ).catch(() => {});
+      }
 
       await interaction.reply({
         content: `❌ Rejected **${formatPlatform(request.platform)}** account **@${request.username}**.`,
