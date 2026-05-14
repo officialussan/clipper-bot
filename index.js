@@ -1759,22 +1759,7 @@ client.on(Events.InteractionCreate, async interaction => {
         `You can now access the campaign channels and start submitting clips.`
       ).catch(() => {});
 
-      const approvedMessage =
-        `✅ **Campaign Approved**\n\n` +
-        `You have been approved for **${request.campaignName}**.\n\n` +
-        `Your **${formatPlatform(request.platform)}** account **@${request.username}** has been verified and added to the campaign.\n\n` +
-        `You can now access the campaign channels and start submitting clips.`;
-
-      await member.send(approvedMessage).catch(async () => {
-        const sourceChannel = interaction.guild.channels.cache.get(request.sourceChannelId);
-
-        if (sourceChannel) {
-          await sourceChannel.send({
-            content: `<@${request.userId}> ✅ You have been approved for **${request.campaignName}**. Your **${formatPlatform(request.platform)}** account **@${request.username}** has been verified and added.`
-          }).catch(() => {});
-        }
-      });
-
+      
       await interaction.reply({
         content: `✅ Approved **${formatPlatform(request.platform)}** account **@${request.username}** for **${request.campaignName}**.`,
         ephemeral: true
