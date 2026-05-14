@@ -88,8 +88,6 @@ Earn money by posting high-retention clips and edits from Tony Robbins content a
 
 All you have to do is **register for the campaign below** and follow the guidelines to start earning.
 
----
-
 ## 📊 Campaign Overview
 
 • **Content:** Any content from the Tony Robbins YouTube channel. Light B-rolls and cinematic edits are allowed.
@@ -104,8 +102,6 @@ All you have to do is **register for the campaign below** and follow the guideli
 
 • **Strict Rule:** Low-quality, spam, or misleading edits may result in removal from the campaign.
 
----
-
 ## 💰 Payment Details
 
 > **Campaign Budget:** $4,687 per week  
@@ -114,8 +110,6 @@ All you have to do is **register for the campaign below** and follow the guideli
 > **Payout Schedule:** Weekly  
 > **Payment Method:** Crypto
 > **Minimum Payout:** $10
-
----
 
 ## 🚀 Join the Campaign
 
