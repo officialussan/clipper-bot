@@ -1622,7 +1622,8 @@ client.on(Events.InteractionCreate, async interaction => {
         ephemeral: true
       });
 
-    return;
+      return;
+    }
 
     if (interaction.isButton() && interaction.customId.startsWith('campaign_open_code:')) {
       const requestId = interaction.customId.split(':')[1];
