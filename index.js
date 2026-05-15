@@ -92,7 +92,7 @@ All you have to do is **register for the campaign below** and follow the guideli
 
 • **Content:** Any content from the Tony Robbins YouTube channel. Light B-rolls and cinematic edits are allowed.
 
-• **Platforms:** TikTok, Instagram Reels & YouTube Shorts
+• **Platforms:** <:tiktok1:1504871476485029979> TikTok, <:ig1:1504871708664922162> Instagram Reels & <:ytshort:1504774704123220099> YouTube Shorts
 
 • **Requirement:** All uploaded videos must follow the campaign rules → <#1504129290449588244>
 
