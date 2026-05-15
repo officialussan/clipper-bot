@@ -82,13 +82,13 @@ Click the button below to start clipping and earning:`
 
     entryChannelId: process.env.TONY_ENTRY_CHANNEL_ID,
 
-    panelText: `# <1304879618066743406> **Earn Money Posting Clips – Tony Robbins Clipping Campaign**
+    panelText: `# https://cdn.discordapp.com/emojis/1304879618066743406.webp?size=48&animated=true **Earn Money Posting Clips – Tony Robbins Clipping Campaign**
 
 Earn money by posting high-retention clips and edits from Tony Robbins content across short-form platforms. Your goal is simple: create engaging clips, generate views, and grow your pages while earning from performance.
 
 All you have to do is **register for the campaign below** and follow the guidelines to start earning.
 
-## <1334030554630197290> Campaign Overview
+## https://cdn.discordapp.com/emojis/1334030554630197290.webp?size=48&animated=true Campaign Overview
 
 • **Content:** Any content from the Tony Robbins YouTube channel. Light B-rolls and cinematic edits are allowed.
 
@@ -102,7 +102,7 @@ All you have to do is **register for the campaign below** and follow the guideli
 
 • **Strict Rule:** Low-quality, spam, or misleading edits may result in removal from the campaign.
 
-## <1329480956318318664> Payment Details
+## https://cdn.discordapp.com/emojis/1329480956318318664.webp?size=48&animated=true Payment Details
 
 > **Campaign Budget:** $4,687 per week  
 > **Rate:** $400 per 1M eligible views  
@@ -111,7 +111,7 @@ All you have to do is **register for the campaign below** and follow the guideli
 > **Payment Method:** Crypto
 > **Minimum Payout:** $10
 
-## <1504776324051374130> Join the Campaign
+## https://cdn.discordapp.com/emojis/1304880813493583932.webp?size=48&animated=true Join the Campaign
 
 Click the button below to start clipping and earning.`
 
