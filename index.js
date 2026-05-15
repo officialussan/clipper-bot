@@ -111,7 +111,7 @@ All you have to do is **register for the campaign below** and follow the guideli
 > **Payment Method:** Crypto
 > **Minimum Payout:** $10
 
-## <:arrow1:1304880813493583932> Join the Campaign
+## <:arrow1:1504776324051374130> Join the Campaign
 
 Click the button below to start clipping and earning.`
 
