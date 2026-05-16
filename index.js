@@ -121,7 +121,7 @@ Click the button below to start clipping and earning.`
     id: 'crowder',
     name: 'Steven Crowder Clipping Campaign',
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
-    payoutThreshold: 1000000,
+    payoutThreshold: 35000,
     staffChannelId: process.env.CROWDER_STAFF_CHANNEL_ID,
     roleId: process.env.CROWDER_ROLE_ID,
     entryChannelId: process.env.CROWDER_ENTRY_CHANNEL_ID,
@@ -132,7 +132,6 @@ Click the button below to start clipping and earning.`
 Earn money by posting high-retention clips and edits from Steven Crowder content across short-form platforms. Your goal is simple: Create engaging content, generate views, grow your pages, and earn based on performance.
 
 All you have to do is **register for the campaign below** and follow the guidelines to start earning.
-
 
 ## <a:chart1:1504773558415523931> Campaign Overview
 
@@ -150,7 +149,6 @@ All you have to do is **register for the campaign below** and follow the guideli
 
 • **Submission Rule:** Only videos posted within the last 24 hours are eligible for submission. Views begin counting only after submission is approved.
 
-
 ## <a:Cash1:1504871843419521115> Payment Details
 
 > **Campaign Budget:** $7,500 per week
@@ -159,7 +157,6 @@ All you have to do is **register for the campaign below** and follow the guideli
 > **Payout Schedule:** Weekly
 > **Payment Method:** Crypto
 > **Minimum Payout:** $10
-
 
 ## <a:arrow1:1504776324051374130> Join the Campaign
 
