@@ -133,7 +133,6 @@ Earn money by posting high-retention clips and edits from Steven Crowder content
 
 Register for the campaign below and follow the rules to start earning.
 
----
 
 ## <a:chart1:1504773558415523931> Campaign Overview
 
@@ -151,7 +150,6 @@ Register for the campaign below and follow the rules to start earning.
 
 • **Submission Rule:** Only videos posted within the last 24 hours are eligible for submission. Views begin counting only after submission is approved.
 
----
 
 ## <a:Cash1:1504871843419521115> Payment Details
 
@@ -162,7 +160,6 @@ Register for the campaign below and follow the rules to start earning.
 > **Payment Method:** Crypto
 > **Minimum Payout:** $10
 
----
 
 ## <a:arrow1:1504776324051374130> Join the Campaign
 
