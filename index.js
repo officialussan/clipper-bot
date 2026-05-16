@@ -428,9 +428,9 @@ function buildLeaderboardEmbed(data, page = 1, perPage = 10) {
     .setColor(0x7ED957)
     .setDescription(
       `🎬 **Creators Elite** 💎\n\n` +
-      `## Top Clippers All Time 📈\n\n` +
+      `## Top Clippers All Time <a:chart1:1504773558415523931>\n\n` +
       `${lines.join('\n')}\n\n` +
-      `**Powered by Creators Elite**`
+      `<:whiteCE:1504904179905200148> **Powered by Creators Elite**`
     )
     .setFooter({ text: `Page ${safePage} / ${totalPages}` });
 
