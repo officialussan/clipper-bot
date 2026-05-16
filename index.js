@@ -70,7 +70,7 @@ Click the button below to start clipping and earning:`
   tony: {
     id: 'tony',
 
-    name: 'Tony Robbins Clipping Campaign',
+    name: '<:tr:1505143223507750973> Tony Robbins Clipping Campaign',
 
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
 
@@ -1191,21 +1191,21 @@ client.on(Events.MessageCreate, async message => {
           `➕ **Link Account**\nAdd and verify an account for this campaign.\n\n` +
           `➖ **Remove Account**\nRemove a campaign account.\n\n` +
           `🌐 **View Accounts**\nView accounts added to this campaign.\n\n` +
-          `**Powered by Creators Elite**`
+          `<:whiteCE:1504904179905200148> **Powered by Creators Elite**`
         );
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`campaign_connect_link:${campaignId}`)
-          .setLabel('Link Account')
+          .setLabel('➕Link Account')
           .setStyle(ButtonStyle.Success),
         new ButtonBuilder()
-          .setCustomId(`campaign_connect_remove:${campaignId}`)
+          .setCustomId(`➖campaign_connect_remove:${campaignId}`)
           .setLabel('Remove Account')
           .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId(`campaign_connect_view:${campaignId}`)
-          .setLabel('View Accounts')
+          .setLabel('🌐View Accounts')
           .setStyle(ButtonStyle.Primary)
       );
 
@@ -1247,35 +1247,35 @@ client.on(Events.MessageCreate, async message => {
           `🗑️ **Remove Clip**\nRemove one or more clips for campaign tracking.\n\n` +
           `⚙️ **Manage Account**\nEdit and manage your clipper account.\n\n` +
           `⚠️ **Leave Campaign**\nLeave this campaign.\n\n` +
-          `**Powered by Creators Elite**`
+          `<:whiteCE:1504904179905200148> **Powered by Creators Elite**`
         );
 
       const row1 = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`submit_clip:${campaignId}`)
-          .setLabel('Submit Clip')
+          .setLabel('⬆️Submit Clip')
           .setStyle(ButtonStyle.Success),
         new ButtonBuilder()
           .setCustomId(`campaign_stats:${campaignId}`)
-          .setLabel('My Stats')
+          .setLabel('👥My Stats')
           .setStyle(ButtonStyle.Primary)
       );
 
       const row2 = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`remove_clip:${campaignId}`)
-          .setLabel('Remove Clip')
+          .setLabel('🗑️Remove Clip')
           .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId(`manage_account:${campaignId}`)
-          .setLabel('Manage Account')
+          .setLabel('⚙️Manage Account')
           .setStyle(ButtonStyle.Secondary)
       );   
 
       const row3 = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`leave_campaign:${campaignId}`)
-          .setLabel('Leave Campaign')
+          .setLabel('<a:gwarn:1504774239679676416>Leave Campaign')
           .setStyle(ButtonStyle.Danger)
       );
 
