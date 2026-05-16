@@ -131,7 +131,7 @@ Click the button below to start clipping and earning.`
 
 Earn money by posting high-retention clips and edits from Steven Crowder content across short-form platforms. Your goal is simple: Create engaging content, generate views, grow your pages, and earn based on performance.
 
-Register for the campaign below and follow the rules to start earning.
+All you have to do is **register for the campaign below** and follow the guidelines to start earning.
 
 
 ## <a:chart1:1504773558415523931> Campaign Overview
