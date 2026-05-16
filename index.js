@@ -1198,7 +1198,7 @@ client.on(Events.MessageCreate, async message => {
         new ButtonBuilder()
           .setCustomId(`campaign_connect_link:${campaignId}`)
           .setLabel('➕Link Account')
-          .setStyle(ButtonStyle.Secondary),
+          .setStyle(ButtonStyle.Success),
         new ButtonBuilder()
           .setCustomId(`campaign_connect_remove:${campaignId}`)
           .setLabel('➖Remove Account')
@@ -1275,7 +1275,8 @@ client.on(Events.MessageCreate, async message => {
       const row3 = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`leave_campaign:${campaignId}`)
-          .setLabel('<a:gwarn:1504774239679676416> Leave Campaign')
+          .setLabel('Leave Campaign')
+          .setEmoji('1504774239679676416')
           .setStyle(ButtonStyle.Danger)
       );
 
