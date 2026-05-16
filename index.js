@@ -117,6 +117,59 @@ Click the button below to start clipping and earning.`
 
   },
 
+  crowder: {
+    id: 'crowder',
+    name: 'Steven Crowder Clipping Campaign',
+    allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
+    payoutThreshold: 1000000,
+    staffChannelId: process.env.CROWDER_STAFF_CHANNEL_ID,
+    roleId: process.env.CROWDER_ROLE_ID,
+    entryChannelId: process.env.CROWDER_ENTRY_CHANNEL_ID,
+
+    panelText: `
+# <a:fire1:1504871649491554487> Earn Money Posting Clips – Steven Crowder Clipping Campaign
+
+Earn money by posting high-retention clips and edits from Steven Crowder content across short-form platforms. Your goal is simple: Create engaging content, generate views, grow your pages, and earn based on performance.
+
+Register for the campaign below and follow the rules to start earning.
+
+---
+
+## <a:chart1:1504773558415523931> Campaign Overview
+
+• **Content:** Clips and edits from official Steven Crowder content focused primarily on Steven Crowder
+
+• **Platforms:** <:tiktok1:1504871476485029979> TikTok, <:ig1:1504871708664922162> Instagram Reels & <:ytshort:1504774704123220099> YouTube Shorts
+
+• **Requirement:** All uploads must follow the official campaign rules → <#1492184654864842963>
+
+• **Editing Style:** Strong hooks, high retention, clear context, and clean presentation
+
+• **Campaign Goal:** Create engaging clips around Crowder’s commentary, debates, reactions, and discussion moments
+
+• **Content Standard:** Low-quality, spam, misleading, or heavily manipulated edits may result in removal from the campaign
+
+• **Submission Rule:** Only videos posted within the last 24 hours are eligible for submission. Views begin counting only after submission is approved.
+
+---
+
+## <a:Cash1:1504871843419521115> Payment Details
+
+> **Campaign Budget:** $7,500 per week
+> **Rate:** $300 per 1M eligible views
+> **Eligible Traffic:** Tier 1 countries only
+> **Payout Schedule:** Weekly
+> **Payment Method:** Crypto
+> **Minimum Payout:** $10
+
+---
+
+## <a:arrow1:1504776324051374130> Join the Campaign
+
+Click the button below to start clipping and earning.
+`
+  },
+
   emoney: {
     id: 'emoney',
     name: 'eMoney Shopping',
