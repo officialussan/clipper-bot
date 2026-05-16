@@ -1187,7 +1187,7 @@ client.on(Events.MessageCreate, async message => {
         .setColor(0x7ED957)
         .setTitle(`${campaign.name} - Connect Accounts`)
         .setDescription(
-          `Use the buttons below to manage your campaign accounts for **${campaign.name}**.\n\n` +
+          `Use the buttons below to manage your campaign accounts for **${campaign.name.replace(/<a?:\w+:\d+>/g, '').trim()}**.\n\n` +
           `➕ **Link Account**\nAdd and verify an account for this campaign.\n\n` +
           `➖ **Remove Account**\nRemove a campaign account.\n\n` +
           `🌐 **View Accounts**\nView accounts added to this campaign.\n\n` +
@@ -1198,15 +1198,15 @@ client.on(Events.MessageCreate, async message => {
         new ButtonBuilder()
           .setCustomId(`campaign_connect_link:${campaignId}`)
           .setLabel('➕Link Account')
-          .setStyle(ButtonStyle.Success),
+          .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
-          .setCustomId(`➖campaign_connect_remove:${campaignId}`)
-          .setLabel('Remove Account')
+          .setCustomId(`campaign_connect_remove:${campaignId}`)
+          .setLabel('➖Remove Account')
           .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId(`campaign_connect_view:${campaignId}`)
           .setLabel('🌐View Accounts')
-          .setStyle(ButtonStyle.Primary)
+          .setStyle(ButtonStyle.Secondary)
       );
 
       await message.channel.send({
@@ -1241,7 +1241,7 @@ client.on(Events.MessageCreate, async message => {
         .setTitle(campaign.name)
         .setDescription(
           `Track Your Campaign Clips\n\n` +
-          `Use the buttons below to manage your account for **${campaign.name}** campaign.\n\n` +
+          `Use the buttons below to manage your account for **${campaign.name.replace(/<a?:\w+:\d+>/g, '').trim()}** campaign.\n\n` +
           `⬆️ **Submit Clip**\nSubmit your clips manually for campaign tracking.\n\n` +
           `👥 **My Stats**\nCheck your total stats, clips and payout.\n\n` +
           `🗑️ **Remove Clip**\nRemove one or more clips for campaign tracking.\n\n` +
@@ -1254,11 +1254,11 @@ client.on(Events.MessageCreate, async message => {
         new ButtonBuilder()
           .setCustomId(`submit_clip:${campaignId}`)
           .setLabel('⬆️Submit Clip')
-          .setStyle(ButtonStyle.Success),
+          .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId(`campaign_stats:${campaignId}`)
           .setLabel('👥My Stats')
-          .setStyle(ButtonStyle.Primary)
+          .setStyle(ButtonStyle.Secondary)
       );
 
       const row2 = new ActionRowBuilder().addComponents(
@@ -1275,7 +1275,7 @@ client.on(Events.MessageCreate, async message => {
       const row3 = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`leave_campaign:${campaignId}`)
-          .setLabel('<a:gwarn:1504774239679676416>Leave Campaign')
+          .setLabel('<a:gwarn:1504774239679676416> Leave Campaign')
           .setStyle(ButtonStyle.Danger)
       );
 
