@@ -1023,6 +1023,31 @@ client.on(Events.MessageCreate, async message => {
       await message.reply('✅ Bot can read messages.');
       return;
     }
+  
+    if (message.content.trim().toLowerCase() === '!ticketpanel') {
+      await message.reply('✅ Ticket command detected.');
+
+      const embed = new EmbedBuilder()
+        .setColor(0x57F287)
+        .setTitle('🎫 Support Center')
+        .setDescription(
+          'Need help with campaigns, payments, submissions, or account issues?\n\nOpen a support ticket below.'
+        );
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('open_ticket')
+          .setLabel('Open Ticket')
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      await message.channel.send({
+        embeds: [embed],
+        components: [row]
+      });
+
+      return;
+    }
 
     if (message.content === '!leaderboard') {
       const data = loadData();
@@ -1300,35 +1325,6 @@ client.on(Events.MessageCreate, async message => {
       return;
     } 
 
-    if (message.content === '!ticketpanel') {
-      if (!isAdmin(message.member)) {
-        await message.reply('❌ You must be an admin to use this command.');
-        return;
-      }
-
-      const embed = new EmbedBuilder()
-        .setColor(0x57F287)
-        .setTitle('🎫 Support Center')
-        .setDescription(
-          'Need help with campaigns, payments, submissions, or account issues?\n\nOpen a support ticket below.'
-        );
-
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('open_ticket')
-          .setLabel('Open Ticket')
-          .setEmoji('🎫')
-          .setStyle(ButtonStyle.Secondary)
-      );
-
-      await message.channel.send({
-        embeds: [embed],
-        components: [row]
-      });
-
-      return;
-    } 
-    
     if (message.content === '!verifypanel') {
       if (!isAdmin(message.member)) {
         await message.reply('❌ You must be an admin to use this command.');
