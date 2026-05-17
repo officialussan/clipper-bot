@@ -649,6 +649,33 @@ function buildClipStaffButtons(clipId, status) {
   return [];
 }
 
+async function sendTicketLog(guild, {
+  user,
+  ticketName,
+  action,
+  panel = 'Support',
+  color = 0x57F287
+}) {
+  const logChannel = guild.channels.cache.get(TICKET_LOG_CHANNEL_ID);
+  if (!logChannel) return;
+
+  const embed = new EmbedBuilder()
+    .setColor(color)
+    .setAuthor({
+      name: user.tag,
+      iconURL: user.displayAvatarURL()
+    })
+    .setDescription(
+      `## Logged Info\n` +
+      `Ticket: ${ticketName}\n` +
+      `Action: ${action}\n` +
+      `## Panel\n` +
+      `${panel}`
+    );
+
+  await logChannel.send({ embeds: [embed] }).catch(() => {});
+}
+
 function ensureCampaignPlatformStats(userRecord, campaignId, platform, username = '') {
   if (!userRecord.campaignStats) {
     userRecord.campaignStats = {};
@@ -1533,17 +1560,13 @@ client.on(Events.InteractionCreate, async interaction => {
           components: [row]
         });
 
-        const logChannel = interaction.guild.channels.cache.get(TICKET_LOG_CHANNEL_ID);
-
-        if (logChannel) {
-          await logChannel.send({
-            content:
-              `🎫 **Ticket Created**\n\n` +
-              `**User:** ${interaction.user} (${interaction.user.id})\n` +
-              `**Channel:** ${channel}\n` +
-              `**Created At:** <t:${Math.floor(Date.now() / 1000)}:F>`
-          }).catch(() => {});
-        }
+        await sendTicketLog(interaction.guild, {
+          user: interaction.user,
+          ticketName: channel.name,
+          action: 'Created',
+          panel: 'Support',
+          color: 0x57F287
+        });
 
         await interaction.reply({
           content: `✅ Ticket created: ${channel}`,
@@ -1606,17 +1629,20 @@ client.on(Events.InteractionCreate, async interaction => {
         new ButtonBuilder()
           .setCustomId('ticket_transcript')
           .setLabel('Transcript')
+          .setEmoji('📑')
           .setStyle(ButtonStyle.Secondary),
 
         new ButtonBuilder()
           .setCustomId('reopen_ticket')
           .setLabel('Open')
-          .setStyle(ButtonStyle.Success),
+          .setEmoji('🔓')
+          .setStyle(ButtonStyle.Secondary),
 
         new ButtonBuilder()
           .setCustomId('delete_ticket')
           .setLabel('Delete')
-          .setStyle(ButtonStyle.Danger)
+          .setEmoji('⛔')
+          .setStyle(ButtonStyle.Secondary)
       );
 
       await interaction.channel.send({
@@ -1642,6 +1668,14 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.isButton() && interaction.customId === 'delete_ticket') {
       await interaction.reply({
         content: '🗑 Deleting ticket in 5 seconds...'
+      });
+
+      await sendTicketLog(interaction.guild, {
+        user: interaction.user,
+        ticketName: interaction.channel.name,
+        action: 'Deleted',
+        panel: 'Support',
+        color: 0xED4245
       });
 
       setTimeout(async () => {
