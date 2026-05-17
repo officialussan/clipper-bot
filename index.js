@@ -29,6 +29,12 @@ const client = new Client({
 
 const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID;
 const CLIPPER_ROLE_ID = process.env.CLIPPER_ROLE_ID;
+const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;
+const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID;
+const TICKET_LOG_CHANNEL_ID = process.env.TICKET_LOG_CHANNEL_ID;
+
+const ticketCooldowns = new Map();
+const claimedTickets = new Map();
 
 const dataFilePath = path.join(__dirname, 'data.json');
 
@@ -1310,6 +1316,8 @@ client.on(Events.MessageCreate, async message => {
         embeds: [embed],
         components: [row]
       });
+
+      return;
     } 
     
     if (message.content === '!verifypanel') {
