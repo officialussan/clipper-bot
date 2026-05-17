@@ -2827,64 +2827,62 @@ client.on(Events.InteractionCreate, async interaction => {
        return;
     }
 
-    if (interaction.isButton() && interaction.customId.startsWith('leave_campaign:')) {
+    if (interaction.customId.startsWith('leave_campaign:')) {
+
       const campaignId = interaction.customId.split(':')[1];
-      const campaign = CAMPAIGNS[campaignId];
 
-      if (!campaign) {
-        await interaction.reply({
-          content: '❌ Campaign not found.',
-          ephemeral: true
-        });
-        return;
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`confirm_leave_campaign:${campaignId}`)
+          .setLabel('Leave Campaign')
+          .setStyle(ButtonStyle.Danger),
+
+        new ButtonBuilder()
+          .setCustomId('cancel_leave_campaign')
+          .setLabel('Cancel')
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      await interaction.reply({
+        content: '⚠️ Are you sure you want to leave this campaign?',
+        components: [row],
+        ephemeral: true
+      });
+ 
+      return;
+    }
+
+    if (interaction.customId.startsWith('confirm_leave_campaign:')) {
+
+      const campaignId = interaction.customId.split(':')[1];
+
+      // REMOVE ROLE
+      const campaignRole = interaction.guild.roles.cache.get(
+        CAMPAIGNS[campaignId].roleId
+      );
+
+      if (campaignRole) {
+        await interaction.member.roles.remove(campaignRole).catch(() => {});
       }
 
-      const data = loadData();
-      const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
-
-      if (!member) {
-        await interaction.reply({
-          content: '❌ User not found.',
-          ephemeral: true
-        });
-        return;
-      }
-
-      const userRecord = ensureUser(data, member);
-
-      // remove campaign from user's campaign list
-      if (Array.isArray(userRecord.campaigns)) {
-        userRecord.campaigns = userRecord.campaigns.filter(c => {
-          if (typeof c === 'string') return c !== campaignId;
-          return c.campaignId !== campaignId;
-        });
-      }
-
-      // remove campaign-specific stats
-      if (userRecord.campaignStats && userRecord.campaignStats[campaignId]) {
-        delete userRecord.campaignStats[campaignId];
-      }
-
-      // remove clips for this user in this campaign
-      if (data.clips) {
-        for (const [clipId, clip] of Object.entries(data.clips)) {
-          if (clip.userId === interaction.user.id && clip.campaignId === campaignId) {
-            delete data.clips[clipId];
-          }
-        }
-      }
+      // REMOVE USER DATA
+      delete data.campaignAccounts?.[interaction.user.id]?.[campaignId];
 
       saveData(data);
 
-      // remove role
-      const campaignRole = interaction.guild.roles.cache.get(campaign.roleId);
-      if (campaignRole && member.roles.cache.has(campaignRole.id)) {
-        await member.roles.remove(campaignRole).catch(() => {});
-      }
+      await interaction.update({
+        content: '✅ You left the campaign successfully.',
+        components: []
+      });
 
-      await interaction.reply({
-        content: `✅ You left **${campaign.name}**. Your campaign stats and submitted clips for this campaign were removed.`,
-        ephemeral: true
+      return;
+    }
+
+    if (interaction.customId === 'cancel_leave_campaign') {
+
+      await interaction.update({
+        content: '❌ Campaign leave cancelled.',
+        components: []
       });
 
       return;
