@@ -1551,7 +1551,7 @@ client.on(Events.InteractionCreate, async interaction => {
         const embed = new EmbedBuilder()
           .setColor(0x57F287)
           .setDescription(
-            `🎫 Welcome ${interaction.user}. Staff will be with you shortly.\n\n' + 
+            `🎫 Welcome ${interaction.user}. Staff will be with you shortly.\n\n` + 
             `To close this press the close button.`
           );
 
