@@ -1539,6 +1539,14 @@ client.on(Events.InteractionCreate, async interaction => {
         });
 
         return;
+      } catch (err) {
+        console.error('OPEN TICKET ERROR:', err);
+
+        await interaction.reply({
+          content: `❌ Ticket error: ${err.message}`,
+          ephemeral: true
+        }).catch(() => {});
+        return;
       }
     }    
 
