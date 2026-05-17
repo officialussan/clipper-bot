@@ -1493,13 +1493,21 @@ client.on(Events.InteractionCreate, async interaction => {
               deny: [PermissionsBitField.Flags.ViewChannel]
             },
             {
-              id: userId,
+              id: client.user.id,
               allow: [
                 PermissionsBitField.Flags.ViewChannel,
                 PermissionsBitField.Flags.SendMessages,
                 PermissionsBitField.Flags.ReadMessageHistory,
-                PermissionsBitField.Flags.ManageChannels,
-                PermissionsBitField.Flags.ManageRoles
+                PermissionsBitField.Flags.EmbedLinks,
+                PermissionsBitField.Flags.ManageChannel
+              ]
+            },
+            {
+              id: userId,
+              allow: [
+                PermissionsBitField.Flags.ViewChannel,
+                PermissionsBitField.Flags.SendMessages,
+                PermissionsBitField.Flags.ReadMessageHistory              
               ]
             },
             {
