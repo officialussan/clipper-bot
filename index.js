@@ -1451,18 +1451,20 @@ client.on(Events.InteractionCreate, async interaction => {
 
     if (interaction.isButton() && interaction.customId === 'open_ticket') {
       const userId = interaction.user.id;
-      const now = Date.now();
-      const cooldownTime = 60 * 1000;
 
-      const lastUsed = ticketCooldowns.get(userId);
+      if (!STAFF_ROLE_ID) {
+        await interaction.reply({ content: '❌ STAFF_ROLE_ID is missing.', ephemeral: true });
+        return;
+      }
 
-      if (lastUsed && now - lastUsed < cooldownTime) {
-        const secondsLeft = Math.ceil((cooldownTime - (now - lastUsed)) / 1000);
+      if (!TICKET_CATEGORY_ID) {
+        await interaction.reply({ content: '❌ TICKET_CATEGORY_ID is missing.', ephemeral: true });
+        return;
+      }
 
-        await interaction.reply({
-          content: `⏳ Please wait ${secondsLeft}s before opening another ticket.`,
-          ephemeral: true
-        });
+      const category = interaction.guild.channels.cache.get(TICKET_CATEGORY_ID);
+      if (!category) {
+        await interaction.reply({ content: '❌ Ticket category not found. Check TICKET_CATEGORY_ID.', ephemeral: true });
         return;
       }
 
