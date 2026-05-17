@@ -1025,8 +1025,6 @@ client.on(Events.MessageCreate, async message => {
     }
   
     if (message.content.trim().toLowerCase() === '!ticketpanel') {
-      await message.reply('✅ Ticket command detected.');
-
       const embed = new EmbedBuilder()
         .setColor(0x57F287)
         .setTitle('🎫 Support Center')
@@ -1041,16 +1039,10 @@ client.on(Events.MessageCreate, async message => {
           .setStyle(ButtonStyle.Secondary)
       );
 
-      try {
-        await message.channel.send({
-          embeds: [embed],
-          components: [row]
-        });
-
-        console.log('Ticket panel sent.');
-      } catch (err) {
-        console.error('Ticket panel send error:', err);
-      }
+      await message.channel.send({
+        embeds: [embed],
+        components: [row]
+      });
 
       return;
     }
