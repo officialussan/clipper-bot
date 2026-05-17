@@ -1552,7 +1552,7 @@ client.on(Events.InteractionCreate, async interaction => {
           .setColor(0x57F287)
           .setDescription(
             `🎫 Welcome ${interaction.user}. Staff will be with you shortly.\n\n' + 
-            `To close this press the close button`,
+            `To close this press the close button.`
           );
 
         const row = new ActionRowBuilder().addComponents(
@@ -1563,7 +1563,7 @@ client.on(Events.InteractionCreate, async interaction => {
         );
 
         await channel.send({
-          embeds:[embed]
+          embeds:[embed],
           components: [row]
         });
 
