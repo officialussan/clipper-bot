@@ -1019,6 +1019,11 @@ client.on(Events.MessageCreate, async message => {
 
     console.log('MESSAGE RECEIVED:', message.content);
 
+    if (message.content.trim() === '!ping') {
+      await message.reply('✅ Bot can read messages.');
+      return;
+    }
+
     if (message.content === '!leaderboard') {
       const data = loadData();
       const leaderboard = buildLeaderboardEmbed(data, 1, 10);
