@@ -1296,6 +1296,10 @@ client.on(Events.MessageCreate, async message => {
     } 
 
     if (message.content === '!ticketpanel') {
+      if (!isAdmin(message.member)) {
+        await message.reply('❌ You must be an admin to use this command.');
+        return;
+      }
 
       const embed = new EmbedBuilder()
         .setColor(0x57F287)
@@ -1446,28 +1450,62 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
-    if (interaction.customId === 'open_ticket') {
+    if (interaction.isButton() && interaction.customId === 'open_ticket') {
+      const userId = interaction.user.id;
+      const now = Date.now();
+      const cooldownTime = 60 * 1000;
+
+      const lastUsed = ticketCooldowns.get(userId);
+
+      if (lastUsed && now - lastUsed < cooldownTime) {
+        const secondsLeft = Math.ceil((cooldownTime - (now - lastUsed)) / 1000);
+
+        await interaction.reply({
+          content: `⏳ Please wait ${secondsLeft}s before opening another ticket.`,
+          ephemeral: true
+        });
+        return;
+      }
+
+      const existingTicket = interaction.guild.channels.cache.find(
+        ch =>
+          ch.name === `ticket-${interaction.user.username.toLowerCase()}` &&
+          ch.parentId === TICKET_CATEGORY_ID
+      );
+
+      if (existingTicket) {
+        await interaction.reply({
+          content: `❌ You already have an open ticket: ${existingTicket}`,
+          ephemeral: true
+        });
+        return;
+      }
+
+      ticketCooldowns.set(userId, now);
 
       const channel = await interaction.guild.channels.create({
-        name: `ticket-${interaction.user.username}`,
+        name: `ticket-${interaction.user.username}`.toLowerCase(),
         type: ChannelType.GuildText,
+        parent: TICKET_CATEGORY_ID,
         permissionOverwrites: [
           {
             id: interaction.guild.id,
             deny: [PermissionsBitField.Flags.ViewChannel]
           },
           {
-            id: interaction.user.id,
+            id: userId,
             allow: [
               PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages
+              PermissionsBitField.Flags.SendMessages,
+              PermissionsBitField.Flags.ReadMessageHistory
             ]
           },
           {
             id: STAFF_ROLE_ID,
             allow: [
               PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages
+              PermissionsBitField.Flags.SendMessages,
+              PermissionsBitField.Flags.ReadMessageHistory
             ]
           }
         ]
@@ -1475,13 +1513,23 @@ client.on(Events.InteractionCreate, async interaction => {
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
+          .setCustomId('claim_ticket')
+          .setLabel('Claim')
+          .setStyle(ButtonStyle.Primary),
+
+        new ButtonBuilder()
+          .setCustomId('ticket_transcript')
+          .setLabel('Transcript')
+          .setStyle(ButtonStyle.Secondary),
+
+        new ButtonBuilder()
           .setCustomId('close_ticket')
-          .setLabel('Close Ticket')
+          .setLabel('Close')
           .setStyle(ButtonStyle.Danger)
       );
 
       await channel.send({
-        content: `Welcome ${interaction.user}`,
+        content: `🎫 Welcome ${interaction.user}. Staff will help you soon.\n\n<@&${STAFF_ROLE_ID}>`,
         components: [row]
       });
 
@@ -1489,18 +1537,8 @@ client.on(Events.InteractionCreate, async interaction => {
         content: `✅ Ticket created: ${channel}`,
         ephemeral: true
       });
-    }
 
-    if (interaction.customId === 'close_ticket') {
-
-      await interaction.reply({
-        content: '🗑 Closing ticket...',
-        ephemeral: true
-      });
-
-      setTimeout(async () => {
-        await interaction.channel.delete().catch(() => {});
-      }, 3000);
+      return;
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_view:')) {
