@@ -1027,7 +1027,7 @@ client.on(Events.MessageCreate, async message => {
     if (message.content.trim().toLowerCase() === '!ticketpanel') {
       const embed = new EmbedBuilder()
         .setColor(0x57F287)
-        .setTitle('🎫 Support Center')
+        .setTitle('Support Center')
         .setDescription(
           'Need help with campaigns, payments, submissions, or account issues?\n\nOpen a support ticket below.'
         );
