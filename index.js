@@ -1295,14 +1295,15 @@ client.on(Events.MessageCreate, async message => {
         .setColor(0x57F287)
         .setTitle('🎫 Support Center')
         .setDescription(
-          'Open a ticket for support, payments, appeals, or campaign issues.'
+          'Need help with campaigns, payments, submissions, or account issues?\n\nOpen a support ticket below.'
         );
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId('open_ticket')
           .setLabel('Open Ticket')
-          .setStyle(ButtonStyle.Success)
+          .setEmoji('🎫')
+          .setStyle(ButtonStyle.Secondary)
       );
 
       await message.channel.send({
