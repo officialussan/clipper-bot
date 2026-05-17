@@ -1027,15 +1027,16 @@ client.on(Events.MessageCreate, async message => {
     if (message.content.trim().toLowerCase() === '!ticketpanel') {
       const embed = new EmbedBuilder()
         .setColor(0x57F287)
-        .setTitle('Support Center')
+        .setTitle('<:whiteCE:1504904179905200148> Support Center')
         .setDescription(
-          'Need help with campaigns, payments, submissions, or account issues?\n\nOpen a support ticket below.'
+          'Need help with campaigns, payments, submissions, or account issues?\n\nOpen a support ticket below.⬇️'
         );
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId('open_ticket')
           .setLabel('Open Ticket')
+          .setEmoji('✉️')
           .setStyle(ButtonStyle.Secondary)
       );
 
@@ -1522,25 +1523,27 @@ client.on(Events.InteractionCreate, async interaction => {
 
         const row = new ActionRowBuilder().addComponents(
           new ButtonBuilder()
-            .setCustomId('claim_ticket')
-            .setLabel('Claim')
-            .setStyle(ButtonStyle.Primary),
-
-          new ButtonBuilder()
-            .setCustomId('ticket_transcript')
-            .setLabel('Transcript')
-            .setStyle(ButtonStyle.Secondary),
-
-          new ButtonBuilder()
             .setCustomId('close_ticket')
-            .setLabel('Close')
-            .setStyle(ButtonStyle.Danger)
+            .setLabel('🔒Close')
+            .setStyle(ButtonStyle.Secondary)
         );
 
         await channel.send({
           content: `🎫 Welcome ${interaction.user}. Staff will help you soon.\n\n<@&${STAFF_ROLE_ID}>`,
           components: [row]
         });
+
+        const logChannel = interaction.guild.channels.cache.get(TICKET_LOG_CHANNEL_ID);
+
+        if (logChannel) {
+          await logChannel.send({
+            content:
+              `🎫 **Ticket Created**\n\n` +
+              `**User:** ${interaction.user} (${interaction.user.id})\n` +
+              `**Channel:** ${channel}\n` +
+              `**Created At:** <t:${Math.floor(Date.now() / 1000)}:F>`
+          }).catch(() => {});
+        }
 
         await interaction.reply({
           content: `✅ Ticket created: ${channel}`,
@@ -1558,6 +1561,95 @@ client.on(Events.InteractionCreate, async interaction => {
         return;
       }
     }    
+
+    if (interaction.isButton() && interaction.customId === 'close_ticket') {
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('confirm_close_ticket')
+          .setLabel('Close')
+          .setStyle(ButtonStyle.Danger),
+
+        new ButtonBuilder()
+          .setCustomId('cancel_close_ticket')
+          .setLabel('Cancel')
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      await interaction.reply({
+        content: 'Are you sure you would like to close this ticket?',
+        components: [row]
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'cancel_close_ticket') {
+      await interaction.update({
+        content: '✅ Ticket close cancelled.',
+        components: []
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'confirm_close_ticket') {
+      await interaction.update({
+        content: `Ticket closed by ${interaction.user}`,
+        components: []
+      });
+
+      await interaction.channel.setName(
+        interaction.channel.name.replace('ticket-', 'closed-')
+      ).catch(() => {});
+
+      const controls = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('ticket_transcript')
+          .setLabel('Transcript')
+          .setStyle(ButtonStyle.Secondary),
+
+        new ButtonBuilder()
+          .setCustomId('reopen_ticket')
+          .setLabel('Open')
+          .setStyle(ButtonStyle.Success),
+
+        new ButtonBuilder()
+          .setCustomId('delete_ticket')
+          .setLabel('Delete')
+          .setStyle(ButtonStyle.Danger)
+      );
+
+      await interaction.channel.send({
+        content: 'Support team ticket controls',
+        components: [controls]
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'reopen_ticket') {
+      await interaction.channel.setName(
+        interaction.channel.name.replace('closed-', 'ticket-')
+      ).catch(() => {});
+
+      await interaction.reply({
+        content: `🔓 Ticket reopened by ${interaction.user}.`
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'delete_ticket') {
+      await interaction.reply({
+        content: '🗑 Deleting ticket in 5 seconds...'
+      });
+
+      setTimeout(async () => {
+        await interaction.channel.delete().catch(() => {});
+      }, 5000);
+
+      return;
+    }
 
     if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_view:')) {
       const campaignId = interaction.customId.split(':')[1];
