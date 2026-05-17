@@ -1498,8 +1498,7 @@ client.on(Events.InteractionCreate, async interaction => {
                 PermissionsBitField.Flags.ViewChannel,
                 PermissionsBitField.Flags.SendMessages,
                 PermissionsBitField.Flags.ReadMessageHistory,
-                PermissionsBitField.Flags.EmbedLinks,
-                PermissionsBitField.Flags.ManageChannel
+                PermissionsBitField.Flags.ManageChannels
               ]
             },
             {
