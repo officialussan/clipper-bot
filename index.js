@@ -12,6 +12,7 @@ const {
   TextInputStyle,
   StringSelectMenuBuilder,
   Events,
+  ChannelType,
   PermissionsBitField,
   EmbedBuilder
 } = require('discord.js');
@@ -1286,8 +1287,30 @@ client.on(Events.MessageCreate, async message => {
       });
 
       return;
-    }  
+    } 
 
+    if (message.content === '!ticketpanel') {
+
+      const embed = new EmbedBuilder()
+        .setColor(0x57F287)
+        .setTitle('🎫 Support Center')
+        .setDescription(
+          'Open a ticket for support, payments, appeals, or campaign issues.'
+        );
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('open_ticket')
+          .setLabel('Open Ticket')
+          .setStyle(ButtonStyle.Success)
+      );
+
+      await message.channel.send({
+        embeds: [embed],
+        components: [row]
+      });
+    } 
+    
     if (message.content === '!verifypanel') {
       if (!isAdmin(message.member)) {
         await message.reply('❌ You must be an admin to use this command.');
@@ -1412,6 +1435,63 @@ client.on(Events.InteractionCreate, async interaction => {
         ephemeral: true
       });
       return;
+    }
+
+    if (interaction.customId === 'open_ticket') {
+
+      const channel = await interaction.guild.channels.create({
+        name: `ticket-${interaction.user.username}`,
+        type: ChannelType.GuildText,
+        permissionOverwrites: [
+          {
+            id: interaction.guild.id,
+            deny: [PermissionsBitField.Flags.ViewChannel]
+          },
+          {
+            id: interaction.user.id,
+            allow: [
+              PermissionsBitField.Flags.ViewChannel,
+              PermissionsBitField.Flags.SendMessages
+            ]
+          },
+          {
+            id: STAFF_ROLE_ID,
+            allow: [
+              PermissionsBitField.Flags.ViewChannel,
+              PermissionsBitField.Flags.SendMessages
+            ]
+          }
+        ]
+      });
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('close_ticket')
+          .setLabel('Close Ticket')
+          .setStyle(ButtonStyle.Danger)
+      );
+
+      await channel.send({
+        content: `Welcome ${interaction.user}`,
+        components: [row]
+      });
+
+      await interaction.reply({
+        content: `✅ Ticket created: ${channel}`,
+        ephemeral: true
+      });
+    }
+
+    if (interaction.customId === 'close_ticket') {
+
+      await interaction.reply({
+        content: '🗑 Closing ticket...',
+        ephemeral: true
+      });
+
+      setTimeout(async () => {
+        await interaction.channel.delete().catch(() => {});
+      }, 3000);
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_view:')) {
