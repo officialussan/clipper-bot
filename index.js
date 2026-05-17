@@ -1450,97 +1450,97 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 
     if (interaction.isButton() && interaction.customId === 'open_ticket') {
-      const userId = interaction.user.id;
+      try {
+        const userId = interaction.user.id;
 
-      if (!STAFF_ROLE_ID) {
-        await interaction.reply({ content: '❌ STAFF_ROLE_ID is missing.', ephemeral: true });
-        return;
-      }
+        if (!STAFF_ROLE_ID) {
+          await interaction.reply({ content: '❌ STAFF_ROLE_ID is missing.', ephemeral: true });
+          return;
+        }
 
-      if (!TICKET_CATEGORY_ID) {
-        await interaction.reply({ content: '❌ TICKET_CATEGORY_ID is missing.', ephemeral: true });
-        return;
-      }
+        if (!TICKET_CATEGORY_ID) {
+          await interaction.reply({ content: '❌ TICKET_CATEGORY_ID is missing.', ephemeral: true });
+          return;
+        }
 
-      const category = interaction.guild.channels.cache.get(TICKET_CATEGORY_ID);
-      if (!category) {
-        await interaction.reply({ content: '❌ Ticket category not found. Check TICKET_CATEGORY_ID.', ephemeral: true });
-        return;
-      }
+        const category = interaction.guild.channels.cache.get(TICKET_CATEGORY_ID);
+        if (!category) {
+          await interaction.reply({ content: '❌ Ticket category not found. Check TICKET_CATEGORY_ID.', ephemeral: true });
+          return;
+        }
 
-      const existingTicket = interaction.guild.channels.cache.find(
-        ch =>
-          ch.name === `ticket-${interaction.user.username.toLowerCase()}` &&
-          ch.parentId === TICKET_CATEGORY_ID
-      );
+        const existingTicket = interaction.guild.channels.cache.find(
+          ch =>
+            ch.name === `ticket-${interaction.user.username.toLowerCase()}` &&
+            ch.parentId === TICKET_CATEGORY_ID
+        ); 
 
-      if (existingTicket) {
+        if (existingTicket) {
+          await interaction.reply({
+            content: `❌ You already have an open ticket: ${existingTicket}`,
+            ephemeral: true
+          });
+          return;
+        }
+
+        const channel = await interaction.guild.channels.create({
+          name: `ticket-${interaction.user.username}`.toLowerCase(),
+          type: ChannelType.GuildText,
+          parent: TICKET_CATEGORY_ID,
+          permissionOverwrites: [
+            {
+              id: interaction.guild.id,
+              deny: [PermissionsBitField.Flags.ViewChannel]
+            },
+            {
+              id: userId,
+              allow: [
+                PermissionsBitField.Flags.ViewChannel,
+                PermissionsBitField.Flags.SendMessages,
+                PermissionsBitField.Flags.ReadMessageHistory
+              ]
+            },
+            {
+              id: STAFF_ROLE_ID,
+              allow: [
+                PermissionsBitField.Flags.ViewChannel,
+                PermissionsBitField.Flags.SendMessages,
+                PermissionsBitField.Flags.ReadMessageHistory
+              ]
+            }
+          ]
+        });
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId('claim_ticket')
+            .setLabel('Claim')
+            .setStyle(ButtonStyle.Primary),
+
+          new ButtonBuilder()
+            .setCustomId('ticket_transcript')
+            .setLabel('Transcript')
+            .setStyle(ButtonStyle.Secondary),
+
+          new ButtonBuilder()
+            .setCustomId('close_ticket')
+            .setLabel('Close')
+            .setStyle(ButtonStyle.Danger)
+        );
+
+        await channel.send({
+          content: `🎫 Welcome ${interaction.user}. Staff will help you soon.\n\n<@&${STAFF_ROLE_ID}>`,
+          components: [row]
+        });
+
         await interaction.reply({
-          content: `❌ You already have an open ticket: ${existingTicket}`,
+          content: `✅ Ticket created: ${channel}`,
           ephemeral: true
         });
+
         return;
       }
-
-      ticketCooldowns.set(userId, now);
-
-      const channel = await interaction.guild.channels.create({
-        name: `ticket-${interaction.user.username}`.toLowerCase(),
-        type: ChannelType.GuildText,
-        parent: TICKET_CATEGORY_ID,
-        permissionOverwrites: [
-          {
-            id: interaction.guild.id,
-            deny: [PermissionsBitField.Flags.ViewChannel]
-          },
-          {
-            id: userId,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages,
-              PermissionsBitField.Flags.ReadMessageHistory
-            ]
-          },
-          {
-            id: STAFF_ROLE_ID,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages,
-              PermissionsBitField.Flags.ReadMessageHistory
-            ]
-          }
-        ]
-      });
-
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('claim_ticket')
-          .setLabel('Claim')
-          .setStyle(ButtonStyle.Primary),
-
-        new ButtonBuilder()
-          .setCustomId('ticket_transcript')
-          .setLabel('Transcript')
-          .setStyle(ButtonStyle.Secondary),
-
-        new ButtonBuilder()
-          .setCustomId('close_ticket')
-          .setLabel('Close')
-          .setStyle(ButtonStyle.Danger)
-      );
-
-      await channel.send({
-        content: `🎫 Welcome ${interaction.user}. Staff will help you soon.\n\n<@&${STAFF_ROLE_ID}>`,
-        components: [row]
-      });
-
-      await interaction.reply({
-        content: `✅ Ticket created: ${channel}`,
-        ephemeral: true
-      });
-
-      return;
-    }
+    }    
 
     if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_view:')) {
       const campaignId = interaction.customId.split(':')[1];
