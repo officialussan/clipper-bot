@@ -2539,60 +2539,6 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
-    if (interaction.isButton() && interaction.customId.startsWith('leave_campaign:')) {
-      const campaignId = interaction.customId.split(':')[1];
-      const campaign = CAMPAIGNS[campaignId];
-
-      if (!campaign) {
-        await interaction.reply({ content: '❌ Campaign not found.', ephemeral: true });
-        return;
-      }
-
-      const data = loadData();
-      const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
-
-      if (!member) {
-        await interaction.reply({ content: '❌ User not found.', ephemeral: true });
-        return;
-      }
-
-      const userRecord = ensureUser(data, member);
-
-      if (Array.isArray(userRecord.campaigns)) {
-        userRecord.campaigns = userRecord.campaigns.filter(c => c !== campaignId);
-      }
-
-      if (userRecord.campaignAccounts?.[campaignId]) {
-        delete userRecord.campaignAccounts[campaignId];
-      }
-
-      if (userRecord.campaignStats?.[campaignId]) {
-        delete userRecord.campaignStats[campaignId];
-      }
-
-      if (data.clips) {
-        for (const [clipId, clip] of Object.entries(data.clips)) {
-          if (clip.userId === interaction.user.id && clip.campaignId === campaignId) {
-            delete data.clips[clipId];
-          }
-        }
-      }
-
-      const campaignRole = interaction.guild.roles.cache.get(campaign.roleId);
-      if (campaignRole && member.roles.cache.has(campaignRole.id)) {
-        await member.roles.remove(campaignRole).catch(() => {});
-      }
-
-      saveData(data);
-
-      await interaction.reply({
-        content: `✅ You left **${campaign.name}**. Campaign accounts, clips, and campaign stats were removed.`,
-        ephemeral: true
-      });
-
-      return;
-    }
-
     if (interaction.isButton() && interaction.customId.startsWith('clip_approve:')) {
       if (!interaction.guild || !isAdmin(interaction.member)) {
         await interaction.reply({ content: '❌ You are not allowed to do this.', ephemeral: true });
