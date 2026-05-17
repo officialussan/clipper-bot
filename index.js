@@ -2506,16 +2506,20 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
     
-    if  (interaction.isStringSelectMenu() && interaction.customId.startsWith('leave_campaign:')) {
-
+    if (interaction.isButton() && interaction.customId.startsWith('leave_campaign:')) {
       const campaignId = interaction.customId.split(':')[1];
+      const campaign = CAMPAIGNS[campaignId];
+
+      if (!campaign) {
+        await interaction.reply({ content: '❌ Campaign not found.', ephemeral: true });
+        return;
+      }
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`confirm_leave_campaign:${campaignId}`)
-          .setLabel('Leave Campaign')
+          .setLabel('Yes, Leave')
           .setStyle(ButtonStyle.Danger),
-
         new ButtonBuilder()
           .setCustomId('cancel_leave_campaign')
           .setLabel('Cancel')
@@ -2523,44 +2527,61 @@ client.on(Events.InteractionCreate, async interaction => {
       );
 
       await interaction.reply({
-        content: '⚠️ Are you sure you want to leave this campaign?',
+        content: `⚠️ Are you sure you want to leave **${campaign.name}**?`,
         components: [row],
         ephemeral: true
       });
- 
+
       return;
     }
 
-    if  (interaction.customId.startsWith('confirm_leave_campaign:')) {
-
+    if (interaction.isButton() && interaction.customId.startsWith('confirm_leave_campaign:')) {
       const campaignId = interaction.customId.split(':')[1];
+      const campaign = CAMPAIGNS[campaignId];
 
-      // REMOVE ROLE
-      const campaignRole = interaction.guild.roles.cache.get(
-        CAMPAIGNS[campaignId].roleId
-      );
-
-      if (campaignRole) {
-        await interaction.member.roles.remove(campaignRole).catch(() => {});
+      if (!campaign) {
+        await interaction.update({ content: '❌ Campaign not found.', components: [] });
+        return;
       }
 
-      // REMOVE USER DATA
-      delete data.campaignAccounts?.[interaction.user.id]?.[campaignId];
+      const data = loadData();
+      const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+
+      if (!member) {
+        await interaction.update({ content: '❌ Could not load your server profile.', components: [] });
+        return;
+      }
+
+      const userRecord = ensureUser(data, member);
+
+      userRecord.campaigns = (userRecord.campaigns || []).filter(id => id !== campaignId);
+
+      if (userRecord.campaignAccounts?.[campaignId]) {
+        delete userRecord.campaignAccounts[campaignId];
+      }
+
+      if (userRecord.campaignStats?.[campaignId]) {
+        delete userRecord.campaignStats[campaignId];
+      }
+
+      const campaignRole = interaction.guild.roles.cache.get(campaign.roleId);
+      if (campaignRole && member.roles.cache.has(campaignRole.id)) {
+        await member.roles.remove(campaignRole).catch(() => {});
+      }
 
       saveData(data);
 
       await interaction.update({
-        content: '✅ You left the campaign successfully.',
+        content: `✅ You left **${campaign.name}** successfully.`,
         components: []
       });
 
       return;
     }
 
-    if (interaction.customId === 'cancel_leave_campaign') {
-
+    if (interaction.isButton() && interaction.customId === 'cancel_leave_campaign') {
       await interaction.update({
-        content: '❌ Campaign leave cancelled.',
+        content: '✅ Cancelled. You are still in the campaign.',
         components: []
       });
 
