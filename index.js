@@ -1041,10 +1041,16 @@ client.on(Events.MessageCreate, async message => {
           .setStyle(ButtonStyle.Secondary)
       );
 
-      await message.channel.send({
-        embeds: [embed],
-        components: [row]
-      });
+      try {
+        await message.channel.send({
+          embeds: [embed],
+          components: [row]
+        });
+
+        console.log('Ticket panel sent.');
+      } catch (err) {
+        console.error('Ticket panel send error:', err);
+      }
 
       return;
     }
