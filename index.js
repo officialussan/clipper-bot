@@ -1529,10 +1529,17 @@ client.on(Events.MessageCreate, async message => {
           .setDisabled(true)
       );
 
-      await message.channel.send({
-        content: campaign.panelText,
-        components: [row]
-      });
+      try {
+        await message.channel.send({
+          content: campaign.panelText,
+          components: [row]
+        });
+
+        console.log('Campaign panel sent.');
+      } catch (err) {
+        console.error('CAMPAIGN PANEL SEND ERROR:', err);
+        await message.reply(`❌ Send error: ${err.message}`);
+      }
 
       return;
     }
