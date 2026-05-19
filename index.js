@@ -109,7 +109,7 @@ All you have to do is **register for the campaign below** and follow the guideli
 
 ## <a:Cash1:1504871843419521115> Payment Details
 
-> **Campaign Budget:** $4,687 per week  
+> **Campaign Budget:** $2,000 per week  
 > **Rate:** $400 per 1M eligible views  
 > **Eligible Views:** Tier 1 countries only  
 > **Payout Schedule:** Weekly  
@@ -160,7 +160,7 @@ All you have to do is **register for the campaign below** and follow the guideli
 
 ## <a:Cash1:1504871843419521115> Payment Details
 
-> **Campaign Budget:** $7,500 per week
+> **Campaign Budget:** $2,100 per week
 > **Rate:** $300 per 1M eligible views
 > **Eligible Traffic:** Tier 1 countries only
 > **Payout Schedule:** Weekly
