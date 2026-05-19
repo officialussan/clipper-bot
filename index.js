@@ -1466,7 +1466,7 @@ client.on(Events.MessageCreate, async message => {
     }
 
     
-    if (message.content.startsWith('!campaignpanel')) {
+    if (message.content.trim().toLowerCase().startsWith('!panel')) {
       if (!isAdmin(message.member)) {
         await message.reply('❌ You must be an admin to use this command.');
         return;
@@ -1476,73 +1476,58 @@ client.on(Events.MessageCreate, async message => {
       const campaignId = args[1];
 
       if (!campaignId || !CAMPAIGNS[campaignId]) {
-        await message.channel.send(
-          `❌ Usage: \`!campaignpanel campaign_id\`\nAvailable campaigns: ${Object.keys(CAMPAIGNS).join(', ')}`
+        await message.reply(
+          `❌ Usage: \`!panel campaign_id\`\nAvailable campaigns: ${Object.keys(CAMPAIGNS).join(', ')}`
         );
         return;
       }
 
       const campaign = CAMPAIGNS[campaignId];
 
-      if (!campaign.panelText) {
-        await message.channel.send(`❌ Campaign **${campaignId}** has no panelText.`);
-        return;
-      }
-
-      await message.delete().catch(() => {});
-
-      let button;
-
       const panelData = loadData();
+      const totals = getCampaignTotals(panelData, campaign.id);
 
-      const totals = getCampaignTotals(data, campaign.id);
-
-      const cappedViews = Math.min(
-        totals.views,
-        campaign.viewCap || totals.views
-      );
-
+      const cappedViews = Math.min(totals.views, campaign.viewCap || totals.views);
       const payout = (cappedViews / 1000000) * (campaign.ratePerMillion || 0);
 
       const fulfilledPercent = campaign.weeklyBudget
         ? ((payout / campaign.weeklyBudget) * 100).toFixed(1)
-        : 0;
+        : '0.0';
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`join_campaign:${campaign.id}`)
           .setLabel('Join Campaign')
-          .setEmoji('<a:flyin:1506234392920723546>')
           .setStyle(ButtonStyle.Success),
 
         new ButtonBuilder()
           .setCustomId(`campaign_status:${campaign.id}`)
           .setLabel('Campaign Status')
-          .setEmoji('<a:chart1:1504773558415523931>')
           .setStyle(ButtonStyle.Primary),
 
         new ButtonBuilder()
-          .setCustomId(`disabled`)
+          .setCustomId(`campaign_fulfilled:${campaign.id}`)
           .setLabel(`Fulfilled: ${fulfilledPercent}%`)
-          .setEmoji('<a:Loadin:1506234461459714100>')
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(true)
       );
 
       try {
+        await message.delete().catch(() => {});
+
         await message.channel.send({
           content: campaign.panelText,
           components: [row]
         });
 
-        console.log('Campaign panel sent.');
+        console.log(`Panel sent for ${campaignId}`);
       } catch (err) {
-        console.error('CAMPAIGN PANEL SEND ERROR:', err);
-        await message.reply(`❌ Send error: ${err.message}`);
-      }
-
-      return;
+        console.error('PANEL SEND ERROR:', err);
+        await message.reply(`❌ Panel send error: ${err.message}`);
     }
+
+    return;
+  }
   } catch (error) {
     console.error('MessageCreate error:', error);
   }
