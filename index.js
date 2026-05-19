@@ -649,9 +649,8 @@ function buildCampaignStatusEmbed(campaign, data) {
       `**Remaining:** $${formatNumber(remaining)}\n` +
       `**Payout:** $${formatNumber(payout)} (${fulfilledPercent.toFixed(1)}%)\n\n` +
 
-      `<a:warning:1504774411280973864> Once we hit the **${formatNumber(campaign.viewCap)} view cap**, any views after that won't be paid, so post early to secure your payout.`
-    )
-    .setFooter({ text: `<:whiteCE:1504904179905200148> Powered by Creators Elite | ${new Date().toLocaleString()}` });
+      `<a:warning:1504774411280973864> Once we hit the **${formatNumber(campaign.viewCap)} view cap**, any views after that won't be paid, so post early to secure your payout.\n\n` +
+      `<:whiteCE:1504904179905200148> Powered by Creators Elite | ${new Date().toLocaleString()}`
 }
 
 function makeClipId() {
@@ -1498,17 +1497,20 @@ client.on(Events.MessageCreate, async message => {
         new ButtonBuilder()
           .setCustomId(`join_campaign:${campaign.id}`)
           .setLabel('Join Campaign')
+          .setEmoji('<a:flyin:1506234392920723546>')
           .setStyle(ButtonStyle.Success),
 
         new ButtonBuilder()
           .setCustomId(`campaign_status:${campaign.id}`)
           .setLabel('Campaign Status')
+          .setEmoji('<a:chart1:1504773558415523931>')
           .setStyle(ButtonStyle.Primary),
 
         new ButtonBuilder()
           .setCustomId(`campaign_fulfilled:${campaign.id}`)
           .setLabel(`Fulfilled: ${fulfilledPercent}%`)
           .setStyle(ButtonStyle.Secondary)
+          .setEmoji('<a:Loadin:1506234461459714100>')
           .setDisabled(true)
       );
 
