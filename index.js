@@ -306,6 +306,16 @@ function makeApplicationId() {
   return `app_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 }
 
+function getCampaignCycle(startDate) {
+  const start = new Date(startDate);
+  const now = new Date();
+
+  const diffMs = now - start;
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  return Math.floor(diffDays / 7);
+}
+
 function getStatusLabel(status) {
   return {
     pending: 'Pending',
@@ -486,21 +496,34 @@ function ensureCampaignStats(userRecord, campaignId) {
   return userRecord.campaignStats[campaignId];
 }
 
-function buildCampaignStatsEmbed(userRecord, campaignId, campaignName) {
+function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName) {
   const stats = ensureCampaignStats(userRecord, campaignId);
 
   const campaign = CAMPAIGNS[campaignId];
+  const currentCycle = getCampaignCycle(campaign.startDate);
   const payoutThreshold = campaign?.payoutThreshold || 100000;
 
-  const pendingVideos = Math.max(
-    stats.videosPosted - stats.videosApproved - stats.videosRejected,
-    0
+  
+
+  const userClips = Object.values(data.clips || {}).filter(clip =>
+    clip.userId === userRecord.discordId &&
+    clip.campaignId === campaignId &&
+    clip.cycle === currentCycle
   );
 
-  const viewsNeeded = Math.max(payoutThreshold - stats.totalViews, 0);
+  const approvedClips = userClips.filter(c => c.status === 'approved');
+  const rejectedClips = userClips.filter(c => c.status === 'rejected');
+  const pendingClips = userClips.filter(c => c.status === 'pending');
+
+  const totalViews = approvedClips.reduce((sum, c) => sum + (c.views || 0), 0);
+  const moneyMade = approvedClips.reduce((sum, c) => sum + (c.moneyMade || 0), 0);
+
+  const pendingVideos = pendingClips.length;
+
+  const viewsNeeded = Math.max(payoutThreshold - totalViews, 0);
 
   const payoutText =
-    stats.totalViews >= payoutThreshold
+    totalViews >= payoutThreshold
       ? `Eligible for payout.\n**Money Made:** $${formatNumber(stats.moneyMade)}`
       : `You need **${formatNumber(viewsNeeded)}** more views to reach **${formatNumber(payoutThreshold)}** views for payout.`;
 
@@ -508,11 +531,11 @@ function buildCampaignStatsEmbed(userRecord, campaignId, campaignName) {
     .setColor(0x7ED957)
     .setDescription(
       `🎬 **Campaign Stats - ${campaignName}**\n\n` +
-      `📊 **Total Views**\n${formatNumber(stats.totalViews)}\n\n` +
+      `📊 **Total Views**\n${formatNumber(totalViews)}\n\n` +
       `💰 **Payout (Target: ${formatNumber(payoutThreshold)} Views)**\n${payoutText}\n\n` +
-      `🟢 **Approved Videos**\n${stats.videosApproved}\n\n` +
+      `🟢 **Approved Videos**\n${approvedClips.length}\n\n` +
       `🟡 **Pending Videos**\n${pendingVideos}\n\n` +
-      `🔴 **Rejected Videos**\n${stats.videosRejected}\n\n` +
+      `🔴 **Rejected Videos**\n${rejectedClips.length}\n\n` +
       `🎞️ **View Your Clips**\nClick the button below to check the clips submitted for this campaign.`
     )
     .setFooter({ text: `Last update | ${new Date().toLocaleString()}` });
@@ -2418,7 +2441,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (links.length === 0) {
         await interaction.reply({ content: '❌ Please paste at least one link.', ephemeral: true });
         return;
-      }
+      } 
 
       if (links.length > 20) {
         await interaction.reply({ content: '❌ You can submit up to 20 links at once.', ephemeral: true });
@@ -2834,6 +2857,13 @@ client.on(Events.InteractionCreate, async interaction => {
       }
 
       clip.status = 'approved';
+      
+      clip.cycle = getCampaignCycle(
+        CAMPAIGNS[clip.campaignId].startDate
+      );
+
+      clip.approvedAt = Date.now();
+
       clip.views = views;
       clip.moneyMade = payout;
       data.clips[clipId] = clip;
