@@ -1493,7 +1493,7 @@ client.on(Events.MessageCreate, async message => {
 
       let button;
 
-      const data = loadData();
+      const panelData = loadData();
 
       const totals = getCampaignTotals(data, campaign.id);
 
@@ -1502,9 +1502,7 @@ client.on(Events.MessageCreate, async message => {
         campaign.viewCap || totals.views
       );
 
-      const payout = (
-        cappedViews / 1000000
-      ) * (campaign.ratePerMillion || 0);
+      const payout = (cappedViews / 1000000) * (campaign.ratePerMillion || 0);
 
       const fulfilledPercent = campaign.weeklyBudget
         ? ((payout / campaign.weeklyBudget) * 100).toFixed(1)
