@@ -651,6 +651,7 @@ function buildCampaignStatusEmbed(campaign, data) {
 
       `<a:warning:1504774411280973864> Once we hit the **${formatNumber(campaign.viewCap)} view cap**, any views after that won't be paid, so post early to secure your payout.\n\n` +
       `<:whiteCE:1504904179905200148> Powered by Creators Elite | ${new Date().toLocaleString()}`
+  );
 }
 
 function makeClipId() {
