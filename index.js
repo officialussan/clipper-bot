@@ -76,19 +76,17 @@ Click the button below to start clipping and earning:`
 
   tony: {
     id: 'tony',
-
     name: '<:tr:1505143223507750973> Tony Robbins Clipping Campaign',
-
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
-
     payoutThreshold: 25000,
-
+    weeklyBudget: 2000,
+    startDate: '2026-05-18,
+    ratePerMillion: 400,
+    viewCap: 5000000,
     staffChannelId: process.env.TONY_STAFF_CHANNEL_ID,
- 
     roleId: process.env.TONY_ROLE_ID,
-
     entryChannelId: process.env.TONY_ENTRY_CHANNEL_ID,
-
+    
     panelText: `# <a:fire1:1504871649491554487> **Earn Money Posting Clips – Tony Robbins Clipping Campaign**
 
 Earn money by posting high-retention clips and edits from Tony Robbins content across short-form platforms. Your goal is simple: create engaging clips, generate views, and grow your pages while earning from performance.
@@ -129,6 +127,10 @@ Click the button below to start clipping and earning.`
     name: '<:SC:1505154364229156954> Steven Crowder Clipping Campaign',
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
     payoutThreshold: 35000,
+    weeklyBudget: 2100,
+    startDate: '2026-04-28,
+    ratePerMillion: 300,
+    viewCap: 7000000,
     staffChannelId: process.env.CROWDER_STAFF_CHANNEL_ID,
     roleId: process.env.CROWDER_ROLE_ID,
     entryChannelId: process.env.CROWDER_ENTRY_CHANNEL_ID,
@@ -554,6 +556,8 @@ function buildSocialStaffButtons(id, status) {
     ];
   }
 
+  
+
   if (status === 'verifying') {
     return [
       new ActionRowBuilder().addComponents(
@@ -570,6 +574,84 @@ function buildSocialStaffButtons(id, status) {
   }
 
   return [];
+}
+
+function getCampaignPeriod(startDate) {
+  const start = new Date(startDate);
+  const now = new Date();
+
+  const diffDays = Math.floor((now - start) / (1000 * 60 * 60 * 24));
+  const weekNumber = Math.floor(diffDays / 7);
+
+  const periodStart = new Date(start);
+  periodStart.setDate(start.getDate() + weekNumber * 7);
+
+  const periodEnd = new Date(periodStart);
+  periodEnd.setDate(periodStart.getDate() + 7);
+
+  return { periodStart, periodEnd };
+}
+
+function formatDateShort(date) {
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric'
+  });
+}
+
+function getCampaignTotals(data, campaignId) {
+  let users = 0;
+  let videos = 0;
+  let views = 0;
+
+  for (const user of Object.values(data.users || {})) {
+    if (user.campaigns?.includes(campaignId)) users++;
+
+    const statsByPlatform = user.campaignStats?.[campaignId] || {};
+
+    for (const stats of Object.values(statsByPlatform)) {
+      videos += stats.videosApproved || 0;
+      views += stats.totalViews || 0;
+    }
+  }
+
+  return { users, videos, views };
+}
+
+function buildCampaignStatusEmbed(campaign, data) {
+  const { periodStart, periodEnd } = getCampaignPeriod(campaign.startDate);
+  const totals = getCampaignTotals(data, campaign.id);
+
+  const cappedViews = Math.min(totals.views, campaign.viewCap || totals.views);
+  const payout = (cappedViews / 1000000) * (campaign.ratePerMillion || 0);
+  const remaining = Math.max((campaign.weeklyBudget || 0) - payout, 0);
+  const fulfilledPercent = campaign.weeklyBudget
+    ? Math.min((payout / campaign.weeklyBudget) * 100, 100)
+    : 0;
+
+  return new EmbedBuilder()
+    .setColor(0x7ED957)
+    .setTitle(campaign.name)
+    .setDescription(
+      `<a:redalert:1504777207648620595> **Campaign Status**\n` +
+      `**Status:** Active\n\n` +
+
+      `📅 **Campaign Period**\n` +
+      `${formatDateShort(periodStart)} - ${formatDateShort(periodEnd)}\n\n` +
+
+      `<a:rocket1:1504872045849346140> **Performance Metrics**\n` +
+      `**Users:** ${totals.users}\n` +
+      `**Videos:** ${totals.videos}\n` +
+      `**Views:** ${formatNumber(totals.views)}\n\n` +
+
+      `<a:Cash1:1504871843419521115> **Payout & Budget**\n` +
+      `**Budget:** $${formatNumber(campaign.weeklyBudget)} / week\n` +
+      `**Remaining:** $${formatNumber(remaining)}\n` +
+      `**Payout:** $${formatNumber(payout)} (${fulfilledPercent.toFixed(1)}%)\n\n` +
+
+      `<a:warning:1504774411280973864> Once we hit the **${formatNumber(campaign.viewCap)} view cap**, any views after that won't be paid, so post early to secure your payout.`
+    )
+    .setFooter({ text: `<:whiteCE:1504904179905200148> Powered by Creators Elite | ${new Date().toLocaleString()}` });
 }
 
 function makeClipId() {
@@ -1411,19 +1493,43 @@ client.on(Events.MessageCreate, async message => {
 
       let button;
 
-      if (campaign.externalJoinUrl) {
-        button = new ButtonBuilder()
-          .setLabel('Join Campaign')
-          .setStyle(ButtonStyle.Link)
-          .setURL(campaign.externalJoinUrl);
-      } else {
-        button = new ButtonBuilder()
+      const data = loadData();
+
+      const totals = getCampaignTotals(data, campaign.id);
+
+      const cappedViews = Math.min(
+        totals.views,
+        campaign.viewCap || totals.views
+      );
+
+      const payout = (
+        cappedViews / 1000000
+      ) * (campaign.ratePerMillion || 0);
+
+      const fulfilledPercent = campaign.weeklyBudget
+        ? ((payout / campaign.weeklyBudget) * 100).toFixed(1)
+        : 0;
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
           .setCustomId(`join_campaign:${campaign.id}`)
           .setLabel('Join Campaign')
-          .setStyle(ButtonStyle.Success);
-      }
+          .setEmoji('<a:flyin:1506234392920723546>')
+          .setStyle(ButtonStyle.Success),
 
-      const row = new ActionRowBuilder().addComponents(button);
+        new ButtonBuilder()
+          .setCustomId(`campaign_status:${campaign.id}`)
+          .setLabel('Campaign Status')
+          .setEmoji('<a:chart1:1504773558415523931>')
+          .setStyle(ButtonStyle.Primary),
+
+        new ButtonBuilder()
+          .setCustomId(`disabled`)
+          .setLabel(`Fulfilled: ${fulfilledPercent}%`)
+          .setEmoji('<a:Loadin:1506234461459714100>')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(true)
+      );
 
       await message.channel.send({
         content: campaign.panelText,
@@ -1714,6 +1820,29 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await interaction.reply({
         content: `🌐 **${campaign.name} - Accounts**\n\n${text}`,
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('campaign_status:')) {
+      const campaignId = interaction.customId.split(':')[1];
+      const campaign = CAMPAIGNS[campaignId];
+
+      if (!campaign) {
+        await interaction.reply({
+          content: '❌ Campaign not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const data = loadData();
+      const embed = buildCampaignStatusEmbed(campaign, data);
+
+      await interaction.reply({
+        embeds: [embed],
         ephemeral: true
       });
 
