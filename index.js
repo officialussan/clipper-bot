@@ -17,6 +17,31 @@ const {
   EmbedBuilder
 } = require('discord.js');
 
+const { MongoClient } = require('mongodb');
+
+const mongoClient = new MongoClient(process.env.MONGO_URI, {
+  serverSelectionTimeoutMS: 30000,
+  connectTimeoutMS: 30000,
+});
+
+let mongoDb = null;
+
+async function connectMongo() {
+  if (!process.env.MONGO_URI) {
+    console.log('⚠️ MONGO_URI missing. MongoDB disabled.');
+    return;
+  }
+
+  try {
+    await mongoClient.connect();
+    mongoDb = mongoClient.db('clipperBot');
+    console.log('✅ MongoDB connected');
+  } catch (err) {
+    mongoDb = null;
+    console.error('❌ MongoDB connection error:', err.message);
+  }
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -36,7 +61,8 @@ const TICKET_LOG_CHANNEL_ID = process.env.TICKET_LOG_CHANNEL_ID;
 const ticketCooldowns = new Map();
 const claimedTickets = new Map();
 
-const dataFilePath = path.join(__dirname, 'data.json');
+const dataFilePath =
+  process.env.DATA_FILE_PATH || path.join(__dirname, 'data.json');
 
 const CAMPAIGNS = {
   michael: {
@@ -2221,6 +2247,20 @@ client.on(Events.InteractionCreate, async interaction => {
       request.status = 'approved';
       data.campaignAccountRequests[requestId] = request;
 
+      if (!userRecord.campaignAccounts) {
+        userRecord.campaignAccounts = {};
+      }
+
+      if (!userRecord.campaignAccounts[request.campaignId]) {
+        userRecord.campaignAccounts[request.campaignId] = {};
+      }
+
+      userRecord.campaignAccounts[request.campaignId][request.platform] = {
+        username: request.username,
+        verified: true,
+        addedAt: Date.now()
+      };
+
       saveData(data);
       await updateCampaignAccountStaffMessage(interaction.guild, request);
       
@@ -3467,5 +3507,7 @@ When done, click the button below.`,
     }
   }
 });
+
+// connectMongo();
 
 client.login(process.env.TOKEN);
