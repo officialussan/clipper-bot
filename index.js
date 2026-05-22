@@ -19,28 +19,7 @@ const {
 
 const { MongoClient } = require('mongodb');
 
-const mongoClient = new MongoClient(process.env.MONGO_URI, {
-  serverSelectionTimeoutMS: 30000,
-  connectTimeoutMS: 30000,
-});
-
-let mongoDb = null;
-
-async function connectMongo() {
-  if (!process.env.MONGO_URI) {
-    console.log('⚠️ MONGO_URI missing. MongoDB disabled.');
-    return;
-  }
-
-  try {
-    await mongoClient.connect();
-    mongoDb = mongoClient.db('clipperBot');
-    console.log('✅ MongoDB connected');
-  } catch (err) {
-    mongoDb = null;
-    console.error('❌ MongoDB connection error:', err.message);
-  }
-}
+const axios = require('axios');
 
 const client = new Client({
   intents: [
@@ -1151,6 +1130,93 @@ function buildCampaignStatsEmbed(userRecord, campaignId, campaignName) {
     .setFooter({ text: `Last update | ${new Date().toLocaleString()}` });
 }
 
+async function getTikTokViews(url) {
+  const res = await axios.get(
+    `https://www.tikwm.com/api/?url=${encodeURIComponent(url)}`,
+    { timeout: 15000 }
+  );
+
+  return Number(res.data?.data?.play_count || 0);
+}
+
+function getYouTubeVideoId(url) {
+  const match = url.match(/(?:shorts\/|watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  return match ? match[1] : null;
+}
+
+async function getYouTubeViews(url) {
+  const videoId = getYouTubeVideoId(url);
+  if (!videoId) return 0;
+
+  const res = await axios.get('https://www.googleapis.com/youtube/v3/videos', {
+    timeout: 15000,
+    params: {
+      part: 'statistics',
+      id: videoId,
+      key: process.env.YOUTUBE_API_KEY
+    }
+  });
+
+  return Number(res.data?.items?.[0]?.statistics?.viewCount || 0);
+}
+
+async function fetchClipViews(clip) {
+  if (clip.platform === 'tiktok') return await getTikTokViews(clip.url);
+  if (clip.platform === 'youtube') return await getYouTubeViews(clip.url);
+  return clip.rawViews || 0;
+}
+
+let trackingRunning = false;
+
+async function autoTrackClipViews() {
+  if (trackingRunning) return;
+  trackingRunning = true;
+
+  try {
+    const data = loadData();
+
+    for (const [clipId, clip] of Object.entries(data.clips || {})) {
+      if (clip.status !== 'approved') continue;
+      if (!clip.url) continue;
+
+      const lastChecked = clip.lastChecked || 0;
+      if (Date.now() - lastChecked < 30 * 60 * 1000) continue;
+
+      try {
+        const currentViews = await fetchClipViews(clip);
+
+        const startingViews = clip.startingViews || 0;
+        const earnedViews = Math.max(currentViews - startingViews, 0);
+
+        clip.currentViews = currentViews;
+        clip.views = earnedViews;
+        clip.lastChecked = Date.now();
+        clip.trackingError = null;
+
+        const campaign = CAMPAIGNS[clip.campaignId];
+        const rate = campaign?.ratePerMillion || 0;
+
+        clip.moneyMade = (earnedViews / 1000000) * rate;
+
+        data.clips[clipId] = clip;
+      } catch (err) {
+        clip.trackingError = err.message;
+        clip.lastChecked = Date.now();
+        data.clips[clipId] = clip;
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    saveData(data);
+    console.log('✅ Auto tracking completed');
+  } catch (err) {
+    console.error('❌ Auto tracking failed:', err);
+  } finally {
+    trackingRunning = false;
+  }
+}
+
 async function updateSocialStaffMessage(guild, request) {
   const ch = guild.channels.cache.get(process.env.SOCIAL_STAFF_CHANNEL_ID);
   if (!ch) return;
@@ -1166,8 +1232,11 @@ async function updateSocialStaffMessage(guild, request) {
   }
 }
 
-client.once(Events.ClientReady, c => {
-  console.log(`Online as ${c.user.tag}`);
+client.once(Events.ClientReady, () => {
+  console.log(`Online as ${client.user.tag}`);
+
+  autoTrackClipViews();
+  setInterval(autoTrackClipViews, 30 * 60 * 1000);
 });
 
 client.on(Events.MessageCreate, async message => {
@@ -2806,121 +2875,52 @@ client.on(Events.InteractionCreate, async interaction => {
 
     if (interaction.isButton() && interaction.customId.startsWith('clip_approve:')) {
       if (!interaction.guild || !isAdmin(interaction.member)) {
-        await interaction.reply({ content: '❌ You are not allowed to do this.', ephemeral: true });
-        return;
-      }
-
-      const clipId = interaction.customId.split(':')[1];
-      const data = loadData();
-      const clip = data.clips?.[clipId];
-
-      if (!clip) {
-        await interaction.reply({ content: '❌ Clip not found.', ephemeral: true });
-        return;
-      }
-
-      const modal = new ModalBuilder()
-        .setCustomId(`clip_approve_modal:${clipId}`)
-        .setTitle('Approve Clip');
-
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('clip_views')
-            .setLabel('Views')
-            .setPlaceholder('50000')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-        ),
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('clip_payout')
-            .setLabel('Payout in dollars')
-            .setPlaceholder('80')
-            .setStyle(TextInputStyle.Short)
-           .setRequired(true)
-        )
-      );
-
-      await interaction.showModal(modal);
-      return;
-    }
-
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('clip_approve_modal:')) {
-      if (!interaction.guild || !isAdmin(interaction.member)) {
-        await interaction.reply({ content: '❌ You are not allowed to do this.', ephemeral: true });
-        return;
-      }
-
-      const clipId = interaction.customId.split(':')[1];
-      const data = loadData();
-      const clip = data.clips?.[clipId];
-
-      if (!clip) {
-        await interaction.reply({ content: '❌ Clip not found.', ephemeral: true });
-        return;
-      }
-
-      const views = Number(interaction.fields.getTextInputValue('clip_views').trim());
-      const payout = Number(interaction.fields.getTextInputValue('clip_payout').trim());
-
-      if (Number.isNaN(views) || views < 0 || Number.isNaN(payout) || payout < 0) {
         await interaction.reply({
-          content: '❌ Enter valid numbers for views and payout.',
+          content: '❌ You are not allowed to do this.',
           ephemeral: true
         });
         return;
       }
 
-      const member = await interaction.guild.members.fetch(clip.userId).catch(() => null);
-      if (!member) {
-        await interaction.reply({ content: '❌ User not found in server.', ephemeral: true });
+      const clipId = interaction.customId.split(':')[1];
+      const data = loadData();
+      const clip = data.clips?.[clipId];
+
+      if (!clip) {
+        await interaction.reply({ content: '❌ Clip not found.', ephemeral: true });
         return;
       }
-
-      const userRecord = ensureUser(data, member);
-      const platformStats = ensureCampaignPlatformStats(
-        userRecord,
-        clip.campaignId,
-        clip.platform,
-        clip.username
-      );
 
       if (clip.status === 'approved') {
         await interaction.reply({ content: '❌ This clip is already approved.', ephemeral: true });
         return;
       }
 
-      if (clip.status === 'rejected') {
-        platformStats.videosRejected = Math.max(0, (platformStats.videosRejected || 0) - 1);
-        userRecord.stats.videosRejected = Math.max(0, (userRecord.stats.videosRejected || 0) - 1);
-      }
-
       clip.status = 'approved';
-      
-      clip.cycle = getCampaignCycle(
-        CAMPAIGNS[clip.campaignId].startDate
-      );
-
+      clip.cycle = getCampaignCycle(CAMPAIGNS[clip.campaignId].startDate);
       clip.approvedAt = Date.now();
 
-      clip.views = views;
-      clip.moneyMade = payout;
+      let currentViews = 0;
+
+      try {
+        currentViews = await fetchClipViews(clip);
+      } catch {
+        currentViews = 0;
+      }
+
+      clip.startingViews = currentViews;
+      clip.currentViews = currentViews;
+      clip.views = 0;
+      clip.moneyMade = 0;
+      clip.lastChecked = Date.now();
+
       data.clips[clipId] = clip;
-
-      platformStats.videosApproved += 1;
-      platformStats.totalViews += views;
-      platformStats.moneyMade += payout;
-
-      userRecord.stats.videosApproved += 1;
-      userRecord.stats.totalViews += views;
-      userRecord.stats.moneyMade += payout;
-
       saveData(data);
+
       await updateClipStaffMessage(interaction.guild, clip);
 
       await interaction.reply({
-        content: `✅ Clip approved.\nViews: **${formatNumber(views)}**\nPayout: **$${payout}**`,
+        content: `✅ Clip approved. Auto-tracking started from **${formatNumber(currentViews)}** views.`,
         ephemeral: true
       });
 
@@ -2929,7 +2929,10 @@ client.on(Events.InteractionCreate, async interaction => {
 
     if (interaction.isButton() && interaction.customId.startsWith('clip_reject:')) {
       if (!interaction.guild || !isAdmin(interaction.member)) {
-        await interaction.reply({ content: '❌ You are not allowed to do this.', ephemeral: true });
+        await interaction.reply({
+          content: '❌ You are not allowed to do this.',
+          ephemeral: true
+        });
         return;
       }
 
@@ -2938,55 +2941,109 @@ client.on(Events.InteractionCreate, async interaction => {
       const clip = data.clips?.[clipId];
 
       if (!clip) {
-        await interaction.reply({ content: '❌ Clip not found.', ephemeral: true });
+        await interaction.reply({
+          content: '❌ Clip not found.',
+          ephemeral: true
+        });
         return;
       }
-
-      const member = await interaction.guild.members.fetch(clip.userId).catch(() => null);
-      if (!member) {
-        await interaction.reply({ content: '❌ User not found in server.', ephemeral: true });
-        return;
-      }
-
-      const userRecord = ensureUser(data, member);
-      const platformStats = ensureCampaignPlatformStats(
-        userRecord,
-        clip.campaignId,
-        clip.platform,
-        clip.username
-      );
 
       if (clip.status === 'rejected') {
-        await interaction.reply({ content: '❌ This clip is already rejected.', ephemeral: true });
+        await interaction.reply({
+          content: '❌ This clip is already rejected.',
+          ephemeral: true
+        });
         return;
       }
 
-      if (clip.status === 'approved') {
-        platformStats.videosApproved = Math.max(0, (platformStats.videosApproved || 0) - 1);
-        platformStats.totalViews = Math.max(0, (platformStats.totalViews || 0) - (clip.views || 0));
-        platformStats.moneyMade = Math.max(0, (platformStats.moneyMade || 0) - (clip.moneyMade || 0));
+      const modal = new ModalBuilder()
+        .setCustomId(`clip_reject_modal:${clipId}`)
+        .setTitle('Reject Clip');
 
-        userRecord.stats.videosApproved = Math.max(0, (userRecord.stats.videosApproved || 0) - 1);
-        userRecord.stats.totalViews = Math.max(0, (userRecord.stats.totalViews || 0) - (clip.views || 0));
-        userRecord.stats.moneyMade = Math.max(0, (userRecord.stats.moneyMade || 0) - (clip.moneyMade || 0));
+      const reasonInput = new TextInputBuilder()
+        .setCustomId('reject_reason')
+        .setLabel('Reason for rejection')
+        .setPlaceholder('Example: Wrong campaign, low quality, duplicate, invalid link...')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true)
+        .setMaxLength(500);
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(reasonInput)
+      );
+
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('clip_reject_modal:')) {
+      if (!interaction.guild || !isAdmin(interaction.member)) {
+        await interaction.reply({
+          content: '❌ You are not allowed to do this.',
+          ephemeral: true
+        });
+        return;
       }
 
+      const clipId = interaction.customId.split(':')[1];
+      const reason = interaction.fields.getTextInputValue('reject_reason').trim();
+
+      const data = loadData();
+      const clip = data.clips?.[clipId];
+
+      if (!clip) {
+        await interaction.reply({
+          content: '❌ Clip not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (clip.status === 'rejected') {
+        await interaction.reply({
+          content: '❌ This clip is already rejected.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const userRecord = data.users?.[clip.userId];
+
       clip.status = 'rejected';
+      clip.rejectReason = reason;
+      clip.rejectedAt = Date.now();
+      clip.rejectedBy = interaction.user.id;
+
       clip.views = 0;
       clip.moneyMade = 0;
+      clip.trackingError = null;
+
       data.clips[clipId] = clip;
 
-      platformStats.videosRejected += 1;
-      userRecord.stats.videosRejected += 1;
+      if (userRecord) {
+        if (!userRecord.stats) userRecord.stats = {};
+        userRecord.stats.videosRejected = (userRecord.stats.videosRejected || 0) + 1;
+      }
 
       saveData(data);
+
       await updateClipStaffMessage(interaction.guild, clip);
 
+      const member = await interaction.guild.members.fetch(clip.userId).catch(() => null);
+
+      if (member) {
+        await member.send(
+          `❌ **Clip Rejected**\n\n` +
+          `Your clip for **${CAMPAIGNS[clip.campaignId]?.name || 'campaign'}** was rejected.\n\n` +
+          `**Reason:** ${reason}`
+        ).catch(() => {});
+      }
+
       await interaction.reply({
-        content: `❌ Clip rejected.`,
+        content: `✅ Clip rejected.\nReason: ${reason}`,
         ephemeral: true
       });
-
+   
       return;
     }
 
