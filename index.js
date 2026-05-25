@@ -2138,103 +2138,40 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 
     if (interaction.isButton() && interaction.customId === 'demographics_start') {
+
       const data = loadData();
 
-      const uploadChannel = await interaction.guild.channels.create({
-        name: `demo-${interaction.user.username}`,
-        type: ChannelType.GuildText,
-        parent: DEMOGRAPHICS_UPLOAD_CATEGORY_ID || null,
-        permissionOverwrites: [
-          {
-            id: interaction.guild.id,
-            deny: [PermissionsBitField.Flags.ViewChannel]
-          },
-          {
-            id: interaction.user.id,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages,
-              PermissionsBitField.Flags.AttachFiles,
-              PermissionsBitField.Flags.ReadMessageHistory
-            ]
-          }
-        ]
-      });
-
-      if (!data.demographicsSessions) data.demographicsSessions = {};
+      if (!data.demographicsSessions) {
+        data.demographicsSessions = {};
+      }
 
       data.demographicsSessions[interaction.user.id] = {
         userId: interaction.user.id,
-        uploadChannelId: uploadChannel.id,
-        status: 'pending_upload',
+        status: 'pending_country',
         createdAt: Date.now()
       };
 
       saveData(data);
 
+      const countryMenu = new StringSelectMenuBuilder()
+        .setCustomId('demographics_country')
+        .setPlaceholder('Select country')
+        .addOptions(
+          SUPPORTED_COUNTRIES.map(country => ({
+            label: country,
+            value: country
+          }))
+         );
+
       await interaction.reply({
-        content: `✅ Upload channel created: ${uploadChannel}`,
-        ephemeral: true
-      });
+        content: '🌍 Select the country shown in your demographics.',
+        components: [
+          new ActionRowBuilder().addComponents(countryMenu)
+         ],
+         ephemeral: true
+       });
 
-      await uploadChannel.send(
-        `${interaction.user}, upload your demographics screen recording here.\n\n` +
-        `Accepted: MP4, MOV, WEBM\n` +
-        `You have 10 minutes.`
-      );
-
-      const collector = uploadChannel.createMessageCollector({
-        filter: m => m.author.id === interaction.user.id && m.attachments.size > 0,
-        max: 1,
-        time: 10 * 60 * 1000
-      });
-
-      collector.on('collect', async msg => {
-        const attachment = msg.attachments.first();
-
-        const validTypes = ['video/mp4', 'video/quicktime', 'video/webm'];
-
-        if (!validTypes.includes(attachment.contentType)) {
-          await uploadChannel.send('❌ Invalid file type. Please upload MP4, MOV, or WEBM.');
-          return;
-        }
-
-        const data = loadData();
-        const session = data.demographicsSessions?.[interaction.user.id];
-
-        if (!session) {
-          await uploadChannel.send('❌ Session expired. Start again.');
-          return;
-        }
-
-        session.videoUrl = attachment.url;
-        session.status = 'pending_country';
-
-        saveData(data);
-
-        const countryMenu = new StringSelectMenuBuilder()
-          .setCustomId('demographics_country')
-          .setPlaceholder('Select country')
-          .addOptions(
-            SUPPORTED_COUNTRIES.map(country => ({
-              label: country,
-              value: country
-            }))
-           );
-
-        await uploadChannel.send({
-          content: '✅ Video uploaded. Now select the country shown in the demographics.',
-          components: [new ActionRowBuilder().addComponents(countryMenu)]
-        });
-      });
-     
-      collector.on('end', async collected => {
-        if (collected.size === 0) {
-          await uploadChannel.send('❌ Upload expired. Please start again.');
-        }
-      });
-
-      return;
+       return;
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId === 'demographics_country') {
