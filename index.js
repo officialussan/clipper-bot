@@ -652,33 +652,50 @@ function formatDateShort(date) {
 }
 
 function getCampaignTotals(data, campaignId) {
-  let users = 0;
-  let videos = 0;
-  let views = 0;
+  const campaign = CAMPAIGNS[campaignId];
+  const currentCycle = getCampaignCycle(campaign.startDate);
 
-  for (const user of Object.values(data.users || {})) {
-    if (user.campaigns?.includes(campaignId)) users++;
+  const users = Object.values(data.users || {}).filter(user =>
+    user.campaigns?.includes(campaignId)
+  ).length;
 
-    const statsByPlatform = user.campaignStats?.[campaignId] || {};
+  const clips = Object.values(data.clips || {}).filter(clip =>
+    clip.campaignId === campaignId &&
+    clip.status === 'approved' &&
+    clip.cycle === currentCycle
+  );
 
-    for (const stats of Object.values(statsByPlatform)) {
-      videos += stats.videosApproved || 0;
-      views += stats.totalViews || 0;
-    }
-  }
+  const videos = clips.length;
 
-  return { users, videos, views };
+  const views = clips.reduce(
+    (sum, clip) => sum + (Number(clip.views) || 0),
+    0
+  );
+
+  const payout = clips.reduce(
+    (sum, clip) => sum + (Number(clip.moneyMade) || 0),
+    0
+  );
+
+  return { users, videos, views, payout };
 }
 
 function buildCampaignStatusEmbed(campaign, data) {
   const { periodStart, periodEnd } = getCampaignPeriod(campaign.startDate);
   const totals = getCampaignTotals(data, campaign.id);
 
-  const cappedViews = Math.min(totals.views, campaign.viewCap || totals.views);
-  const payout = (cappedViews / 1000000) * (campaign.ratePerMillion || 0);
-  const remaining = Math.max((campaign.weeklyBudget || 0) - payout, 0);
+  const cappedPayout = Math.min(
+    totals.payout,
+    campaign.weeklyBudget
+  );
+
+  const remaining = Math.max(
+    campaign.weeklyBudget - cappedPayout,
+    0
+  );
+
   const fulfilledPercent = campaign.weeklyBudget
-    ? Math.min((payout / campaign.weeklyBudget) * 100, 100)
+    ? (cappedPayout / campaign.weeklyBudget) * 100
     : 0;
 
   return new EmbedBuilder()
