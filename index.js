@@ -699,20 +699,20 @@ function buildCampaignStatusEmbed(campaign, data) {
   const totals = getCampaignTotals(data, campaign.id);
 
   const cappedPayout = Math.min(
-    totals.payout,
-    campaign.weeklyBudget
+    totals.payout || 0,
+    campaign.weeklyBudget || 0
   );
 
   const remaining = Math.max(
-    campaign.weeklyBudget - cappedPayout,
+    (campaign.weeklyBudget || 0) - cappedPayout,
     0
   );
 
   const fulfilledPercent = campaign.weeklyBudget
-    ? (cappedPayout / campaign.weeklyBudget) * 100
+    ? Math.min((cappedPayout / campaign.weeklyBudget) * 100, 100)
     : 0;
 
-  const embed = new EmbedBuilder()
+  return new EmbedBuilder()
     .setColor(0x7ED957)
     .setTitle(campaign.name)
     .setDescription(
