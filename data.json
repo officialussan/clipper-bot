@@ -27,6 +27,22 @@
       },
       "campaignAccounts": {},
       "campaignStats": {}
+    },
+    "1450126813815771270": {
+      "discordId": "1450126813815771270",
+      "discordName": "ogthemostviral",
+      "verified": false,
+      "campaigns": [],
+      "stats": {
+        "videosPosted": 0,
+        "videosApproved": 0,
+        "videosRejected": 0,
+        "totalViews": 0,
+        "moneyMade": 0
+      },
+      "campaignAccounts": {},
+      "campaignStats": {},
+      "hideFromLeaderboard": false
     }
   },
   "applications": {
@@ -46,5 +62,12 @@
     }
   },
   "campaignAccountRequests": {},
-  "clips": {}
+  "clips": {},
+  "demographicsSessions": {
+    "1189010402533720127": {
+      "userId": "1189010402533720127",
+      "status": "pending_country",
+      "createdAt": 1779706995845
+    }
+  }
 }

@@ -4086,12 +4086,12 @@ When done, click the button below.`,
     if (interaction.isRepliable()) {
       if (interaction.replied || interaction.deferred) {
         await interaction.followUp({
-          content: '❌ Something went wrong.',
+          content: `❌ Error: ${e.message}`,
           ephemeral: true
         }).catch(() => {});
       } else {
         await interaction.reply({
-          content: '❌ Something went wrong.',
+          content: `❌ Error: ${e.message}`,
           ephemeral: true
         }).catch(() => {});
       }
