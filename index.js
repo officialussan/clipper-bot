@@ -399,6 +399,14 @@ function buildStaffButtons(id, status) {
   return [];
 }
 
+function cleanDropdownLabel(text) {
+  return String(text)
+    .replace(/<a?:\w+:\d+>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 100);
+}
+
 async function updateStaffMessage(guild, app) {
   const ch = guild.channels.cache.get(app.staffChannelId);
   if (!ch) return;
@@ -2153,16 +2161,19 @@ client.on(Events.InteractionCreate, async interaction => {
 
       saveData(data);
 
-      const countryMenu = new StringSelectMenuBuilder()
-        .setCustomId('demographics_country')
-        .setPlaceholder('Select country')
-        .addOptions(
-          SUPPORTED_COUNTRIES.map(country => ({
-            label: country,
-            value: country
-          }))
-         );
+      const campaigns = Object.values(CAMPAIGNS)
+        .filter(c => c.active === true)
+        .map(c => ({
+          label: cleanDropdownLabel(c.name),
+          value: c.id
+        }))
+        .slice(0, 25);
 
+      const campaignMenu = new StringSelectMenuBuilder()
+        .setCustomId('demographics_campaign')
+        .setPlaceholder('Select campaign')
+        .addOptions(campaigns);
+          
       await interaction.reply({
         content: '🌍 Select the country shown in your demographics.',
         components: [
@@ -2262,64 +2273,171 @@ client.on(Events.InteractionCreate, async interaction => {
       const session = data.demographicsSessions?.[interaction.user.id];
 
       if (!session) {
-        await interaction.reply({ content: '❌ Session expired.', ephemeral: true });
+        await interaction.reply({
+          content: '❌ Session expired. Start again.',
+          ephemeral: true
+        });
         return;
       }
 
       const campaignId = interaction.values[0];
-      const submissionId = `demo_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 
-      if (!data.demographicsSubmissions) data.demographicsSubmissions = {};
-
-      const submission = {
-        id: submissionId,
-        userId: interaction.user.id,
-        videoUrl: session.videoUrl,
-        country: session.country,
-        account: session.account,
-        campaignId,
-        status: 'pending',
-        createdAt: Date.now()
-      };
-
-      data.demographicsSubmissions[submissionId] = submission;
-      delete data.demographicsSessions[interaction.user.id];
-
+      session.campaignId = campaignId;
+      session.status = 'pending_upload';
       saveData(data);
 
-      const staffChannel = interaction.guild.channels.cache.get(DEMOGRAPHICS_STAFF_CHANNEL_ID);
+      const uploadChannel = await interaction.guild.channels.create({
+        name: `demo-${interaction.user.username}`,
+        type: ChannelType.GuildText,
+        parent: DEMOGRAPHICS_UPLOAD_CATEGORY_ID || null,
+        permissionOverwrites: [
+          {
+            id: interaction.guild.id,
+            deny: [PermissionsBitField.Flags.ViewChannel]
+          },
+          {
+            id: interaction.user.id,
+            allow: [
+              PermissionsBitField.Flags.ViewChannel,
+              PermissionsBitField.Flags.SendMessages,
+              PermissionsBitField.Flags.AttachFiles,
+              PermissionsBitField.Flags.ReadMessageHistory
+            ]
+          },
+          {
+            id: interaction.client.user.id,
+            allow: [
+              PermissionsBitField.Flags.ViewChannel,
+              PermissionsBitField.Flags.SendMessages,
+              PermissionsBitField.Flags.AttachFiles,
+              PermissionsBitField.Flags.ReadMessageHistory
+            ]
+          }
+        ]   
+      });
 
-      if (staffChannel) {
-        const embed = new EmbedBuilder()
-          .setColor(0xF1C40F)
-          .setTitle('🌍 New Demographics Submission')
-          .setDescription(
-            `**User:** ${interaction.user} (${interaction.user.id})\n` +
-            `**Country:** ${submission.country}\n` +
-            `**Account:** ${formatPlatform(submission.account.platform)} @${submission.account.username}\n` +
-            `**Campaign:** ${CAMPAIGNS[campaignId]?.name || campaignId}\n` +
-            `**Video:** ${submission.videoUrl}\n` +
-            `**Status:** Pending`
-          );
-
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId(`demo_approve:${submissionId}`)
-            .setLabel('Approve')
-            .setStyle(ButtonStyle.Success),
-
-          new ButtonBuilder()
-            .setCustomId(`demo_reject:${submissionId}`)
-            .setLabel('Reject')
-            .setStyle(ButtonStyle.Danger)
-        );
-
-        await staffChannel.send({ embeds: [embed], components: [row] });
-      }
+      session.uploadChannelId = uploadChannel.id;
+      saveData(data);
 
       await interaction.update({
-        content: '✅ Demographics submitted. Staff will review it soon.',
+        content:
+          `✅ Campaign selected: **${cleanDropdownLabel(CAMPAIGNS[campaignId]?.name || campaignId)}**\n\n` +
+          `Now upload your demographics screen recording here: ${uploadChannel}`,
         components: []
+      });
+
+      await uploadChannel.send(
+        `${interaction.user}, upload your demographics screen recording here.\n\n` +
+        `Accepted files: **MP4, MOV, WEBM, MKV**\n` +
+        `You have **10 minutes**.`
+      );
+
+      const collector = uploadChannel.createMessageCollector({
+        filter: m => m.author.id === interaction.user.id && m.attachments.size > 0,
+        max: 1,
+        time: 10 * 60 * 1000
+      });
+
+      collector.on('collect', async msg => {
+        const attachment = msg.attachments.first();
+
+        const fileName = attachment.name.toLowerCase();
+
+        const validExtensions = ['.mp4', '.mov', '.webm', '.mkv'];
+
+        const isVideo = validExtensions.some(ext => fileName.endsWith(ext));
+
+        if (!isVideo) {
+          await uploadChannel.send('❌ Invalid file. Please upload MP4, MOV, WEBM, or MKV.');
+          return;
+        }
+
+        const data = loadData();
+        const session = data.demographicsSessions?.[interaction.user.id];
+
+        if (!session) {
+          await uploadChannel.send('❌ Session expired. Please start again.');
+          return;
+        }
+
+        const submissionId = `demo_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+
+        if (!data.demographicsSubmissions) {
+          data.demographicsSubmissions = {};
+        } 
+
+        const submission = {
+          id: submissionId,
+          userId: interaction.user.id,
+          videoUrl: attachment.url,
+          videoName: attachment.name,
+          country: session.country,
+          account: session.account,
+          campaignId: session.campaignId,
+          uploadChannelId: uploadChannel.id,
+          status: 'pending',
+          createdAt: Date.now()
+        };
+
+        data.demographicsSubmissions[submissionId] = submission;
+        delete data.demographicsSessions[interaction.user.id];
+
+        saveData(data);
+
+        const staffChannel = interaction.guild.channels.cache.get(DEMOGRAPHICS_STAFF_CHANNEL_ID);
+
+        if (staffChannel) {
+          const embed = new EmbedBuilder()
+            .setColor(0xF1C40F)
+            .setTitle('🌍 New Demographics Submission')
+            .setDescription(
+              `**User:** ${interaction.user} (${interaction.user.id})\n` +
+              `**Country:** ${submission.country}\n` +
+              `**Account:** ${formatPlatform(submission.account.platform)} @${submission.account.username}\n` +
+              `**Campaign:** ${cleanDropdownLabel(CAMPAIGNS[submission.campaignId]?.name || submission.campaignId)}\n` +
+              `**Video:** ${submission.videoUrl}\n` +
+              `**Status:** Pending`
+            );
+
+          const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`demo_approve:${submissionId}`)
+              .setLabel('Approve')
+              .setStyle(ButtonStyle.Success),
+
+            new ButtonBuilder()
+             .setCustomId(`demo_reject:${submissionId}`)
+             .setLabel('Reject')
+             .setStyle(ButtonStyle.Danger)
+          );
+
+          await staffChannel.send({
+            embeds: [embed],
+            components: [row]
+          });
+        }
+
+        await uploadChannel.send('✅ Demographics submitted successfully. Staff will review it soon.');
+
+        setTimeout(() => {
+          uploadChannel.delete().catch(() => {});
+        }, 60 * 1000);
+      });
+
+      collector.on('end', async collected => {
+        if (collected.size === 0) {
+          await uploadChannel.send('❌ Upload expired. Please start again.');
+
+          const data = loadData();
+          if (data.demographicsSessions?.[interaction.user.id]) {
+            delete data.demographicsSessions[interaction.user.id];
+            saveData(data);
+          }
+
+          setTimeout(() => {
+            uploadChannel.delete().catch(() => {});
+          }, 60 * 1000);
+        }
       });
 
       return;
