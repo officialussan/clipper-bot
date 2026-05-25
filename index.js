@@ -546,13 +546,9 @@ function ensureCampaignStats(userRecord, campaignId) {
 }
 
 function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName) {
-  const stats = ensureCampaignStats(userRecord, campaignId);
-
   const campaign = CAMPAIGNS[campaignId];
   const currentCycle = getCampaignCycle(campaign.startDate);
   const payoutThreshold = campaign?.payoutThreshold || 100000;
-
-  
 
   const userClips = Object.values(data.clips || {}).filter(clip =>
     clip.userId === userRecord.discordId &&
@@ -564,27 +560,25 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName) {
   const rejectedClips = userClips.filter(c => c.status === 'rejected');
   const pendingClips = userClips.filter(c => c.status === 'pending');
 
-  const totalViews = approvedClips.reduce((sum, c) => sum + (c.views || 0), 0);
-  const moneyMade = approvedClips.reduce((sum, c) => sum + (c.moneyMade || 0), 0);
-
-  const pendingVideos = pendingClips.length;
+  const totalViews = approvedClips.reduce((sum, c) => sum + (Number(c.views) || 0), 0);
+  const moneyMade = approvedClips.reduce((sum, c) => sum + (Number(c.moneyMade) || 0), 0);
 
   const viewsNeeded = Math.max(payoutThreshold - totalViews, 0);
 
   const payoutText =
     totalViews >= payoutThreshold
-      ? `Eligible for payout.\n**Money Made:** $${formatNumber(stats.moneyMade)}`
-      : `You need **${formatNumber(viewsNeeded)}** more views to reach **${formatNumber(payoutThreshold)}** views for payout.`;
+      ? `Eligible for payout.\n**Money Made:** $${formatNumber(moneyMade)}`
+      : `Need **${formatNumber(viewsNeeded)}** more views`;
 
   return new EmbedBuilder()
     .setColor(0x7ED957)
     .setDescription(
-      `🎬 **Campaign Stats - ${campaignName}**\n\n` +
-      `📊 **Total Views**\n${formatNumber(totalViews)}\n\n` +
-      `💰 **Payout (Target: ${formatNumber(payoutThreshold)} Views)**\n${payoutText}\n\n` +
-      `🟢 **Approved Videos**\n${approvedClips.length}\n\n` +
-      `🟡 **Pending Videos**\n${pendingVideos}\n\n` +
-      `🔴 **Rejected Videos**\n${rejectedClips.length}\n\n` +
+      `<a:chart1:1504773558415523931> **Campaign Stats - ${campaignName}**\n\n` +
+      `<a:rocket1:1504872045849346140> **Total Views**\n${formatNumber(totalViews)}\n\n` +
+      `<a:Cash1:1504871843419521115> **Payout Target: ${formatNumber(payoutThreshold)} Views**\n${payoutText}\n\n` +
+      `<:approve1:1508373907411963955> **Approved Videos**\n${approvedClips.length}\n\n` +
+      `<a:dot1:1508433228669780029> **Pending Videos**\n${pendingClips.length}\n\n` +
+      `<:reject1:1508373970259546162> **Rejected Videos**\n${rejectedClips.length}\n\n` +
       `🎞️ **View Your Clips**\nClick the button below to check the clips submitted for this campaign.`
     )
     .setFooter({ text: `Last update | ${new Date().toLocaleString()}` });
@@ -1149,46 +1143,6 @@ async function updateClipStaffMessage(guild, clip) {
   } catch (error) {
     console.log('Could not update clip staff message:', error.message);
   }
-}
-
-function buildCampaignStatsEmbed(userRecord, campaignId, campaignName) {
-  const campaign = CAMPAIGNS[campaignId];
-  const payoutThreshold = campaign?.payoutThreshold || 100000;
-  const accounts = userRecord.campaignStats?.[campaignId] || {};
-  const platforms = Object.keys(accounts);
-
-  let lines = [];
-
-  if (platforms.length === 0) {
-    lines.push('No campaign stats yet.');
-  } else {
-    for (const platform of platforms) {
-      const stats = accounts[platform];
-      const pendingVideos = Math.max(
-        (stats.videosPosted || 0) - (stats.videosApproved || 0) - (stats.videosRejected || 0),
-        0
-      );
-
-      const viewsNeeded = Math.max(payoutThreshold - (stats.totalViews || 0), 0);
-      const payoutText =
-        (stats.totalViews || 0) >= payoutThreshold
-          ? `Eligible for payout | **$${formatNumber(stats.moneyMade || 0)}**`
-          : `Need **${formatNumber(viewsNeeded)}** more views`;
-
-      lines.push(
-        `**${formatPlatform(platform)} — @${stats.username || 'unknown'}**\n` +
-        `Views: **${formatNumber(stats.totalViews || 0)}**\n` +
-        `Approved: **${stats.videosApproved || 0}** | Pending: **${pendingVideos}** | Rejected: **${stats.videosRejected || 0}**\n` +
-        `Payout: ${payoutText}`
-      );
-    }
-  }
-
-  return new EmbedBuilder()
-    .setColor(0x7ED957)
-    .setTitle(`Campaign Stats - ${campaignName}`)
-    .setDescription(lines.join('\n\n'))
-    .setFooter({ text: `Last update | ${new Date().toLocaleString()}` });
 }
 
 async function getTikTokViews(url) {
@@ -2160,6 +2114,24 @@ client.on(Events.InteractionCreate, async interaction => {
       };
 
       saveData(data);
+
+      const countryMenu = new StringSelectMenuBuilder()
+        .setCustomId('demographics_country')
+        .setPlaceholder('Select country')
+        .addOptions([
+          {
+            label: 'United States',
+            value: 'us'
+          },
+          {
+            label: 'United Kingdom',
+            value: 'uk'
+          },
+          {
+            label: 'Canada',
+            value: 'ca'
+          }
+        ]);
 
       const campaigns = Object.values(CAMPAIGNS)
         .filter(c => c.active === true)
