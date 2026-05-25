@@ -547,6 +547,13 @@ function ensureCampaignStats(userRecord, campaignId) {
 
 function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName) {
   const campaign = CAMPAIGNS[campaignId];
+
+  if (!campaign) {
+    return new EmbedBuilder()
+      .setColor(0xff0000)
+      .setDescription('❌ Campaign not found. Please rejoin the campaign or contact staff.');
+  }
+
   const currentCycle = getCampaignCycle(campaign.startDate);
   const payoutThreshold = campaign?.payoutThreshold || 100000;
 
@@ -3261,7 +3268,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
 
       const userRecord = ensureUser(data, member);
-      const embed = buildCampaignStatsEmbed(userRecord, campaignId, campaign.name);
+      const embed = buildCampaignStatsEmbed(data, userRecord, campaignId, campaign.name);
 
       saveData(data);
 
