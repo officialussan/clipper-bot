@@ -730,7 +730,7 @@ function buildCampaignStatusEmbed(campaign, data) {
       `<a:Cash1:1504871843419521115> **Payout & Budget**\n` +
       `**Budget:** $${formatNumber(campaign.weeklyBudget)} / week\n` +
       `**Remaining:** $${formatNumber(remaining)}\n` +
-      `**Payout:** $${formatNumber(payout)} (${fulfilledPercent.toFixed(1)}%)\n\n` +
+      `**Payout:** $${formatNumber(cappedpayout)} (${fulfilledPercent.toFixed(1)}%)\n\n` +
 
       `<a:warning:1504774411280973864> Once we hit the **${formatNumber(campaign.viewCap)} view cap**, any views after that won't be paid, so post early to secure your payout.\n\n` +
       `<:whiteCE:1504904179905200148> Powered by Creators Elite | ${new Date().toLocaleString()}`
