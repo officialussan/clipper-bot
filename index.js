@@ -1138,29 +1138,47 @@ function renderClipStaffContent(clip) {
 ${clip.views ? `**Views:** ${formatNumber(clip.views)}\n` : ''}${clip.moneyMade ? `**Payout:** $${clip.moneyMade}\n` : ''}`;
 }
 
-function buildClipStaffButtons(clipId, status) {
-  if (status === 'pending') {
+function buildClipStaffButtons(clip) {
+  if (clip.status === 'pending') {
     return [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId(`clip_approve:${clipId}`)
+          .setCustomId(`clip_approve:${clip.id}`)
           .setLabel('Approve')
           .setStyle(ButtonStyle.Success),
+
         new ButtonBuilder()
-          .setCustomId(`clip_reject:${clipId}`)
+          .setCustomId(`clip_reject:${clip.id}`)
           .setLabel('Reject')
           .setStyle(ButtonStyle.Danger)
       )
     ];
   }
 
-  if (status === 'approved' || status === 'rejected') {
+  if (clip.platform === 'instagram' && clip.status === 'approved') {
     return [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId(`clip_done:${clipId}`)
-          .setLabel(status === 'approved' ? 'Approved' : 'Rejected')
-          .setStyle(status === 'approved' ? ButtonStyle.Success : ButtonStyle.Danger)
+          .setCustomId(`clip_done:${clip.id}`)
+          .setLabel('Approved')
+          .setStyle(ButtonStyle.Success)
+          .setDisabled(true),
+
+        new ButtonBuilder()
+          .setCustomId(`instagram_views:${clip.id}`)
+          .setLabel('Update Views')
+          .setStyle(ButtonStyle.Primary)
+      )
+    ];
+  }
+
+  if (clip.status === 'approved' || clip.status === 'rejected') {
+    return [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`clip_done:${clip.id}`)
+          .setLabel(clip.status === 'approved' ? 'Approved' : 'Rejected')
+          .setStyle(clip.status === 'approved' ? ButtonStyle.Success : ButtonStyle.Danger)
           .setDisabled(true)
       )
     ];
@@ -1168,7 +1186,6 @@ function buildClipStaffButtons(clipId, status) {
 
   return [];
 }
-
 async function updateClipStaffMessage(guild, clip) {
   const campaign = CAMPAIGNS[clip.campaignId];
   if (!campaign) return;
@@ -1180,7 +1197,7 @@ async function updateClipStaffMessage(guild, clip) {
     const msg = await ch.messages.fetch(clip.staffMessageId);
     await msg.edit({
       content: renderClipStaffContent(clip),
-      components: buildClipStaffButtons(clip.id, clip.status)
+      components: buildClipStaffButtons(clip.id)
     });
   } catch (error) {
     console.log('Could not update clip staff message:', error.message);
