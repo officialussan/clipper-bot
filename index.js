@@ -698,7 +698,7 @@ function buildCampaignStatusEmbed(campaign, data) {
     ? (cappedPayout / campaign.weeklyBudget) * 100
     : 0;
 
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setColor(0x7ED957)
     .setTitle(campaign.name)
     .setDescription(
