@@ -868,6 +868,23 @@ function ensureCampaignPlatformStats(userRecord, campaignId, platform, username 
   return userRecord.campaignStats[campaignId][platform];
 }
 
+async function updateCampaignPanelMessage(guild, campaignId) {
+  const data = loadData();
+  const campaign = CAMPAIGNS[campaignId];
+  if (!campaign || !campaign.panelChannelId || !campaign.panelMessageId) return;
+
+  const channel = guild.channels.cache.get(campaign.panelChannelId);
+  if (!channel) return;
+
+  const msg = await channel.messages.fetch(campaign.panelMessageId).catch(() => null);
+  if (!msg) return;
+
+  await msg.edit({
+    content: campaign.panelText,
+    components: [buildCampaignPanelButtons(campaign, data)]
+  }).catch(() => {});
+}
+
 async function updateClipStaffMessage(guild, clip) {
   const campaign = CAMPAIGNS[clip.campaignId];
   if (!campaign) return;
@@ -1224,6 +1241,15 @@ async function autoTrackClipViews() {
     }
 
     saveData(data);
+    
+    for (const campaignId of Object.keys(CAMPAIGNS)) {
+      const guild = client.guilds.cache.first();
+      
+      if (guild) {
+        await updateCampaignPanelMessage(guild, campaignId);
+      }
+    }
+
     console.log('✅ Auto tracking completed');
   } catch (err) {
     console.error('❌ Auto tracking failed:', err);
