@@ -898,6 +898,9 @@ function buildClipStaffButtons(clip) {
     ];
   }
 
+  return [];
+}
+
 async function updateClipStaffMessage(guild, clip) {
   const campaign = CAMPAIGNS[clip.campaignId];
   if (!campaign) return;
