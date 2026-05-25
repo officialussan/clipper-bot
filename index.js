@@ -1804,6 +1804,79 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
+    if (
+      interaction.isButton() &&
+      interaction.customId.startsWith('update_instagram_views:')
+    ) {
+      const clipId = interaction.customId.split(':')[1];
+
+      const modal = new ModalBuilder()
+        .setCustomId(`instagram_views_modal:${clipId}`)
+        .setTitle('Update Instagram Views');
+
+      const viewsInput = new TextInputBuilder()
+        .setCustomId('instagram_views')
+        .setLabel('Current Instagram Reel Views')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setPlaceholder('Example: 125000');
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(viewsInput)
+      );
+
+      await interaction.showModal(modal);
+    }
+
+    if (
+      interaction.isModalSubmit() &&
+      interaction.customId.startsWith('instagram_views_modal:')
+    ) {
+      const clipId = interaction.customId.split(':')[1];
+
+      const currentViews = Number(
+        interaction.fields
+          .getTextInputValue('instagram_views')
+          .replace(/,/g, '')
+      );
+
+      const data = loadData();
+      const clip = data.clips?.[clipId];
+
+      if (!clip) {
+        await interaction.reply({
+          content: '❌ Clip not found.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const startingViews = clip.startingViews || 0;
+      const earnedViews = Math.max(currentViews - startingViews, 0);
+
+      clip.currentViews = currentViews;
+      clip.views = earnedViews;
+      clip.lastChecked = Date.now();
+
+      const campaign = CAMPAIGNS[clip.campaignId];
+      const rate = campaign?.ratePerMillion || 0;
+
+      clip.moneyMade = (earnedViews / 1000000) * rate;
+
+      data.clips[clipId] = clip;
+
+      saveData(data);
+
+      await interaction.reply({
+        content:
+          `✅ Instagram views updated.\n` +
+          `Current Views: ${formatNumber(currentViews)}\n` +
+          `Earned Views: ${formatNumber(earnedViews)}\n` +
+          `Estimated Earnings: $${formatNumber(clip.moneyMade)}`,
+        ephemeral: true
+      });
+    }
+
     if (interaction.isButton() && interaction.customId === 'open_ticket') {
       try {
         const userId = interaction.user.id;
