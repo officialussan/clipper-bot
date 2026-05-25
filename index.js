@@ -35,6 +35,8 @@ const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID;
 const CLIPPER_ROLE_ID = process.env.CLIPPER_ROLE_ID;
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;
 const TICKET_CATEGORY_ID = process.env.TICKET_CATEGORY_ID;
+const CONNECT_ACCOUNTS_CHANNEL_ID = process.env.CONNECT_ACCOUNTS_CHANNEL_ID;
+const VERIFY_DEMOGRAPHICS_CHANNEL_ID = process.env.VERIFY_DEMOGRAPHICS_CHANNEL_ID;
 const TICKET_LOG_CHANNEL_ID = process.env.TICKET_LOG_CHANNEL_ID;
 
 const ticketCooldowns = new Map();
@@ -410,11 +412,31 @@ function formatNumber(num) {
 }
 
 function getLeaderboardUsers(data) {
-  return Object.values(data.users).sort((a, b) => {
-    const viewsA = a.stats?.totalViews || 0;
-    const viewsB = b.stats?.totalViews || 0;
-    return viewsB - viewsA;
-  });
+  const users = Object.values(data.users || {});
+
+  return users
+    .map(user => {
+      const userClips = Object.values(data.clips || {}).filter(
+        clip => clip.userId === user.discordId && clip.status === 'approved'
+      );
+
+      const totalViews = userClips.reduce(
+        (sum, clip) => sum + (Number(clip.views) || 0),
+        0
+      );
+
+      const moneyMade = userClips.reduce(
+        (sum, clip) => sum + (Number(clip.moneyMade) || 0),
+        0
+      );
+
+      return {
+        ...user,
+        leaderboardViews: totalViews,
+        leaderboardMoney: moneyMade
+      };
+    })
+    .sort((a, b) => b.leaderboardViews - a.leaderboardViews);
 }
 
 function buildLeaderboardEmbed(data, page = 1, perPage = 10) {
@@ -427,14 +449,16 @@ function buildLeaderboardEmbed(data, page = 1, perPage = 10) {
 
   let lines = pageUsers.map((user, index) => {
     const rank = start + index + 1;
-    const views = user.stats?.totalViews || 0;
+    const views = user.leaderboardViews || 0;
 
     let prefix = `${rank}.`;
     if (rank === 1) prefix = '🥇';
     if (rank === 2) prefix = '🥈';
     if (rank === 3) prefix = '🥉';
 
-    const name = user.discordName || `User ${rank}`;
+    const name = user.hideFromLeaderboard
+  ? 'Hidden'
+  : (user.discordName || `User ${rank}`);
     return `${prefix} **${name}**: **${formatNumber(views)}** Views`;
   });
 
@@ -1427,6 +1451,54 @@ client.on(Events.MessageCreate, async message => {
       return;
     }
 
+    if (message.content.trim() === '!accountpanel') {
+      const embed = new EmbedBuilder()
+        .setColor(0x7ED957)
+        .setTitle('Manage Your All-Time Stats')
+        .setDescription(
+          `📈 **Analytics**\nView your earnings and performance metrics\n\n` +
+          `💸 **Payouts**\nTrack your payment history and USDT payout info\n\n` +
+          `👥 **Social Accounts**\nConnect and manage your social media accounts\n\n` +
+          `🌐 **Verify Demographics**\nVerify your account demographics\n\n` +
+          `<:whiteCE:1504904179905200148> Powered by Creators Elite`
+        );
+
+        const row1 = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId('account_analytics')
+            .setLabel('Analytics')
+            .setEmoji('📈')
+            .setStyle(ButtonStyle.Secondary),
+
+          new ButtonBuilder()
+            .setCustomId('account_payouts')
+            .setLabel('Payouts')
+            .setEmoji('💸')
+            .setStyle(ButtonStyle.Secondary)
+        );
+
+        const row2 = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setLabel('Social Accounts')
+            .setEmoji('👥')
+            .setStyle(ButtonStyle.Link)
+            .setURL(`https://discord.com/channels/${message.guild.id}/${CONNECT_ACCOUNTS_CHANNEL_ID}`),
+
+            new ButtonBuilder()
+              .setLabel('Verify Demographics')
+              .setEmoji('🌐')
+              .setStyle(ButtonStyle.Link)
+              .setURL(`https://discord.com/channels/${message.guild.id}/${VERIFY_DEMOGRAPHICS_CHANNEL_ID}`)
+        );
+
+        await message.channel.send({
+          embeds: [embed],
+          components: [row1, row2]
+        });
+
+        return;
+    }
+
     if (message.content.startsWith('!campaignconnectpanel')) {
       if (!isAdmin(message.member)) {
         await message.reply('❌ You must be an admin to use this command.');
@@ -1905,6 +1977,112 @@ client.on(Events.InteractionCreate, async interaction => {
       setTimeout(async () => {
         await interaction.channel.delete().catch(() => {});
       }, 5000);
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'account_analytics') {
+      const data = loadData();
+      const member = interaction.member;
+      const userRecord = ensureUser(data, member);
+
+      const hiddenName = userRecord.hideFromLeaderboard ? 'Hidden' : interaction.user.username;
+
+      const embed = new EmbedBuilder()
+        .setColor(0x7ED957)
+        .setAuthor({
+          name: hiddenName,
+          iconURL: interaction.user.displayAvatarURL()
+        })
+        .setDescription(
+          `All-time Clipping Analytics\n\n` +
+          `<a:rocket1:1504872045849346140> **Leaderboard**\n${userRecord.leaderboardRank || 'N/A'}\n` +
+          `<a:Cash1:1504871843419521115> **Total Earned**\n$${formatNumber(userRecord.stats?.moneyMade || 0)}\n` +
+          `<a:fire1:1504871649491554487> **Campaigns Joined**\n${userRecord.campaigns?.length || 0}\n` +
+          `<a:chart1:1504773558415523931> **Total Views**\n${formatNumber(userRecord.stats?.totalViews || 0)}\n` +
+          `<:approve1:1508373907411963955> **Clips Approved**\n${userRecord.stats?.videosApproved || 0}\n` +
+          `<:reject1:1508373970259546162> **Clips Denied**\n${userRecord.stats?.videosRejected || 0}\n\n` +
+          `<:whiteCE:1504904179905200148> Powered by Creators Elite`
+      );
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('view_my_clips')
+          .setLabel('View Your Clips')
+          .setEmoji('🎥')
+          .setStyle(ButtonStyle.Secondary),
+
+        new ButtonBuilder()
+          .setCustomId('toggle_leaderboard_name')
+          .setLabel(userRecord.hideFromLeaderboard ? 'Show name on Leaderboard' : 'Hide name from Leaderboard')
+          .setStyle(ButtonStyle.Danger)
+      );
+
+      await interaction.reply({
+        embeds: [embed],
+        components: [row],
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'toggle_leaderboard_name') {
+      const data = loadData();
+      const userRecord = ensureUser(data, interaction.member);
+
+      userRecord.hideFromLeaderboard = !userRecord.hideFromLeaderboard;
+
+      saveData(data);
+
+      await interaction.reply({
+        content: userRecord.hideFromLeaderboard
+          ? '✅ Your name will now show as **Hidden** on the leaderboard.'
+          : '✅ Your name will now show normally on the leaderboard.',
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'account_payouts') {
+      const data = loadData();
+      const userRecord = ensureUser(data, interaction.member);
+
+      const embed = new EmbedBuilder()
+        .setColor(0x7ED957)
+        .setAuthor({
+          name: interaction.user.username,
+          iconURL: interaction.user.displayAvatarURL()
+        })
+        .setDescription(
+          `View Your Payouts\n\n` +
+          `<a:flyin:1506234392920723546> **Total Earned**\n$${formatNumber(userRecord.stats?.moneyMade || 0)}\n` +
+          `<a:fire1:1504871649491554487> **Campaigns Joined**\n${userRecord.campaigns?.length || 0}\n` +
+          `<:usdt1:1504872188317012098> **USDT Address**\n${userRecord.usdtAddress || 'Not set'}\n` +
+          `<a:warning:1504774411280973864> **Notes**\nNetwork fees may apply depending on the payout network.\n\n` +
+          `<:whiteCE:1504904179905200148> Powered by Creators Elite`
+      );
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('payout_detailed_overview')
+          .setLabel('Detailed Overview')
+          .setEmoji('📄')
+          .setStyle(ButtonStyle.Secondary),
+
+        new ButtonBuilder()
+          .setCustomId('edit_usdt_address')
+          .setLabel('Edit USDT Address')
+          .setEmoji('<:usdt1:1504872188317012098>')
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      await interaction.reply({
+        embeds: [embed],
+        components: [row],
+        ephemeral: true
+      });
 
       return;
     }

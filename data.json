@@ -12,6 +12,21 @@
         "totalViews": 0,
         "moneyMade": 0
       }
+    },
+    "1468222318198259864": {
+      "discordId": "1468222318198259864",
+      "discordName": "jd25_",
+      "verified": false,
+      "campaigns": [],
+      "stats": {
+        "videosPosted": 0,
+        "videosApproved": 0,
+        "videosRejected": 0,
+        "totalViews": 0,
+        "moneyMade": 0
+      },
+      "campaignAccounts": {},
+      "campaignStats": {}
     }
   },
   "applications": {
