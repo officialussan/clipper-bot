@@ -3442,7 +3442,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
     if (
       interaction.isButton() &&
-      interaction.customId.startsWith('update_instagram_views:')
+      interaction.customId.startsWith('instagram_views:')
     ) {
       const clipId = interaction.customId.split(':')[1];
 
