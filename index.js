@@ -3104,7 +3104,7 @@ client.on(Events.InteractionCreate, async interaction => {
         if (staffChannel) {
           const sent = await staffChannel.send({
             content: renderClipStaffContent(clip),
-            components: buildClipStaffButtons(clip.id, clip.status)
+            components: buildClipStaffButtons(clip)
           }).catch(() => null);
 
           if (sent) {
