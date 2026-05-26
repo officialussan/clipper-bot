@@ -346,6 +346,76 @@ function getStatusLabel(status) {
 }
 
 function renderClipStaffContent(clip) {
+  return (
+    `📥 **New Clip Submission**\n\n` +
+    `**User:** <@${clip.userId}>\n` +
+    `**Campaign:** ${clip.campaignName}\n` +
+    `**Platform:** ${formatPlatform(clip.platform)}\n` +
+    `**Username:** @${clip.username}\n` +
+    `**Link:** ${clip.videoUrl || clip.url}\n` +
+    `**Status:** ${clip.status}\n` +
+    `${clip.views ? `**Views:** ${formatNumber(clip.views)}\n` : ''}` +
+    `${clip.moneyMade ? `**Payout:** $${formatNumber(clip.moneyMade)}\n` : ''}`
+  );
+}
+
+function buildClipStaffButtons(clip) {
+  if (clip.status === 'pending') {
+    return [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`clip_approve:${clip.id}`)
+          .setLabel('Approve')
+          .setStyle(ButtonStyle.Success),
+
+        new ButtonBuilder()
+          .setCustomId(`clip_reject:${clip.id}`)
+          .setLabel('Reject')
+          .setStyle(ButtonStyle.Danger)
+      )
+    ];
+  }
+
+  if (clip.platform === 'instagram' && clip.status === 'approved') {
+    return [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`clip_done:${clip.id}`)
+          .setLabel('Approved')
+          .setStyle(ButtonStyle.Success)
+          .setDisabled(true),
+
+        new ButtonBuilder()
+          .setCustomId(`instagram_views:${clip.id}`)
+          .setLabel('Update Views')
+          .setStyle(ButtonStyle.Primary)
+      )
+    ];
+  }
+
+  return [];
+}
+
+async function updateClipStaffMessage(guild, clip) {
+  const campaign = CAMPAIGNS[clip.campaignId];
+  if (!campaign) return;
+
+  const ch = guild.channels.cache.get(campaign.staffChannelId);
+  if (!ch || !clip.staffMessageId) return;
+
+  try {
+    const msg = await ch.messages.fetch(clip.staffMessageId);
+    await msg.edit({
+      content: renderClipStaffContent(clip),
+      components: buildClipStaffButtons(clip)
+    });
+  } catch (error) {
+    console.log('Could not update clip staff message:', error.message);
+  }
+}
+
+
+function renderClipStaffContent(clip) {
   return `📥 **New Clip Submission**
 
 **User:** <@${clip.userId}>
@@ -848,75 +918,6 @@ async function updateCampaignPanelMessage(guild, campaignId) {
     content: campaign.panelText,
     components: [buildCampaignPanelButtons(campaign, data)]
   }).catch(() => {});
-}
-
-function renderClipStaffContent(clip) {
-  return (
-    `📥 **New Clip Submission**\n\n` +
-    `**User:** <@${clip.userId}>\n` +
-    `**Campaign:** ${clip.campaignName}\n` +
-    `**Platform:** ${formatPlatform(clip.platform)}\n` +
-    `**Username:** @${clip.username}\n` +
-    `**Link:** ${clip.videoUrl || clip.url}\n` +
-    `**Status:** ${clip.status}\n` +
-    `${clip.views ? `**Views:** ${formatNumber(clip.views)}\n` : ''}` +
-    `${clip.moneyMade ? `**Payout:** $${formatNumber(clip.moneyMade)}\n` : ''}`
-  );
-}
-
-function buildClipStaffButtons(clip) {
-  if (clip.status === 'pending') {
-    return [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`clip_approve:${clip.id}`)
-          .setLabel('Approve')
-          .setStyle(ButtonStyle.Success),
-
-        new ButtonBuilder()
-          .setCustomId(`clip_reject:${clip.id}`)
-          .setLabel('Reject')
-          .setStyle(ButtonStyle.Danger)
-      )
-    ];
-  }
-
-  if (clip.platform === 'instagram' && clip.status === 'approved') {
-    return [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`clip_done:${clip.id}`)
-          .setLabel('Approved')
-          .setStyle(ButtonStyle.Success)
-          .setDisabled(true),
-
-        new ButtonBuilder()
-          .setCustomId(`instagram_views:${clip.id}`)
-          .setLabel('Update Views')
-          .setStyle(ButtonStyle.Primary)
-      )
-    ];
-  }
-
-  return [];
-}
-
-async function updateClipStaffMessage(guild, clip) {
-  const campaign = CAMPAIGNS[clip.campaignId];
-  if (!campaign) return;
-
-  const ch = guild.channels.cache.get(campaign.staffChannelId);
-  if (!ch || !clip.staffMessageId) return;
-
-  try {
-    const msg = await ch.messages.fetch(clip.staffMessageId);
-    await msg.edit({
-      content: renderClipStaffContent(clip),
-      components: buildClipStaffButtons(clip)
-    });
-  } catch (error) {
-    console.log('Could not update clip staff message:', error.message);
-  }
 }
 
 function extractLinksFromText(text) {
