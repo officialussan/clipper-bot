@@ -397,25 +397,6 @@ function buildClipStaffButtons(clip) {
   return [];
 }
 
-async function updateClipStaffMessage(guild, clip) {
-  const campaign = CAMPAIGNS[clip.campaignId];
-  if (!campaign) return;
-
-  const ch = guild.channels.cache.get(campaign.staffChannelId);
-  if (!ch || !clip.staffMessageId) return;
-
-  try {
-    const msg = await ch.messages.fetch(clip.staffMessageId);
-    await msg.edit({
-      content: renderClipStaffContent(clip),
-      components: buildClipStaffButtons(clip)
-    });
-  } catch (error) {
-    console.log('Could not update clip staff message:', error.message);
-  }
-}
-
-
 function renderClipStaffContent(clip) {
   return `📥 **New Clip Submission**
 
@@ -1721,6 +1702,24 @@ client.on(Events.MessageCreate, async message => {
   }
 });
 
+async function updateClipStaffMessage(guild, clip) {
+  const campaign = CAMPAIGNS[clip.campaignId];
+  if (!campaign) return;
+
+  const ch = guild.channels.cache.get(campaign.staffChannelId);
+  if (!ch || !clip.staffMessageId) return;
+
+  try {
+    const msg = await ch.messages.fetch(clip.staffMessageId);
+    await msg.edit({
+      content: renderClipStaffContent(clip),
+      components: buildClipStaffButtons(clip)
+    });
+  } catch (error) {
+    console.log('Could not update clip staff message:', error.message);
+  }
+}
+
 client.on(Events.InteractionCreate, async interaction => {
   try {
     if (interaction.isButton() && interaction.customId.startsWith('leaderboard_prev:')) {
@@ -2449,7 +2448,7 @@ client.on(Events.InteractionCreate, async interaction => {
         updatedAt: Date.now()
       };
 
-      const embeds = new EmbedBuilder()
+      const embed = new EmbedBuilder()
         .setColor(0x7ED957)
         .setTitle('💳 New Payment Details Submission')
         .addFields(
