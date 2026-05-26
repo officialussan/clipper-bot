@@ -40,6 +40,7 @@ const VERIFY_DEMOGRAPHICS_CHANNEL_ID = process.env.VERIFY_DEMOGRAPHICS_CHANNEL_I
 const TICKET_LOG_CHANNEL_ID = process.env.TICKET_LOG_CHANNEL_ID;
 const DEMOGRAPHICS_STAFF_CHANNEL_ID = process.env.DEMOGRAPHICS_STAFF_CHANNEL_ID;
 const DEMOGRAPHICS_UPLOAD_CATEGORY_ID = process.env.DEMOGRAPHICS_UPLOAD_CATEGORY_ID;
+const PAYMENT_STAFF_CHANNEL_ID = process.env.PAYMENT_STAFF_CHANNEL_ID;
 
 const SUPPORTED_COUNTRIES = [
   'United States',
@@ -1451,9 +1452,9 @@ client.on(Events.MessageCreate, async message => {
         .setTitle('Manage Your All-Time Stats')
         .setDescription(
           `📈 **Analytics**\nView your earnings and performance metrics\n\n` +
+          `<:usdt1:1504872188317012098> **Payment Details**\nAdd your Binance or Bybit ID\n\n` +
           `💸 **Payouts**\nTrack your payment history and USDT payout info\n\n` +
           `👥 **Social Accounts**\nConnect and manage your social media accounts\n\n` +
-          `🌐 **Verify Demographics**\nVerify your account demographics\n\n` +
           `<:whiteCE:1504904179905200148> Powered by Creators Elite`
         );
 
@@ -1465,24 +1466,24 @@ client.on(Events.MessageCreate, async message => {
             .setStyle(ButtonStyle.Secondary),
 
           new ButtonBuilder()
-            .setCustomId('account_payouts')
+            .setCustomId('payment_details')
             .setLabel('Payouts')
-            .setEmoji('💸')
+            .setEmoji('<:usdt1:1504872188317012098>')
             .setStyle(ButtonStyle.Secondary)
         );
 
         const row2 = new ActionRowBuilder().addComponents(
           new ButtonBuilder()
+            .setCustomId('account_payouts')
+            .setLabel('Payouts')
+            .setEmoji('💸')
+            .setStyle(ButtonStyle.Secondary)
+
+          new ButtonBuilder()
             .setLabel('Social Accounts')
             .setEmoji('👥')
             .setStyle(ButtonStyle.Link)
             .setURL(`https://discord.com/channels/${message.guild.id}/${CONNECT_ACCOUNTS_CHANNEL_ID}`),
-
-            new ButtonBuilder()
-              .setLabel('Verify Demographics')
-              .setEmoji('🌐')
-              .setStyle(ButtonStyle.Link)
-              .setURL(`https://discord.com/channels/${message.guild.id}/${VERIFY_DEMOGRAPHICS_CHANNEL_ID}`)
         );
 
         await message.channel.send({
@@ -2067,7 +2068,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         new ButtonBuilder()
           .setCustomId('edit_usdt_address')
-          .setLabel('Edit USDT Address')
+          .setLabel('Edit ID')
           .setEmoji('<:usdt1:1504872188317012098>')
           .setStyle(ButtonStyle.Secondary)
       );
@@ -2394,6 +2395,139 @@ client.on(Events.InteractionCreate, async interaction => {
         }
       });
 
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'payment_details') {
+      const modal = new ModalBuilder()
+        .setCustomId('payment_details_modal')
+        .setTitle('Payment Details');
+
+      const exchangeInput = new TextInputBuilder()
+        .setCustomId('exchange')
+        .setLabel('Exchange')
+        .setPlaceholder('Binance or Bybit')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const idInput = new TextInputBuilder()
+        .setCustomId('payment_id')
+        .setLabel('Your Binance/Bybit ID')
+        .setPlaceholder('Enter your payment ID')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(exchangeInput),
+        new ActionRowBuilder().addComponents(idInput)
+      );
+
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId === 'payment_details_modal') {
+      const exchange = interaction.fields.getTextInputValue('exchange').trim();
+      const paymentId = interaction.fields.getTextInputValue('payment_id').trim();
+
+      const allowed = ['binance', 'bybit'];
+
+      if (!allowed.includes(exchange.toLowerCase())) {
+        await interaction.reply({
+          content: '❌ Exchange must be Binance or Bybit.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      const data = loadData();
+      const userRecord = ensureUser(data, interaction.member);
+
+      userRecord.paymentDetails = {
+        exchange: exchange.toLowerCase(),
+        paymentId,
+        updatedAt: Date.now()
+      };
+
+      saveData(data);
+
+      const embeds = new EmbedBuilder()
+        .setColor(0x7ED957)
+        .setTitle('💳 New Payment Details Submission')
+        .addFields(
+          {
+            name: 'User',
+            value: `${interaction.user} (${interaction.user.id})`
+          },
+          {
+            name: 'Exchange',
+            value: exchange,
+            inline: true
+          },
+          {
+            name: 'Payment ID',
+            value: `\`${paymentId}\``,
+            inline: true
+          }
+        )
+        .setFooter({text: 'Creators Elite Payment System'}
+        .setTimestamp();
+
+      const staffChannel = interaction.guild.channels.cache.get(PAYMENT_STAFF_CHANNEL_ID);
+
+      if (staffChannel) {
+        if (userRecord.paymentDetailsStaffMessageId) {
+          const oldMsg = await staffChannel.messages
+            .fetch(userRecord.paymentDetailsStaffMessageId)
+            .catch(() => null);
+
+           if (oldMsg) {
+             await oldMsg.edit({ embeds: [embed] });
+           } else {
+             const newMsg = await staffChannel.send({ embeds: [embed] });
+             userRecord.paymentDetailsStaffMessageId = newMsg.id;
+           }
+         } else {
+           const newMsg = await staffChannel.send({ embeds: [embed] });
+           userRecord.paymentDetailsStaffMessageId = newMsg.id;
+         }
+      }
+
+      saveData(data);
+
+      await interaction.reply({
+        content: '✅ Payment details submitted successfully.',
+        ephemeral: true
+      });
+
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'edit_usdt_address') {
+      const modal = new ModalBuilder()
+        .setCustomId('payment_details_modal')
+        .setTitle('Update Payment Details');
+
+      const exchangeInput = new TextInputBuilder()
+        .setCustomId('exchange')
+        .setLabel('Exchange')
+        .setPlaceholder('Binance or Bybit')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const idInput = new TextInputBuilder()
+        .setCustomId('payment_id')
+        .setLabel('Binance/Bybit ID')
+        .setPlaceholder('Enter your new payment ID')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(exchangeInput),
+        new ActionRowBuilder().addComponents(idInput)
+      );
+
+      await interaction.showModal(modal);
       return;
     }
 
@@ -3471,7 +3605,6 @@ client.on(Events.InteractionCreate, async interaction => {
       interaction.customId.startsWith('instagram_views_modal:')
     ) {
       const clipId = interaction.customId.split(':')[1];
-
       const data = loadData();
       const clip = data.clips?.[clipId];
 
@@ -3483,7 +3616,25 @@ client.on(Events.InteractionCreate, async interaction => {
         return;
       }
 
+      const currentViews = Number(
+        interaction.fields
+          .getTextInputValue('instagram_views')
+          .replace(/,/g, '')
+      );
+
+      if (!Number.isFinite(currentViews) || currentViews < 0) {
+        await interaction.reply({
+          content: '❌ Invalid views number.',
+          ephemeral: true
+        });
+        return;
+      }
+
       clip.currentViews = currentViews;
+
+      const startingViews = clip.startingViews || 0;
+      const earnedViews = Math.max(0, currentViews - startingViews);
+
       clip.views = earnedViews;
 
       const campaign = CAMPAIGNS[clip.campaignId];
