@@ -1467,7 +1467,7 @@ client.on(Events.MessageCreate, async message => {
 
           new ButtonBuilder()
             .setCustomId('payment_details')
-            .setLabel('Payouts')
+            .setLabel('Payment Details')
             .setEmoji('<:usdt1:1504872188317012098>')
             .setStyle(ButtonStyle.Secondary)
         );
@@ -1477,13 +1477,13 @@ client.on(Events.MessageCreate, async message => {
             .setCustomId('account_payouts')
             .setLabel('Payouts')
             .setEmoji('💸')
-            .setStyle(ButtonStyle.Secondary)
+            .setStyle(ButtonStyle.Secondary),
 
           new ButtonBuilder()
             .setLabel('Social Accounts')
             .setEmoji('👥')
             .setStyle(ButtonStyle.Link)
-            .setURL(`https://discord.com/channels/${message.guild.id}/${CONNECT_ACCOUNTS_CHANNEL_ID}`),
+            .setURL(`https://discord.com/channels/${message.guild.id}/${CONNECT_ACCOUNTS_CHANNEL_ID}`)
         );
 
         await message.channel.send({
@@ -2449,8 +2449,6 @@ client.on(Events.InteractionCreate, async interaction => {
         updatedAt: Date.now()
       };
 
-      saveData(data);
-
       const embeds = new EmbedBuilder()
         .setColor(0x7ED957)
         .setTitle('💳 New Payment Details Submission')
@@ -2470,7 +2468,9 @@ client.on(Events.InteractionCreate, async interaction => {
             inline: true
           }
         )
-        .setFooter({text: 'Creators Elite Payment System'}
+        .setFooter({
+          text: 'Creators Elite Payment System'
+        })
         .setTimestamp();
 
       const staffChannel = interaction.guild.channels.cache.get(PAYMENT_STAFF_CHANNEL_ID);
