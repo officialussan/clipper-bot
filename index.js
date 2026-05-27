@@ -3645,7 +3645,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       saveData(data);
 
-      await updateClippStaffMessage(interaction.guild, clip);
+      await updateClippStaffMessage(guild, clip);
 
       await updateCampaignPanelMessage(
         interaction.guild,
