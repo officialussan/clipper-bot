@@ -41,6 +41,8 @@ const TICKET_LOG_CHANNEL_ID = process.env.TICKET_LOG_CHANNEL_ID;
 const DEMOGRAPHICS_STAFF_CHANNEL_ID = process.env.DEMOGRAPHICS_STAFF_CHANNEL_ID;
 const DEMOGRAPHICS_UPLOAD_CATEGORY_ID = process.env.DEMOGRAPHICS_UPLOAD_CATEGORY_ID;
 const PAYMENT_STAFF_CHANNEL_ID = process.env.PAYMENT_STAFF_CHANNEL_ID;
+const LEADERBOARD_CHANNEL_ID = '1495692728431018015';
+const LEADERBOARD_MESSAGE_ID = '1508380113056567417';
 
 const SUPPORTED_COUNTRIES = [
   'United States',
@@ -103,6 +105,8 @@ Click the button below to start clipping and earning:`
     startDate: '2026-05-18',
     ratePerMillion: 400,
     viewCap: 5000000,
+    panelChannelId:'1504128280167710751',
+    panelMessageId:'1506295895900291172',
     staffChannelId: process.env.TONY_STAFF_CHANNEL_ID,
     roleId: process.env.TONY_ROLE_ID,
     entryChannelId: process.env.TONY_ENTRY_CHANNEL_ID,
@@ -151,6 +155,8 @@ Click the button below to start clipping and earning.`
     startDate: '2026-04-28',
     ratePerMillion: 300,
     viewCap: 7000000,
+    panelChannelId:'1492151253306703933',
+    panelMessageId:'1506295734729707540',
     staffChannelId: process.env.CROWDER_STAFF_CHANNEL_ID,
     roleId: process.env.CROWDER_ROLE_ID,
     entryChannelId: process.env.CROWDER_ENTRY_CHANNEL_ID,
@@ -900,6 +906,41 @@ async function updateCampaignPanelMessage(guild, campaignId) {
     content: campaign.panelText,
     components: [buildCampaignPanelButtons(campaign, data)]
   }).catch(() => {});
+}
+
+async function updateCampaignPanelMessage(guild, campaignId) {
+  const data = loadData();
+  const campaign = CAMPAIGNS[campaignId];
+  if (!campaign?.panelChannelId || !campaign?.panelMessageId) return;
+
+  const channel = guild.channels.cache.get(campaign.panelChannelId);
+  if (!channel) return;
+
+  const msg = await channel.messages.fetch(campaign.panelMessageId).catch(() => null);
+  if (!msg) return;
+
+  await msg.edit({
+    content: campaign.panelText,
+    components: [buildCampaignPanelButtons(campaign, data)]
+  });
+}
+
+async function updateLeaderboardMessage(guild) {
+  const channel = guild.channels.cache.get(leaderboardChannelId);
+  if (!channel) return;
+
+  const msg = await channel.messages
+    .fetch(leaderboardMessageId)
+    .catch(() => null);
+
+  if (!msg) return;
+
+  const data = loadData();
+
+  await msg.edit({
+    embeds: [buildLeaderboardEmbed(data, 1, 10)],
+    components: [buildLeaderboardButtons(1)]
+  });
 }
 
 function extractLinksFromText(text) {
