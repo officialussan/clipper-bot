@@ -653,30 +653,6 @@ function makeSocialRequestId() {
   return `social_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 }
 
-function buildCampaignPanelButtons(campaign) {
-  return [
-    new ButtonBuilder()
-      .setCustomId(`join_campaign:${campaign.id}`)
-      .setLabel('Join Campaign')
-      .setEmoji('<a:flyin:1506234392920723546>')
-      .setStyle(ButtonStyle.Success),
-
-    new ButtonBuilder()
-      .setCustomId(`campaign_status:${campaign.id}`)
-      .setLabel('Campaign Status')
-      .setEmoji('<a:chart1:1504773558415523931>')
-      .setStyle(ButtonStyle.Primary),
-
-    new ButtonBuilder()
-      .setCustomId(`campaign_fulfilled:${campaign.id}`)
-      .setLabel(`Fulfilled: ${fulfilledPercent}%`)
-      .setStyle(ButtonStyle.Secondary)
-      .setEmoji('<a:Loadin:1506234461459714100>')
-      .setDisabled(true)
-    )
-  ];
-}
-
 function renderSocialStaffContent(request) {
   return `📥 **Social Account Verification Request**
 
@@ -913,6 +889,36 @@ function ensureCampaignPlatformStats(userRecord, campaignId, platform, username 
   }
 
   return userRecord.campaignStats[campaignId][platform];
+}
+
+function buildCampaignPanelButtons(campaign) {
+  const fulfilledPercent = Math.min(
+    ((campaign.totalViews || 0) / (campaign.maxViews || 5000000)) * 100,
+    100
+  ).toFixed(1);
+
+    const row = new ActionRowBuilder().addComponents( 
+      new ButtonBuilder()
+        .setCustomId(`join_campaign:${campaign.id}`)
+        .setLabel('Join Campaign')
+        .setEmoji('<a:flyin:1506234392920723546>')
+        .setStyle(ButtonStyle.Success),
+
+      new ButtonBuilder()
+        .setCustomId(`campaign_status:${campaign.id}`)
+        .setLabel('Campaign Status')
+        .setEmoji('<a:chart1:1504773558415523931>')
+        .setStyle(ButtonStyle.Primary),
+
+      new ButtonBuilder()
+        .setCustomId(`campaign_fulfilled:${campaign.id}`)
+        .setLabel(`Fulfilled: ${fulfilledPercent}%`)
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji('<a:Loadin:1506234461459714100>')
+        .setDisabled(true)
+    );
+   
+    return [row];
 }
 
 async function updateCampaignPanelMessage(guild, campaignId) {
