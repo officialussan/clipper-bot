@@ -909,37 +909,71 @@ async function updateCampaignPanelMessage(guild, campaignId) {
 }
 
 async function updateCampaignPanelMessage(guild, campaignId) {
-  const data = loadData();
   const campaign = CAMPAIGNS[campaignId];
-  if (!campaign?.panelChannelId || !campaign?.panelMessageId) return;
 
-  const channel = guild.channels.cache.get(campaign.panelChannelId);
-  if (!channel) return;
+  console.log('Updating campaign panel...');
+  console.log(campaign.panelChannelId);
+  console.log(campaign.panelMessageId);
 
-  const msg = await channel.messages.fetch(campaign.panelMessageId).catch(() => null);
-  if (!msg) return;
+  const channel = guild.channels.cache.get(
+    campaign.panelChannelId
+  );
+
+  if (!channel) {
+    console.log('Panel channel not found');
+    return;
+  }
+
+  const msg = await channel.messages
+    .fetch(campaign.panelMessageId)
+    .catch(() => null);
+
+  if (!msg) {
+    console.log('Panel message not found');
+    return;
+  }
+
+  console.log('Panel message fetched');
+
+  const data = loadData();
 
   await msg.edit({
-    content: campaign.panelText,
     components: [buildCampaignPanelButtons(campaign, data)]
   });
 }
 
-async function updateLeaderboardMessage(guild) {
-  const channel = guild.channels.cache.get(leaderboardChannelId);
-  if (!channel) return;
+async function updateLeaderboardMessage(guild, campaignId) {
+  const campaign = CAMPAIGNS[campaignId];
+
+  console.log('Updating leaderboard...');
+  console.log(campaign.leaderboardChannelId);
+  console.log(campaign.leaderboardMessageId);
+
+  const channel = guild.channels.cache.get(
+    campaign.leaderboardChannelId
+  );
+
+  if (!channel) {
+    console.log('Leaderboard channel not found');
+    return;
+  }
 
   const msg = await channel.messages
-    .fetch(leaderboardMessageId)
+    .fetch(campaign.leaderboardMessageId)
     .catch(() => null);
 
-  if (!msg) return;
+  if (!msg) {
+    console.log('Leaderboard message not found');
+    return;
+  }
+
+  console.log('Leaderboard message fetched');
 
   const data = loadData();
 
   await msg.edit({
-    embeds: [buildLeaderboardEmbed(data, 1, 10)],
-    components: [buildLeaderboardButtons(1)]
+    embeds: [buildLeaderboardEmbed(data, campaignId)],
+    components: [buildLeaderboardButtons(campaignId)]
   });
 }
 
@@ -3689,6 +3723,11 @@ client.on(Events.InteractionCreate, async interaction => {
       await updateClipStaffMessage(interaction.guild, clip);
 
       await updateCampaignPanelMessage(
+        interaction.guild,
+        clip.campaignId
+      );
+
+      await updateLeaderboardMessage(
         interaction.guild,
         clip.campaignId
       );
