@@ -61,41 +61,6 @@ const dataFilePath =
   process.env.DATA_FILE_PATH || path.join(__dirname, 'data.json');
 
 const CAMPAIGNS = {
-  michael: {
-    id: 'michael',
-    name: 'Michael Carbonara Campaign',
-    allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
-    payoutThreshold: 100000,
-    staffChannelId: process.env.MICHAEL_STAFF_CHANNEL_ID,
-    roleId: process.env.MICHAEL_ROLE_ID,
-    entryChannelId: process.env.MICHAEL_ENTRY_CHANNEL_ID,
-    panelText: `🎙️ **Earn Money Posting Political Clips – Michael Carbonara Campaign**
-
-Earn money by posting clips and edits of politician *Michael Carbonara* discussing current political topics. High-quality AI-generated content is accepted!
-
-All you have to do is **register for the campaign below** and follow the guidelines to start earning.
-
-📊 **Campaign Overview**
-• **Content:** Michael Carbonara political discussions
-• **Platforms:** TikTok, IG Reels, YouTube Shorts
-• **Requirement:** Must tag **@mcarbonarafl** at the start of every caption
-• **Requirement:** Likeness (audio/visual) must be exact
-• **Strict Rule:** **NO** Anti-Trump or Anti-White House content
-• **Strict Rule:** **NO** outrageous or violent content *(r*pe, killing, etc.)*
-
-💰 **Payment Details**
-
-> **TikTok:** $160 per 100,000 views  
-> **YouTube Shorts:** $100 per 100,000 views  
-> **Instagram Reels:** $50 per 100,000 views  
-> **Account Limit:** Unlimited  
-> **Payment Method:** Crypto  
-> **Minimum Payout:** 100k views to qualify
-
-🚀 **Join the Campaign**
-Click the button below to start clipping and earning:`
-  },
-
   tony: {
     id: 'tony',
     name: '<:tr:1505143223507750973> Tony Robbins Clipping Campaign',
@@ -194,39 +159,6 @@ All you have to do is **register for the campaign below** and follow the guideli
 > **Minimum Payout:** $10
 
 ## <a:arrow1:1504776324051374130> Join the Campaign
-
-Click the button below to start clipping and earning.
-`
-  },
-
-  emoney: {
-    id: 'emoney',
-    name: 'eMoney Shopping',
-    externalJoinUrl: 'https://discord.gg/UBwV3dmXk',
-    panelText: `🛍️ **Earn Money Posting Clips & Edits – eMoney Shopping**
-
-Earn money by posting clips and edited content for *eMoney Shopping Coupons* — **“The Resell Universe.”**
-
-All you have to do is **register for the campaign below** and follow the guidelines to start earning.
-
-📊 **Campaign Overview**
-
-• **Content:** Daily content will be provided through a shared Drive folder
-• **Platforms:** TikTok, Instagram, YouTube & Facebook
-• **Requirement:** Videos must be posted across all selected platforms
-• **Target Audience:** Tier 1 countries only
-• **Editing Style:** All edits must follow the campaign editing style
-• **Consistency Rule:** Inactive or inconsistent posting may result in removal from the campaign
-• **Submission Rule:** Video links must be submitted after posting
-
-💰 **Payment Details**
-
-> **Payout Schedule:** Monthly
-> **First Month Rate:** $1 per 1,000 views
-> **Payment Methods:** PayPal & Whop
-> **Eligible Views:** Tier 1 countries only
-
-🚀 **Join the Campaign**
 
 Click the button below to start clipping and earning.`
   }
@@ -922,23 +854,6 @@ function buildCampaignPanelButtons(campaign) {
 }
 
 async function updateCampaignPanelMessage(guild, campaignId) {
-  const data = loadData();
-  const campaign = CAMPAIGNS[campaignId];
-  if (!campaign || !campaign.panelChannelId || !campaign.panelMessageId) return;
-
-  const channel = guild.channels.cache.get(campaign.panelChannelId);
-  if (!channel) return;
-
-  const msg = await channel.messages.fetch(campaign.panelMessageId).catch(() => null);
-  if (!msg) return;
-
-  await msg.edit({
-    content: campaign.panelText,
-    components: [buildCampaignPanelButtons(campaign, data)]
-  }).catch(() => {});
-}
-
-async function updateCampaignPanelMessage(guild, campaignId) {
   const campaign = CAMPAIGNS[campaignId];
 
   console.log('Updating campaign panel...');
@@ -964,12 +879,17 @@ async function updateCampaignPanelMessage(guild, campaignId) {
   }
 
   console.log('Panel message fetched');
+  console.log('Editing panel...');
 
   const data = loadData();
 
   await msg.edit({
-    components: [buildCampaignPanelButtons(campaign, data)]
+    content: campaign.panelText,
+    components: buildCampaignPanelButtons(campaign)
   });
+  
+  console.log('Panel updated successfully');
+
 }
 
 async function updateLeaderboardMessage(guild, campaignId) {
