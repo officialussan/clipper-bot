@@ -494,47 +494,63 @@ function getLeaderboardUsers(data) {
 }
 
 function buildLeaderboardEmbed(data, page = 1, perPage = 10) {
-  const users = getLeaderboardUsers(data);
-  const totalPages = Math.max(1, Math.ceil(users.length / perPage));
-  const safePage = Math.min(Math.max(page, 1), totalPages);
+  // 1. DYNAMICALLY MAP & AGGREGATE VIEWS FOR EVERY USER FROM THE LIVE CLIPS ARRAY
+  const sortedUsers = Object.entries(data.users || {})
+    .map(([userId, userRecord]) => {
+      // Find all approved clips belonging to this user
+      const approvedClips = Object.values(data.clips || {}).filter(
+        clip => clip.userId === userId && clip.status === 'approved'
+      );
 
-  const start = (safePage - 1) * perPage;
-  const pageUsers = users.slice(start, start + perPage);
+      // Sum up their true live views
+      const liveTotalViews = approvedClips.reduce(
+        (sum, clip) => sum + (Number(clip.views) || 0),
+        0
+      );
 
-  let lines = pageUsers.map((user, index) => {
-    const rank = start + index + 1;
-    const views = user.leaderboardViews || 0;
+      const username = userRecord.hideFromLeaderboard ? 'Hidden' : (userRecord.username || 'Unknown');
 
-    let prefix = `${rank}.`;
-    if (rank === 1) prefix = '🥇';
-    if (rank === 2) prefix = '🥈';
-    if (rank === 3) prefix = '🥉';
+      return {
+        userId,
+        username,
+        totalViews: liveTotalViews,
+        hideFromLeaderboard: userRecord.hideFromLeaderboard
+      };
+    })
+    // 2. FILTER OUT USERS WITH 0 VIEWS AND SORT HIGHEST TO LOWEST
+    .filter(user => user.totalViews > 0)
+    .sort((a, b) => b.totalViews - a.totalViews);
 
-    const name = user.hideFromLeaderboard
-  ? 'Hidden'
-  : (user.discordName || `User ${rank}`);
-    return `${prefix} **${name}**: **${formatNumber(views)}** Views`;
-  });
+  // 3. PAGINATION MATH
+  const totalPages = Math.max(1, Math.ceil(sortedUsers.length / perPage));
+  const currentPage = Math.min(page, totalPages);
+  const startIdx = (currentPage - 1) * perPage;
+  const pageUsers = sortedUsers.slice(startIdx, startIdx + perPage);
 
-  if (lines.length === 0) {
-    lines = ['No stats yet.'];
+  // 4. BUILD THE EMBED STRINGS
+  let leaderboardText = '';
+  if (pageUsers.length === 0) {
+    leaderboardText = '*No clippers on the leaderboard yet!*';
+  } else {
+    pageUsers.forEach((user, index) => {
+      const overallRank = startIdx + index + 1;
+      let medal = '🏅';
+      if (overallRank === 1) medal = '🥇';
+      if (overallRank === 2) medal = '🥈';
+      if (overallRank === 3) medal = '🥉';
+
+      const displayName = user.hideFromLeaderboard ? '*Hidden*' : user.username;
+      leaderboardText += `${medal} **${displayName}**: ${formatNumber(user.totalViews)} Views\n`;
+    });
   }
 
   const embed = new EmbedBuilder()
     .setColor(0x7ED957)
-    .setDescription(
-      `🎬 **Creators Elite** 💎\n\n` +
-      `**Top Clippers All Time** <a:chart1:1504773558415523931>\n\n` +
-      `${lines.join('\n')}\n\n` +
-      `<:whiteCE:1504904179905200148> **Powered by Creators Elite**`
-    )
-    .setFooter({ text: `Page ${safePage} / ${totalPages}` });
+    .setTitle('🎬 Creators Elite 💎')
+    .setDescription(`### Top Clippers All Time 📈\n\n${leaderboardText}\n\n<:whiteCE:1504904179905200148> Powered by Creators Elite`)
+    .setFooter({ text: `Page ${currentPage} / ${totalPages}` });
 
-  return {
-    embed,
-    page: safePage,
-    totalPages
-  };
+  return { embed, totalPages };
 }
 
 function buildLeaderboardButtons(page, totalPages) {
@@ -556,9 +572,19 @@ function buildLeaderboardButtons(page, totalPages) {
 }
 
 function getUserRank(data, userId) {
-  const users = getLeaderboardUsers(data);
-  const index = users.findIndex(user => user.discordId === userId);
-  return index === -1 ? null : index + 1;
+  const sortedUsers = Object.entries(data.users || {})
+    .map(([id, userRecord]) => {
+      const liveTotalViews = Object.values(data.clips || {}).filter(
+        clip => clip.userId === id && clip.status === 'approved'
+      ).reduce((sum, clip) => sum + (Number(clip.views) || 0), 0);
+
+      return { id, totalViews: liveTotalViews };
+    })
+    .filter(user => user.totalViews > 0)
+    .sort((a, b) => b.totalViews - a.totalViews);
+
+  const rankIndex = sortedUsers.findIndex(u => u.id === userId);
+  return rankIndex !== -1 ? rankIndex + 1 : null;
 }
 
 function ensureCampaignStats(userRecord, campaignId) {
