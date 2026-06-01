@@ -493,26 +493,35 @@ function getLeaderboardUsers(data) {
     .sort((a, b) => b.leaderboardViews - a.leaderboardViews);
 }
 
-function buildLeaderboardEmbed(data, page = 1, perPage = 10) {
-  // 1. DYNAMICALLY MAP & AGGREGATE VIEWS FOR EVERY USER FROM THE LIVE CLIPS ARRAY
+function buildLeaderboardEmbed(guild, data, page = 1, perPage = 10) {
+  // 1. MAP & AGGREGATE VIEWS FOR EVERY USER
   const sortedUsers = Object.entries(data.users || {})
     .map(([userId, userRecord]) => {
-      // Find all approved clips belonging to this user
       const approvedClips = Object.values(data.clips || {}).filter(
         clip => clip.userId === userId && clip.status === 'approved'
       );
 
-      // Sum up their true live views
       const liveTotalViews = approvedClips.reduce(
         (sum, clip) => sum + (Number(clip.views) || 0),
         0
       );
 
-      const username = userRecord.hideFromLeaderboard ? 'Hidden' : (userRecord.username || 'Unknown');
+      // FIX: If database doesn't have a name, fetch it directly from the Discord server cache
+      let fetchedUsername = userRecord.username || userRecord.tag || userRecord.displayName;
+      
+      if (!fetchedUsername && guild) {
+        const member = guild.members.cache.get(userId);
+        if (member) {
+          fetchedUsername = member.user.username;
+        }
+      }
+
+      // Final safety fallback if they completely left the Discord server
+      const finalName = fetchedUsername || `User-${userId.slice(-4)}`;
 
       return {
         userId,
-        username,
+        username: finalName,
         totalViews: liveTotalViews,
         hideFromLeaderboard: userRecord.hideFromLeaderboard
       };
@@ -546,8 +555,8 @@ function buildLeaderboardEmbed(data, page = 1, perPage = 10) {
 
   const embed = new EmbedBuilder()
     .setColor(0x7ED957)
-    .setTitle('🎬 Creators Elite 💎')
-    .setDescription(`### Top Clippers All Time 📈\n\n${leaderboardText}\n\n<:whiteCE:1504904179905200148> Powered by Creators Elite`)
+    .setTitle('🎬 Creators Elite <a:rgem:1506235676276953190>')
+    .setDescription(`### Top Clippers All Time <a:chart1:1504773558415523931>\n\n${leaderboardText}\n\n<:whiteCE:1504904179905200148> Powered by Creators Elite`)
     .setFooter({ text: `Page ${currentPage} / ${totalPages}` });
 
   return { embed, totalPages };
@@ -969,33 +978,24 @@ async function updateCampaignPanelMessage(guild, campaignId) {
 async function updateLeaderboardMessage(guild) {
   console.log('🔄 Triggering automated leaderboard edit...');
 
-  // Use your global constants directly
   const channel = guild.channels.cache.get(LEADERBOARD_CHANNEL_ID);
-  if (!channel) {
-    console.log('❌ Leaderboard channel not found using global ID.');
-    return;
-  }
+  if (!channel) return;
 
   const msg = await channel.messages
     .fetch(LEADERBOARD_MESSAGE_ID)
     .catch(() => null);
 
-  if (!msg) {
-    console.log('❌ Leaderboard message not found using global ID.');
-    return;
-  }
+  if (!msg) return;
 
   const data = loadData();
 
-  // Dynamically build the embed with current, real-time clip data calculations
-  const { embed, totalPages } = buildLeaderboardEmbed(data, 1); 
+  // FIX: Pass guild as the very first argument here!
+  const { embed, totalPages } = buildLeaderboardEmbed(guild, data, 1); 
 
   await msg.edit({
     embeds: [embed],
     components: buildLeaderboardButtons(1, totalPages)
   });
-  
-  console.log('✅ Leaderboard message successfully edited and synchronized!');
 }
 
 function extractLinksFromText(text) {
