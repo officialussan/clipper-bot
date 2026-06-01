@@ -966,43 +966,36 @@ async function updateCampaignPanelMessage(guild, campaignId) {
 
 }
 
-async function updateLeaderboardMessage(guild, campaignId) {
-  const campaign = CAMPAIGNS[campaignId];
+async function updateLeaderboardMessage(guild) {
+  console.log('🔄 Triggering automated leaderboard edit...');
 
-  console.log('Updating leaderboard...');
-  if (!campaign) {
-    console.log(`Campaign ${campaignId} not found in CAMPAIGNS configuration.`);
-    return;
-  }
-
-  const channel = guild.channels.cache.get(campaign.leaderboardChannelId);
+  // Use your global constants directly
+  const channel = guild.channels.cache.get(LEADERBOARD_CHANNEL_ID);
   if (!channel) {
-    console.log('Leaderboard channel not found');
+    console.log('❌ Leaderboard channel not found using global ID.');
     return;
   }
 
   const msg = await channel.messages
-    .fetch(campaign.leaderboardMessageId)
+    .fetch(LEADERBOARD_MESSAGE_ID)
     .catch(() => null);
 
   if (!msg) {
-    console.log('Leaderboard message not found');
+    console.log('❌ Leaderboard message not found using global ID.');
     return;
   }
 
-  console.log('Leaderboard message fetched');
-
   const data = loadData();
 
-  // FIX: Pass page 1 as the second parameter, NOT the campaignId string!
+  // Dynamically build the embed with current, real-time clip data calculations
   const { embed, totalPages } = buildLeaderboardEmbed(data, 1); 
 
   await msg.edit({
     embeds: [embed],
-    components: buildLeaderboardButtons(1, totalPages) // Pass both required arguments
+    components: buildLeaderboardButtons(1, totalPages)
   });
   
-  console.log('Leaderboard updated successfully');
+  console.log('✅ Leaderboard message successfully edited and synchronized!');
 }
 
 function extractLinksFromText(text) {
@@ -1322,16 +1315,14 @@ async function autoTrackClipViews() {
   
     saveData(data);
     
-    // 4. Update live server embed panels & leaderboards automatically
-    for (const campaignId of Object.keys(CAMPAIGNS)) {
-      const guild = client.guilds.cache.first();
-      
-      if (guild) {
-        // Update the main registration/progress panel
+    const guild = client.guilds.cache.first();
+    if (guild) {
+      // Direct update to your global leaderboard message every 30 mins
+      await updateLeaderboardMessage(guild);
+
+      // Still update platform specific campaign panels if needed
+      for (const campaignId of Object.keys(CAMPAIGNS)) {
         await updateCampaignPanelMessage(guild, campaignId);
-        
-        // FIX: Add this line so the leaderboard updates every 30 minutes too!
-        await updateLeaderboardMessage(guild, campaignId); 
       }
     }
 
@@ -3809,58 +3800,43 @@ client.on(Events.InteractionCreate, async interaction => {
       const clip = data.clips?.[clipId];
 
       if (!clip) {
-        await interaction.reply({
-          content: '❌ Clip not found.',
-          ephemeral: true
-        });
+        await interaction.reply({ content: '❌ Clip not found.', ephemeral: true });
         return;
       }
 
       const currentViews = Number(
-        interaction.fields
-          .getTextInputValue('instagram_views')
-          .replace(/,/g, '')
+        interaction.fields.getTextInputValue('instagram_views').replace(/,/g, '')
       );
 
       if (!Number.isFinite(currentViews) || currentViews < 0) {
-        await interaction.reply({
-          content: '❌ Invalid views number.',
-          ephemeral: true
-        });
+        await interaction.reply({ content: '❌ Invalid views number.', ephemeral: true });
         return;
       }
 
+      // Update clip values
       clip.currentViews = currentViews;
-
       const startingViews = clip.startingViews || 0;
       const earnedViews = Math.max(0, currentViews - startingViews);
-
       clip.views = earnedViews;
 
       const campaign = CAMPAIGNS[clip.campaignId];
       const rate = campaign?.ratePerMillion || 0;
-
       clip.moneyMade = (earnedViews / 1000000) * rate;
 
       data.clips[clipId] = clip;
-
       saveData(data);
 
+      // 1. Update the staff review message panel
       await updateClipStaffMessage(interaction.guild, clip);
 
-      await updateCampaignPanelMessage(
-        interaction.guild,
-        clip.campaignId
-      );
+      // 2. Update campaign details panel
+      await updateCampaignPanelMessage(interaction.guild, clip.campaignId);
 
-      await updateLeaderboardMessage(
-        interaction.guild,
-        clip.campaignId
-      );
+      // 3. FIX: Instantly recalculate and edit the public leaderboard message!
+      await updateLeaderboardMessage(interaction.guild);
 
       await interaction.reply({
-        content:
-          `✅ Instagram views updated t0 ${formatNumber(currentViews)}.`,
+        content: `✅ Instagram views updated to ${formatNumber(currentViews)}.`,
         ephemeral: true
       });
 

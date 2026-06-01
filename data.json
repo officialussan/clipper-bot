@@ -43,6 +43,21 @@
       "campaignAccounts": {},
       "campaignStats": {},
       "hideFromLeaderboard": false
+    },
+    "1084018437640167444": {
+      "discordId": "1084018437640167444",
+      "discordName": "superman_.31",
+      "verified": true,
+      "campaigns": [],
+      "stats": {
+        "videosPosted": 0,
+        "videosApproved": 0,
+        "videosRejected": 0,
+        "totalViews": 0,
+        "moneyMade": 0
+      },
+      "campaignAccounts": {},
+      "campaignStats": {}
     }
   },
   "applications": {
