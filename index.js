@@ -284,6 +284,50 @@ function getStatusLabel(status) {
   }[status] || status;
 }
 
+function validateAccountSubmission(userId, campaignId, platform, username) {
+  const data = loadData();
+  const currentKey = normalizeSocialKey(platform, username);
+
+  // 1. Check if ANY user has already successfully registered or requested this exact social handle
+  const accountIsTaken = Object.values(data.campaignAccountRequests || {}).some(
+    req => normalizeSocialKey(req.platform, req.username) === currentKey && req.status !== 'rejected'
+  );
+
+  if (accountIsTaken) {
+    return { isValid: false, message: "❌ This social media account is already registered or has a pending verification request!" };
+  }
+
+  // 2. Check if THIS user has already successfully linked an account for this specific campaign
+  const userHasCampaignAccount = Object.values(data.campaignAccountRequests || {}).some(
+    req => req.userId === userId && req.campaignId === campaignId && req.status !== 'rejected'
+  );
+
+  if (userHasCampaignAccount) {
+    return { isValid: false, message: "❌ You have already submitted or linked an account for this campaign!" };
+  }
+
+  return { isValid: true };
+}
+
+function validateClipSubmission(videoUrl) {
+  const data = loadData();
+  
+  // Clean URL to remove tracking metrics (e.g., "?is_from_webapp=1")
+  const cleanUrl = String(videoUrl).split('?')[0].trim().toLowerCase();
+
+  // Check if this video base-url exists anywhere inside your clips dataset
+  const clipExists = Object.values(data.clips || {}).some(clip => {
+    const existingCleanUrl = String(clip.videoUrl || clip.url).split('?')[0].trim().toLowerCase();
+    return existingCleanUrl === cleanUrl;
+  });
+
+  if (clipExists) {
+    return { isValid: false, message: "❌ This video link has already been submitted to our system!" };
+  }
+
+  return { isValid: true };
+}
+
 function renderClipStaffContent(clip) {
   return (
     `📥 **New Clip Submission**\n\n` +
@@ -2694,6 +2738,17 @@ client.on(Events.InteractionCreate, async interaction => {
       }
 
       const userRecord = ensureUser(data, member);
+      
+      const validation = validateAccountSubmission(
+        interaction.user.id, 
+        chosenCampaignId, 
+        chosenPlatform, 
+        inputtedUsername
+      );
+
+      if (!validation.isValid) {
+        return await interaction.reply({ content: validation.message, ephemeral: true });
+      }
 
       const existing = userRecord.campaignAccounts?.[campaignId]?.[platform];
       if (existing && existing.username && existing.username.toLowerCase() !== username.toLowerCase()) {
@@ -3226,6 +3281,13 @@ client.on(Events.InteractionCreate, async interaction => {
 
       const userRecord = ensureUser(data, member);
       const campaignAccount = userRecord.campaignAccounts?.[campaignId]?.[platform];
+      
+      
+      const urlValidation = validateClipSubmission(inputtedVideoUrl);
+
+      if (!urlValidation.isValid) {
+        return await interaction.reply({ content: urlValidation.message, ephemeral: true });
+      }
 
       if (!campaignAccount || !campaignAccount.verified) {
         await interaction.reply({
