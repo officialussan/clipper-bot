@@ -1218,50 +1218,89 @@ async function autoTrackClipViews() {
   try {
     const data = loadData();
 
+    // 1. Reset cumulative user counts before aggregating
+    for (const user of Object.values(data.users || {})) {
+      if (user.stats) {
+        user.stats.totalViews = 0;
+        user.stats.moneyMade = 0;
+      }
+      
+      if (user.campaignStats) {
+        for (const campaignId of Object.keys(user.campaignStats)) {
+          for (const platform of Object.keys(user.campaignStats[campaignId])) {
+            user.campaignStats[campaignId][platform].totalViews = 0;
+            user.campaignStats[campaignId][platform].moneyMade = 0;
+          }
+        }
+      }
+    }
+
+    // 2. Loop through all clips
     for (const [clipId, clip] of Object.entries(data.clips || {})) {
-      if (clip.status !== 'approved') continue;
+      // FIX: Skip ONLY rejected clips. This allows 'pending' and 'approved' to track!
+      if (clip.status === 'rejected') continue; 
       if (!clip.url) continue;
 
       const lastChecked = clip.lastChecked || 0;
-      if (Date.now() - lastChecked < 30 * 60 * 1000) continue;
+      
+      // Fetch live views if 30 minutes have passed since last check
+      if (Date.now() - lastChecked >= 30 * 60 * 1000) {
+        try {
+          const currentViews = await fetchClipViews(clip);
+          const startingViews = clip.startingViews || 0;
+          const earnedViews = Math.max(currentViews - startingViews, 0);
 
-      try {
-        const currentViews = await fetchClipViews(clip);
+          clip.currentViews = currentViews;
+          clip.views = earnedViews;
+          clip.lastChecked = Date.now();
+          clip.trackingError = null;
 
-        const startingViews = clip.startingViews || 0;
-        const earnedViews = Math.max(currentViews - startingViews, 0);
+          const campaign = CAMPAIGNS[clip.campaignId];
+          const rate = campaign?.ratePerMillion || 0;
 
-        clip.currentViews = currentViews;
-        clip.views = earnedViews;
-        clip.lastChecked = Date.now();
-        clip.trackingError = null;
+          clip.moneyMade = (earnedViews / 1000000) * rate;
 
-        const campaign = CAMPAIGNS[clip.campaignId];
-        const rate = campaign?.ratePerMillion || 0;
-
-        clip.moneyMade = (earnedViews / 1000000) * rate;
-
-        data.clips[clipId] = clip;
-      } catch (err) {
-        clip.trackingError = err.message;
-        clip.lastChecked = Date.now();
-        data.clips[clipId] = clip;
+          data.clips[clipId] = clip;
+        } catch (err) {
+          clip.trackingError = err.message;
+          clip.lastChecked = Date.now();
+          data.clips[clipId] = clip;
+        }
+        
+        // API rate limit delay
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
 
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // 3. Accumulate data into user profiles ONLY if the clip is approved
+      // This ensures stats/leaderboards don't show unapproved views!
+      if (clip.status === 'approved') {
+        const userId = clip.userId;
+        if (data.users[userId]) {
+          const userRecord = data.users[userId];
+          
+          // Add to global profile metrics
+          userRecord.stats.totalViews += Number(clip.views) || 0;
+          userRecord.stats.moneyMade += Number(clip.moneyMade) || 0;
+
+          // Add to specific campaign platform metrics
+          const platformStats = ensureCampaignPlatformStats(userRecord, clip.campaignId, clip.platform, clip.username);
+          platformStats.totalViews += Number(clip.views) || 0;
+          platformStats.moneyMade += Number(clip.moneyMade) || 0;
+        }
+      }
     }
 
     saveData(data);
     
+    // 4. Update live server embed panels
     for (const campaignId of Object.keys(CAMPAIGNS)) {
       const guild = client.guilds.cache.first();
-      
       if (guild) {
         await updateCampaignPanelMessage(guild, campaignId);
       }
     }
 
-    console.log('✅ Auto tracking completed');
+    console.log('✅ Auto tracking completed (Tracking pending & approved clips!)');
   } catch (err) {
     console.error('❌ Auto tracking failed:', err);
   } finally {
@@ -2055,6 +2094,18 @@ client.on(Events.InteractionCreate, async interaction => {
 
       const hiddenName = userRecord.hideFromLeaderboard ? 'Hidden' : interaction.user.username;
 
+      // 1. DYNAMICALLY FETCH REAL-TIME LEADERBOARD RANK
+      const currentRank = getUserRank(data, interaction.user.id);
+      const rankString = currentRank ? `#${currentRank}` : 'Unranked';
+
+      // 2. DYNAMICALLY RE-COUNT APPROVED & REJECTED CLIPS TO PREVENT PROFILE DESYNC
+      const allUserClips = Object.values(data.clips || {}).filter(
+        clip => clip.userId === interaction.user.id
+      );
+      
+      const approvedCount = allUserClips.filter(c => c.status === 'approved').length;
+      const rejectedCount = allUserClips.filter(c => c.status === 'rejected').length;
+
       const embed = new EmbedBuilder()
         .setColor(0x7ED957)
         .setAuthor({
@@ -2063,12 +2114,12 @@ client.on(Events.InteractionCreate, async interaction => {
         })
         .setDescription(
           `All-time Clipping Analytics\n\n` +
-          `<a:rocket1:1504872045849346140> **Leaderboard**\n${userRecord.leaderboardRank || 'N/A'}\n` +
+          `<a:rocket1:1504872045849346140> **Leaderboard**\n${rankString}\n` + // Fixed: Shows active rank
           `<a:Cash1:1504871843419521115> **Total Earned**\n$${formatNumber(userRecord.stats?.moneyMade || 0)}\n` +
           `<a:fire1:1504871649491554487> **Campaigns Joined**\n${userRecord.campaigns?.length || 0}\n` +
           `<a:chart1:1504773558415523931> **Total Views**\n${formatNumber(userRecord.stats?.totalViews || 0)}\n` +
-          `<:approve1:1508373907411963955> **Clips Approved**\n${userRecord.stats?.videosApproved || 0}\n` +
-          `<:reject1:1508373970259546162> **Clips Denied**\n${userRecord.stats?.videosRejected || 0}\n\n` +
+          `<:approve1:1508373907411963955> **Clips Approved**\n${approvedCount}\n` + // Fixed: Live data bound
+          `<:reject1:1508373970259546162> **Clips Denied**\n${rejectedCount}\n\n` + // Fixed: Live data bound
           `<:whiteCE:1504904179905200148> Powered by Creators Elite`
       );
 
