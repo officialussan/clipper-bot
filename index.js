@@ -2839,14 +2839,59 @@ client.on(Events.InteractionCreate, async interaction => {
         return await interaction.reply({ content: validation.message, ephemeral: true });
       }
 
-      const existing = userRecord.campaignAccounts?.[campaignId]?.[platform];
-      if (existing && existing.username && existing.username.toLowerCase() !== username.toLowerCase()) {
+      // --- FIX START: ALLOW MULTIPLE ACCOUNTS, ONLY BLOCK EXPLICIT DUPLICATES ---
+      const cleanInputUsername = username.trim().toLowerCase().replace(/^@/, '');
+      
+      let handleExistsGlobally = false;
+      let claimedBySomeoneElse = false;
+
+      // 1. Scan all existing users in the database to check handles safely
+      for (const [userId, record] of Object.entries(data.users || {})) {
+        // If your database structure saves campaign accounts as an array or inside campaignStats:
+        const accountsObj = record.campaignAccounts?.[campaignId]?.[platform] || record.campaignStats?.[campaignId]?.[platform];
+        
+        if (accountsObj) {
+          // If it's stored as a single object but you plan to switch to an array, 
+          // or if you check a unified database list, match your schema string:
+          const savedName = String(accountsObj.username || '').trim().toLowerCase().replace(/^@/, '');
+          
+          if (savedName === cleanInputUsername) {
+            handleExistsGlobally = true;
+            if (userId !== interaction.user.id) {
+              claimedBySomeoneElse = true;
+            }
+            break;
+          }
+        }
+      }
+
+      // 2. Scan active pending staff request items so users cannot spam the same handle twice concurrently
+      const activeRequests = Object.values(data.campaignAccountRequests || {});
+      const duplicatePending = activeRequests.find(req => 
+        req.campaignId === campaignId &&
+        req.platform === platform &&
+        req.username.trim().toLowerCase().replace(/^@/, '') === cleanInputUsername &&
+        req.status === 'pending'
+      );
+
+      // Rule Check A: Stolen account
+      if (handleExistsGlobally && claimedBySomeoneElse) {
         await interaction.reply({
-          content: `❌ You already added a ${formatPlatform(platform)} account for this campaign.`,
+          content: `❌ The account **@${username}** has already been linked by another creator.`,
           ephemeral: true
         });
         return;
       }
+
+      // Rule Check B: User duplicate linking attempt
+      if ((handleExistsGlobally && !claimedBySomeoneElse) || duplicatePending) {
+        await interaction.reply({
+          content: `❌ You have already linked or submitted a pending request for **@${username}**!`,
+          ephemeral: true
+        });
+        return;
+      }
+      // --- FIX END ---
 
       const requestId = makeCampaignAccountRequestId();
 
@@ -2857,7 +2902,7 @@ client.on(Events.InteractionCreate, async interaction => {
         campaignId,
         campaignName: campaign.name,
         platform,
-        username,
+        username, // Beautifully stores the unique new secondary username handle
         status: 'pending',
         bioCode: null,
         createdAt: new Date().toISOString(),
@@ -2877,11 +2922,13 @@ client.on(Events.InteractionCreate, async interaction => {
       });
 
       request.staffMessageId = sent.id;
+      
+      if (!data.campaignAccountRequests) data.campaignAccountRequests = {};
       data.campaignAccountRequests[requestId] = request;
       saveData(data);
 
       await interaction.reply({
-        content: `✅ Campaign account request submitted for **${campaign.name}**. Wait for staff code.`,
+        content: `✅ Campaign account request submitted for **${campaign.name}** using **@${username}**. Wait for staff code.`,
         ephemeral: true
       });
 
