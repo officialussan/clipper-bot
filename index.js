@@ -944,13 +944,12 @@ async function updateLeaderboardMessage(guild, campaignId) {
   const campaign = CAMPAIGNS[campaignId];
 
   console.log('Updating leaderboard...');
-  console.log(campaign.leaderboardChannelId);
-  console.log(campaign.leaderboardMessageId);
+  if (!campaign) {
+    console.log(`Campaign ${campaignId} not found in CAMPAIGNS configuration.`);
+    return;
+  }
 
-  const channel = guild.channels.cache.get(
-    campaign.leaderboardChannelId
-  );
-
+  const channel = guild.channels.cache.get(campaign.leaderboardChannelId);
   if (!channel) {
     console.log('Leaderboard channel not found');
     return;
@@ -969,10 +968,15 @@ async function updateLeaderboardMessage(guild, campaignId) {
 
   const data = loadData();
 
+  // FIX: Pass page 1 as the second parameter, NOT the campaignId string!
+  const { embed, totalPages } = buildLeaderboardEmbed(data, 1); 
+
   await msg.edit({
-    embeds: [buildLeaderboardEmbed(data, campaignId)],
-    components: [buildLeaderboardButtons(campaignId)]
+    embeds: [embed],
+    components: buildLeaderboardButtons(1, totalPages) // Pass both required arguments
   });
+  
+  console.log('Leaderboard updated successfully');
 }
 
 function extractLinksFromText(text) {
@@ -1289,18 +1293,23 @@ async function autoTrackClipViews() {
         }
       }
     }
-
+  
     saveData(data);
     
-    // 4. Update live server embed panels
+    // 4. Update live server embed panels & leaderboards automatically
     for (const campaignId of Object.keys(CAMPAIGNS)) {
       const guild = client.guilds.cache.first();
+      
       if (guild) {
+        // Update the main registration/progress panel
         await updateCampaignPanelMessage(guild, campaignId);
+        
+        // FIX: Add this line so the leaderboard updates every 30 minutes too!
+        await updateLeaderboardMessage(guild, campaignId); 
       }
     }
 
-    console.log('✅ Auto tracking completed (Tracking pending & approved clips!)');
+    console.log('✅ Auto tracking completed & Leaderboards updated!');
   } catch (err) {
     console.error('❌ Auto tracking failed:', err);
   } finally {
@@ -2087,7 +2096,7 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
-    if (interaction.isButton() && interaction.customId === 'account_analytics') {
+   if (interaction.isButton() && interaction.customId === 'account_analytics') {
       const data = loadData();
       const member = interaction.member;
       const userRecord = ensureUser(data, member);
@@ -2098,13 +2107,25 @@ client.on(Events.InteractionCreate, async interaction => {
       const currentRank = getUserRank(data, interaction.user.id);
       const rankString = currentRank ? `#${currentRank}` : 'Unranked';
 
-      // 2. DYNAMICALLY RE-COUNT APPROVED & REJECTED CLIPS TO PREVENT PROFILE DESYNC
+      // 2. FETCH ALL CLIPS FOR THIS USER
       const allUserClips = Object.values(data.clips || {}).filter(
         clip => clip.userId === interaction.user.id
       );
       
-      const approvedCount = allUserClips.filter(c => c.status === 'approved').length;
+      const approvedClips = allUserClips.filter(c => c.status === 'approved');
+      const approvedCount = approvedClips.length;
       const rejectedCount = allUserClips.filter(c => c.status === 'rejected').length;
+
+      // 3. DYNAMICALLY RE-CALCULATE ALL-TIME VIEWS AND EARNINGS FROM APPROVED CLIPS
+      const liveTotalViews = approvedClips.reduce(
+        (sum, clip) => sum + (Number(clip.views) || 0), 
+        0
+      );
+
+      const liveTotalEarned = approvedClips.reduce(
+        (sum, clip) => sum + (Number(clip.moneyMade) || 0), 
+        0
+      );
 
       const embed = new EmbedBuilder()
         .setColor(0x7ED957)
@@ -2114,12 +2135,12 @@ client.on(Events.InteractionCreate, async interaction => {
         })
         .setDescription(
           `All-time Clipping Analytics\n\n` +
-          `<a:rocket1:1504872045849346140> **Leaderboard**\n${rankString}\n` + // Fixed: Shows active rank
-          `<a:Cash1:1504871843419521115> **Total Earned**\n$${formatNumber(userRecord.stats?.moneyMade || 0)}\n` +
+          `<a:rocket1:1504872045849346140> **Leaderboard**\n${rankString}\n` + 
+          `<a:Cash1:1504871843419521115> **Total Earned**\n$${formatNumber(liveTotalEarned)}\n` + // Fixed: Using calculated live data
           `<a:fire1:1504871649491554487> **Campaigns Joined**\n${userRecord.campaigns?.length || 0}\n` +
-          `<a:chart1:1504773558415523931> **Total Views**\n${formatNumber(userRecord.stats?.totalViews || 0)}\n` +
-          `<:approve1:1508373907411963955> **Clips Approved**\n${approvedCount}\n` + // Fixed: Live data bound
-          `<:reject1:1508373970259546162> **Clips Denied**\n${rejectedCount}\n\n` + // Fixed: Live data bound
+          `<a:chart1:1504773558415523931> **Total Views**\n${formatNumber(liveTotalViews)}\n` + // Fixed: Using calculated live data
+          `<:approve1:1508373907411963955> **Clips Approved**\n${approvedCount}\n` + 
+          `<:reject1:1508373970259546162> **Clips Denied**\n${rejectedCount}\n\n` + 
           `<:whiteCE:1504904179905200148> Powered by Creators Elite`
       );
 
