@@ -288,24 +288,30 @@ function validateAccountSubmission(userId, campaignId, platform, username) {
   const data = loadData();
   const currentKey = normalizeSocialKey(platform, username);
 
-  // 1. Check if ANY user has already successfully registered or requested this exact social handle
-  const accountIsTaken = Object.values(data.campaignAccountRequests || {}).some(
+  // 1. FIND ANY EXISTING ACTIVE OR PENDING REQUEST FOR THIS EXACT HANDLE
+  const conflictingRequest = Object.values(data.campaignAccountRequests || {}).find(
     req => normalizeSocialKey(req.platform, req.username) === currentKey && req.status !== 'rejected'
   );
 
-  if (accountIsTaken) {
-    return { isValid: false, message: "❌ This social media account is already registered or has a pending verification request!" };
+  if (conflictingRequest) {
+    // Rule A: The handle is already taken by a DIFFERENT creator
+    if (conflictingRequest.userId !== userId) {
+      return { 
+        isValid: false, 
+        message: `❌ The account **@${username}** has already been registered by another creator.` 
+      };
+    } 
+    // Rule B: The CURRENT user is trying to register the exact same handle again
+    else {
+      return { 
+        isValid: false, 
+        message: `❌ You have already linked or submitted a pending request for **@${username}**!` 
+      };
+    }
   }
 
-  // 2. Check if THIS user has already successfully linked an account for this specific campaign
-  const userHasCampaignAccount = Object.values(data.campaignAccountRequests || {}).some(
-    req => req.userId === userId && req.campaignId === campaignId && req.status !== 'rejected'
-  );
-
-  if (userHasCampaignAccount) {
-    return { isValid: false, message: "❌ You have already submitted or linked an account for this campaign!" };
-  }
-
+  // ✅ SUCCESS: No duplicate handles found! 
+  // The user is completely free to add multiple accounts for the same campaign and platform.
   return { isValid: true };
 }
 
