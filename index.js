@@ -823,34 +823,38 @@ function ensureCampaignPlatformStats(userRecord, campaignId, platform, username 
   return userRecord.campaignStats[campaignId][platform];
 }
 
-function buildCampaignPanelButtons(campaign) {
+function buildCampaignPanelButtons(campaign, data) {
+  const totals = getCampaignTotals(data, campaign.id);
+
   const fulfilledPercent = Math.min(
-    ((campaign.totalViews || 0) / (campaign.maxViews || 5000000)) * 100,
+    (totals.payout / campaign.weeklyBudget) * 100,
     100
   ).toFixed(1);
 
-    const row = new ActionRowBuilder().addComponents( 
-      new ButtonBuilder()
-        .setCustomId(`join_campaign:${campaign.id}`)
-        .setLabel('Join Campaign')
-        .setEmoji('<a:flyin:1506234392920723546>')
-        .setStyle(ButtonStyle.Success),
+  console.log('campaignPayout', totals.payout);
 
-      new ButtonBuilder()
-        .setCustomId(`campaign_status:${campaign.id}`)
-        .setLabel('Campaign Status')
-        .setEmoji('<a:chart1:1504773558415523931>')
-        .setStyle(ButtonStyle.Primary),
+  const row = new ActionRowBuilder().addComponents( 
+    new ButtonBuilder()
+      .setCustomId(`join_campaign:${campaign.id}`)
+      .setLabel('Join Campaign')
+      .setEmoji('<a:flyin:1506234392920723546>')
+      .setStyle(ButtonStyle.Success),
 
-      new ButtonBuilder()
-        .setCustomId(`campaign_fulfilled:${campaign.id}`)
-        .setLabel(`Fulfilled: ${fulfilledPercent}%`)
-        .setStyle(ButtonStyle.Secondary)
-        .setEmoji('<a:Loadin:1506234461459714100>')
-        .setDisabled(true)
-    );
+    new ButtonBuilder()
+      .setCustomId(`campaign_status:${campaign.id}`)
+      .setLabel('Campaign Status')
+      .setEmoji('<a:chart1:1504773558415523931>')
+      .setStyle(ButtonStyle.Primary),
+
+    new ButtonBuilder()
+      .setCustomId(`campaign_fulfilled:${campaign.id}`)
+      .setLabel(`Fulfilled: ${fulfilledPercent}%`)
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji('<a:Loadin:1506234461459714100>')
+      .setDisabled(true)
+  );
    
-    return [row];
+  return [row];
 }
 
 async function updateCampaignPanelMessage(guild, campaignId) {
@@ -885,7 +889,7 @@ async function updateCampaignPanelMessage(guild, campaignId) {
 
   await msg.edit({
     content: campaign.panelText,
-    components: buildCampaignPanelButtons(campaign)
+    components: buildCampaignPanelButtons(campaign, data)
   });
   
   console.log('Panel updated successfully');
