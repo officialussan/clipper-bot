@@ -2741,9 +2741,9 @@ client.on(Events.InteractionCreate, async interaction => {
       
       const validation = validateAccountSubmission(
         interaction.user.id, 
-        chosenCampaignId, 
-        chosenPlatform, 
-        inputtedUsername
+        campaignId, 
+        platform, 
+        username
       );
 
       if (!validation.isValid) {
@@ -3282,13 +3282,6 @@ client.on(Events.InteractionCreate, async interaction => {
       const userRecord = ensureUser(data, member);
       const campaignAccount = userRecord.campaignAccounts?.[campaignId]?.[platform];
       
-      
-      const urlValidation = validateClipSubmission(inputtedVideoUrl);
-
-      if (!urlValidation.isValid) {
-        return await interaction.reply({ content: urlValidation.message, ephemeral: true });
-      }
-
       if (!campaignAccount || !campaignAccount.verified) {
         await interaction.reply({
           content: `❌ No verified ${formatPlatform(platform)} account found for this campaign.`,
@@ -3302,10 +3295,18 @@ client.on(Events.InteractionCreate, async interaction => {
 
       const staffChannel = interaction.guild.channels.cache.get(campaign.staffChannelId);
       let submittedCount = 0;
+      let duplicateCount = 0; // Tracks if any links in the batch were duplicates
 
       for (const videoUrl of links) {
-        const clipId = makeClipId();
+        // FIX: Check every single link in the loop against the database
+        const urlValidation = validateClipSubmission(videoUrl);
 
+        if (!urlValidation.isValid) {
+          duplicateCount += 1;
+          continue; // Skips this specific link and jumps to the next one
+        }
+
+        const clipId = makeClipId();
         const clip = {
           id: clipId,
           userId: interaction.user.id,
@@ -3342,8 +3343,19 @@ client.on(Events.InteractionCreate, async interaction => {
 
       saveData(data);
 
+      // Construct a response message that handles clean submittals vs duplicates found
+      let responseMessage = `✅ Submitted **${submittedCount}** clip(s) for **${campaign.name}** on **${formatPlatform(platform)}** (@${username}).`;
+      if (duplicateCount > 0) {
+        responseMessage += `\n⚠️ **${duplicateCount}** link(s) were ignored because they were already submitted before.`;
+      }
+
+      // If they pasted links, but ALL of them were duplicates
+      if (submittedCount === 0 && duplicateCount > 0) {
+        responseMessage = `❌ Submission failed. All links you provided have already been submitted to the system!`;
+      }
+
       await interaction.reply({
-        content: `✅ Submitted **${submittedCount}** clip(s) for **${campaign.name}** on **${formatPlatform(platform)}** (@${username}).`,
+        content: responseMessage,
         ephemeral: true
       });
 
