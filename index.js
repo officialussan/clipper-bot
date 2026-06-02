@@ -447,6 +447,59 @@ function cleanDropdownLabel(text) {
     .slice(0, 100);
 }
 
+async function sendStaffPayoutDashboard(guild, userId) {
+  const data = loadData();
+  const userRecord = data.users?.[userId];
+  if (!userRecord) return;
+
+  // Calculate live totals dynamically from approved clips
+  const approvedClips = Object.values(data.clips || {}).filter(
+    clip => clip.userId === userId && clip.status === 'approved'
+  );
+  
+  const liveTotalEarned = approvedClips.reduce((sum, clip) => sum + (Number(clip.moneyMade) || 0), 0);
+  if (liveTotalEarned <= 0) return; // Skip if they haven't earned anything yet
+
+  let paymentLabel = 'No ID Provided';
+  if (userRecord.paymentDetails?.exchange) {
+    const exchangeName = userRecord.paymentDetails.exchange.charAt(0).toUpperCase() + userRecord.paymentDetails.exchange.slice(1);
+    paymentLabel = `**${exchangeName} ID:** \`${userRecord.paymentDetails.paymentId}\``;
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(0xF1C40F) // Processing Gold
+    .setTitle('💸 Pending Payout Processing')
+    .setDescription(
+      `👤 **Creator:** <@${userId}>\n` +
+      `💳 **Payment Method:** ${paymentLabel}\n` +
+      `💰 **Total Outstanding Amount:** $${formatNumber(liveTotalEarned)}\n\n` +
+      `*Verify the wallet details on your exchange platform, execute the payment, then use the controls below to update the user's dashboard entry status.*`
+    )
+    .setFooter({ text: `User ID: ${userId}` })
+    .setTimestamp();
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`staff_payout_paid:${userId}`)
+      .setLabel('Mark as Paid')
+      .setStyle(ButtonStyle.Success)
+      .setEmoji('✅'),
+    new ButtonBuilder()
+      .setCustomId(`staff_payout_error:${userId}`)
+      .setLabel('Flag Error')
+      .setStyle(ButtonStyle.Danger)
+      .setEmoji('⚠️')
+  );
+
+  // Uses your exact environmental configuration constant
+  const staffChannel = guild.channels.cache.get(PAYMENT_STAFF_CHANNEL_ID);
+  if (staffChannel) {
+    await staffChannel.send({ embeds: [embed], components: [row] });
+  } else {
+    console.log(`❌ Payout processing failed: Channel with ID ${PAYMENT_STAFF_CHANNEL_ID} not found.`);
+  }
+}
+
 async function updateStaffMessage(guild, app) {
   const ch = guild.channels.cache.get(app.staffChannelId);
   if (!ch) return;
@@ -2246,6 +2299,26 @@ client.on(Events.InteractionCreate, async interaction => {
       const data = loadData();
       const userRecord = ensureUser(data, interaction.member);
 
+      // 1. DYNAMICALLY RE-CALCULATE LIVE TOTAL EARNED FROM APPROVED CLIPS
+      const approvedClips = Object.values(data.clips || {}).filter(
+        clip => clip.userId === interaction.user.id && clip.status === 'approved'
+      );
+      const liveTotalEarned = approvedClips.reduce(
+        (sum, clip) => sum + (Number(clip.moneyMade) || 0), 
+        0
+      );
+
+      // 2. DYNAMICALLY RENDER EXCHANGE LABEL AND SUBMITTED ID
+      let paymentLabel = 'USDT ID';
+      let paymentValue = 'Not set';
+
+      if (userRecord.paymentDetails && userRecord.paymentDetails.exchange) {
+        // Capitalizes the first letter (e.g., "Binance" or "Bybit")
+        const exchangeName = userRecord.paymentDetails.exchange.charAt(0).toUpperCase() + userRecord.paymentDetails.exchange.slice(1);
+        paymentLabel = `${exchangeName} ID`;
+        paymentValue = `\`${userRecord.paymentDetails.paymentId}\``;
+      }
+
       const embed = new EmbedBuilder()
         .setColor(0x7ED957)
         .setAuthor({
@@ -2254,9 +2327,9 @@ client.on(Events.InteractionCreate, async interaction => {
         })
         .setDescription(
           `View Your Payouts\n\n` +
-          `<a:flyin:1506234392920723546> **Total Earned**\n$${formatNumber(userRecord.stats?.moneyMade || 0)}\n` +
+          `<a:flyin:1506234392920723546> **Total Earned**\n$${formatNumber(liveTotalEarned)}\n` + // Fixed: Live dynamic math
           `<a:fire1:1504871649491554487> **Campaigns Joined**\n${userRecord.campaigns?.length || 0}\n` +
-          `<:usdt1:1504872188317012098> **USDT Address**\n${userRecord.usdtAddress || 'Not set'}\n` +
+          `<:usdt1:1504872188317012098> **${paymentLabel}**\n${paymentValue}\n\n` + // Fixed: Dynamic platform labels
           `<a:warning:1504774411280973864> **Notes**\nNetwork fees may apply depending on the payout network.\n\n` +
           `<:whiteCE:1504904179905200148> Powered by Creators Elite`
       );
@@ -2600,6 +2673,176 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
+    if (
+      interaction.isButton() &&
+      interaction.customId.startsWith('approve_demographics:')
+    ) {
+      const submissionId = interaction.customId.split(':')[1];
+
+      const data = loadData();
+      const submission = data.demographics[submissionId];
+
+      submission.status = 'approved';
+
+      saveData(data);
+
+      // 👇 ADD DM CODE HERE
+      const user = await client.users
+        .fetch(submission.userId)
+        .catch(() => null);
+
+      if (user) {
+        await user.send(
+          `✅ Your demographics submission for ${CAMPAIGNS[submission.campaignId].name} has been approved.`
+        ).catch(() => {});
+      }
+
+      const category = interaction.guild.channels.cache.get(
+        submission.uploadCategoryId
+      );
+
+      if (category) {
+        await category.delete(
+          `Demographics ${submission.status}`
+        ).catch(console.error);
+      }
+
+      await interaction.update({
+        content: '✅ Approved',
+        components: []
+      });
+    }
+
+    if (
+      interaction.isButton() &&
+      interaction.customId.startsWith('reject_demographics:')
+    ) {
+      const submissionId = interaction.customId.split(':')[1];
+
+      const data = loadData();
+      const submission = data.demographics[submissionId];
+
+      submission.status = 'rejected';
+
+      saveData(data);
+
+      // 👇 ADD DM CODE HERE
+      const user = await client.users
+        .fetch(submission.userId)
+        .catch(() => null);
+
+      if (user) {
+        await user.send(
+          `❌ Your demographics submission for ${CAMPAIGNS[submission.campaignId].name} has been rejected.`
+        ).catch(() => {});
+      }
+
+       const category = interaction.guild.channels.cache.get(
+        submission.uploadCategoryId
+      );
+
+      if (category) {
+        await category.delete(
+          `Demographics ${submission.status}`
+        ).catch(console.error);
+      }
+
+      await interaction.update({
+        content: '❌ Rejected',
+        components: []
+      });
+    }
+
+    // Staff clicks "Mark as Paid"
+    if (interaction.isButton() && interaction.customId.startsWith('staff_payout_paid:')) {
+      const targetUserId = interaction.customId.split(':')[1];
+      const data = loadData();
+
+      if (!data.payoutStatuses) data.payoutStatuses = {};
+      
+      data.payoutStatuses[targetUserId] = {
+        status: 'paid',
+        errorReason: null,
+        processedBy: interaction.user.id,
+        updatedAt: Date.now()
+      };
+      saveData(data);
+
+      const originalEmbed = interaction.message.embeds[0];
+      const updatedEmbed = EmbedBuilder.from(originalEmbed)
+        .setColor(0x7ED957) // Success Green
+        .setTitle('✅ Payout Completed')
+        .addFields({ name: 'Processed By', value: `${interaction.user}`, inline: true });
+
+      await interaction.update({ embeds: [updatedEmbed], components: [] });
+
+      // DM Notification
+      const targetUser = await interaction.client.users.fetch(targetUserId).catch(() => null);
+      if (targetUser) {
+        await targetUser.send({
+          content: `🎉 **Payout Success!** Your earnings on **Creators Elite** have been processed and sent to your submitted Exchange account. Check your wallet!`
+        }).catch(() => console.log(`Could not send automated DM status update to user ${targetUserId}`));
+      }
+      return;
+    }
+
+    // Staff clicks "Flag Error" -> Triggers the modal pop-up prompt window
+    if (interaction.isButton() && interaction.customId.startsWith('staff_payout_error:')) {
+      const targetUserId = interaction.customId.split(':')[1];
+
+      const modal = new ModalBuilder()
+        .setCustomId(`staff_payout_error_modal:${targetUserId}`)
+        .setTitle('Flag Payout Error');
+
+      const reasonInput = new TextInputBuilder()
+        .setCustomId('error_reason')
+        .setLabel('What went wrong?')
+        .setPlaceholder('e.g., Invalid Binance ID / Account Blocked / Incorrect Network Selection')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true);
+
+      modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
+      await interaction.showModal(modal);
+      return;
+    }
+
+    // Modal Submission for Custom Error Explanations
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('staff_payout_error_modal:')) {
+      const targetUserId = interaction.customId.split(':')[1];
+      const errorReason = interaction.fields.getTextInputValue('error_reason').trim();
+      const data = loadData();
+
+      if (!data.payoutStatuses) data.payoutStatuses = {};
+      
+      data.payoutStatuses[targetUserId] = {
+        status: 'error',
+        errorReason: errorReason,
+        processedBy: interaction.user.id,
+        updatedAt: Date.now()
+      };
+      saveData(data);
+
+      const originalEmbed = interaction.message.embeds[0];
+      const updatedEmbed = EmbedBuilder.from(originalEmbed)
+        .setColor(0xE74C3C) // Error Red
+        .setTitle('❌ Payout Flagged with Error')
+        .addFields(
+          { name: 'Error Reason', value: `\`${errorReason}\`` },
+          { name: 'Flagged By', value: `${interaction.user}`, inline: true }
+        );
+
+      await interaction.update({ embeds: [updatedEmbed], components: [] });
+
+      // DM Notification containing the custom staff field context
+      const targetUser = await interaction.client.users.fetch(targetUserId).catch(() => null);
+      if (targetUser) {
+        await targetUser.send({
+          content: `⚠️ **Payout Alert - Creators Elite:** There was an issue processing your payout transfer request.\n**Reason:** ${errorReason}\n\nPlease head over to your account configurations panel, double-check your payment credentials by selecting **Edit ID**, or get in touch with our team.`
+        }).catch(() => console.log(`Could not send automated DM status update to user ${targetUserId}`));
+      }
+      return;
+    }
+
     if (interaction.isButton() && interaction.customId === 'payment_details') {
       const modal = new ModalBuilder()
         .setCustomId('payment_details_modal')
@@ -2730,6 +2973,75 @@ client.on(Events.InteractionCreate, async interaction => {
       );
 
       await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'payout_detailed_overview') {
+      const data = loadData();
+      
+      const approvedClips = Object.values(data.clips || {}).filter(
+        clip => clip.userId === interaction.user.id && clip.status === 'approved'
+      );
+
+      if (approvedClips.length === 0) {
+        await interaction.reply({
+          content: '❌ You don\'t have any approved clip history datasets available to summarize yet.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      // Fetch the global payout status set by staff for this user
+      const userPayoutState = data.payoutStatuses?.[interaction.user.id];
+      let displayStatus = '`⏳ Pending Sync`';
+
+      if (userPayoutState) {
+        if (userPayoutState.status === 'paid') {
+          displayStatus = '`✅ Paid`';
+        } else if (userPayoutState.status === 'error') {
+          displayStatus = `\`❌ Payment Error:\` ${userPayoutState.errorReason}`;
+        }
+      }
+
+      const campaignBreakdown = {};
+      approvedClips.forEach(clip => {
+        const cId = clip.campaignId;
+        if (!campaignBreakdown[cId]) {
+          const campaignConfig = CAMPAIGNS[cId];
+          campaignBreakdown[cId] = {
+            name: campaignConfig ? campaignConfig.name : `Campaign (${cId})`,
+            views: 0,
+            earned: 0
+          };
+        }
+        campaignBreakdown[cId].views += Number(clip.views) || 0;
+        campaignBreakdown[cId].earned += Number(clip.moneyMade) || 0;
+      });
+
+      let overviewText = '';
+      Object.values(campaignBreakdown).forEach(camp => {
+        overviewText += `🟥 **${camp.name}**\n`;
+        overviewText += `**Accumulated Views:** ${formatNumber(camp.views)} views\n`;
+        overviewText += `**Expected Payout:** $${formatNumber(camp.earned)}\n`;
+        overviewText += `**Status:** ${displayStatus}\n\n`; // Dynamically links to staff updates
+      });
+
+      const embed = new EmbedBuilder()
+        .setColor(userPayoutState?.status === 'error' ? 0xE74C3C : 0x7ED957)
+        .setAuthor({
+          name: interaction.user.username,
+          iconURL: interaction.user.displayAvatarURL()
+        })
+        .setTitle('Detailed Overview of Your Payments')
+        .setDescription(overviewText.trim())
+        .setFooter({ text: 'Creators Elite Analytics Tracking Engine' })
+        .setTimestamp();
+
+      await interaction.reply({
+        embeds: [embed],
+        ephemeral: true
+      });
+
       return;
     }
 
