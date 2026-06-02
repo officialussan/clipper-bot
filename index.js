@@ -671,11 +671,11 @@ function makeSocialRequestId() {
 }
 
 function renderSocialStaffContent(request) {
+  // Pass the raw input username through your normalizeUsername function to strip spaces and '@'
+  const cleanUsername = normalizeUsername(request.username);
   const platform = String(request.platform).toLowerCase();
-  // Strip any leading '@' if the user typed it, so it doesn't duplicate in the final link
-  const cleanUsername = String(request.username).replace(/^@/, '').trim(); 
   
-  // 1. Map out base profile URL paths for each platform
+  // 1. Map out the clickable web link for each platform
   let profileUrl = '';
   if (platform === 'instagram') {
     profileUrl = `https://www.instagram.com/${cleanUsername}`;
@@ -684,16 +684,16 @@ function renderSocialStaffContent(request) {
   } else if (platform === 'youtube') {
     profileUrl = `https://www.youtube.com/@${cleanUsername}`;
   } else {
-    profileUrl = `Platform Link Not Formatted`;
+    profileUrl = `Platform Link Formatting Error`;
   }
 
-  // 2. Build the formatting string sent directly to your staff channels
+  // 2. Format the message for the staff channel with a markdown link [Text](URL)
   return (
     `📩 **Campaign Account Verification Request**\n\n` +
     `👤 **User:** <@${request.userId}>\n` +
     `🎬 **Campaign:** **${request.campaignName || 'Unknown Campaign'}**\n` +
     `🌐 **Platform:** ${formatPlatform(request.platform)}\n` +
-    `🆔 **Username Link:** [${request.username}](${profileUrl})\n` + // Makes the username a clickable hyperlink
+    `🆔 **Username Link:** [@${cleanUsername}](${profileUrl})\n` + // Becomes a blue clickable hyperlink!
     `⏳ **Status:** \`${request.status.toUpperCase()}\``
   );
 }
@@ -1122,11 +1122,11 @@ function makeCampaignAccountRequestId() {
 }
 
 function renderCampaignAccountStaffContent(request) {
+  // Pass the raw input username through your normalizeUsername function to strip spaces and '@'
+  const cleanUsername = normalizeUsername(request.username);
   const platform = String(request.platform).toLowerCase();
-  // Strip any leading '@' if the user typed it, so it doesn't duplicate in the final link
-  const cleanUsername = String(request.username).replace(/^@/, '').trim(); 
   
-  // 1. Map out base profile URL paths for each platform
+  // 1. Map out the clickable web link for each platform
   let profileUrl = '';
   if (platform === 'instagram') {
     profileUrl = `https://www.instagram.com/${cleanUsername}`;
@@ -1135,16 +1135,16 @@ function renderCampaignAccountStaffContent(request) {
   } else if (platform === 'youtube') {
     profileUrl = `https://www.youtube.com/@${cleanUsername}`;
   } else {
-    profileUrl = `Platform Link Not Formatted`;
+    profileUrl = `Platform Link Formatting Error`;
   }
 
-  // 2. Build the formatting string sent directly to your staff channels
+  // 2. Format the message for the staff channel with a markdown link [Text](URL)
   return (
     `📩 **Campaign Account Verification Request**\n\n` +
     `👤 **User:** <@${request.userId}>\n` +
     `🎬 **Campaign:** **${request.campaignName || 'Unknown Campaign'}**\n` +
     `🌐 **Platform:** ${formatPlatform(request.platform)}\n` +
-    `🆔 **Username Link:** [${request.username}](${profileUrl})\n` + // Makes the username a clickable hyperlink
+    `🆔 **Username Link:** [@${cleanUsername}](${profileUrl})\n` + // Becomes a blue clickable hyperlink!
     `⏳ **Status:** \`${request.status.toUpperCase()}\``
   );
 }
