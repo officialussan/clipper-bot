@@ -2940,6 +2940,10 @@ client.on(Events.InteractionCreate, async interaction => {
 
       saveData(data);
 
+      // 🚀 FIX: TRIGGER THE AUTOMATED STAFF DASHBOARD PANEL HERE!
+      // This passes the server (guild) and the user's ID so the staff gets the processing message.
+      await sendStaffPayoutDashboard(interaction.guild, interaction.user.id);
+
       await interaction.reply({
         content: '✅ Payment details submitted successfully.',
         ephemeral: true
