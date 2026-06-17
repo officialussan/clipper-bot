@@ -2257,7 +2257,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId('view_my_clips')
+          .setCustomId('view_user_clips:')
           .setLabel('View Your Clips')
           .setEmoji('🎥')
           .setStyle(ButtonStyle.Secondary),
