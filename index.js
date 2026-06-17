@@ -2277,6 +2277,96 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
+    if (interaction.isButton() && interaction.customId.startsWith('view_user_clips:')) {
+      const [, targetUserId, pageStr] = interaction.customId.split(':');
+      const userId = targetUserId || interaction.user.id;
+      const currentPage = parseInt(pageStr || '1', 10);
+      
+      const data = loadData();
+      
+      // 1. Fetch and sort user clips (Newest first)
+      const userClips = Object.values(data.clips || {})
+        .filter(clip => clip.userId === userId)
+        .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+
+      if (userClips.length === 0) {
+        await interaction.reply({
+          content: '❌ You haven\'t submitted any video clips to track yet.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      // 2. Pagination Math (Displaying 2 clips per embed page to match your reference layout)
+      const clipsPerPage = 2;
+      const totalPages = Math.ceil(userClips.length / clipsPerPage);
+      const startIndex = (currentPage - 1) * clipsPerPage;
+      const pageClips = userClips.slice(startIndex, startIndex + clipsPerPage);
+
+      // Status Symbol Mapping Helper
+      const getStatusEmoji = (status) => {
+        switch (String(status).toLowerCase()) {
+          case 'approved': return '🟢';
+          case 'pending_update': return '⏳';
+          case 'pending': return '🟡';
+          case 'rejected': return '🔴';
+          case 'removed': return '⚫';
+          default: return '⚪';
+        }
+      };
+
+      // 3. Aggregate Pending Counts for Header Labeling
+      const pendingUpdateCount = userClips.filter(c => c.status === 'pending_update').length;
+
+      let descriptionText = `### Videos submitted by ${interaction.user.username}\n\n`;
+      descriptionText += `📊 **${userClips.length} clips total** · ${pendingUpdateCount} pending update\n\n`;
+
+      // 4. Construct Item Text Rows Dynamic Strings
+      pageClips.forEach((clip, index) => {
+        const globalIndex = startIndex + index + 1;
+        const statusEmoji = getStatusEmoji(clip.status);
+        const platformName = clip.platform ? clip.platform.charAt(0).toUpperCase() + clip.platform.slice(1) : 'Video';
+        
+        // Use clean fallback date strings if missing relative timing fields
+        const timeAgoText = clip.updatedAt ? 'Updated recently' : 'No recent updates';
+
+        descriptionText += `${statusEmoji} **${globalIndex}. @${clip.username || 'user'}: [${platformName} Link](${clip.link || '#'})**\n`;
+        descriptionText += `↳ **${formatNumber(clip.views || 0)}** paid views · **${clip.likes || 0}** likes · **$${formatNumber(clip.moneyMade || 0)}** earned\n`;
+        descriptionText += `*${timeAgoText}*\n\n`;
+      });
+
+      // Status Legend Footer Context
+      descriptionText += `**Status Legend**\n`;
+      descriptionText += `🟢 Updated  ⏳ Pending Update  🟡 Pending  🔴 Rejected  ⚫ Removed\n`;
+
+      const embed = new EmbedBuilder()
+        .setColor(0x7ED957)
+        .setDescription(descriptionText)
+        .setTimestamp();
+
+      // 5. Paginated Button Navigation Row Configuration
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`view_user_clips:${userId}:${currentPage - 1}`)
+          .setLabel('Previous')
+          .setStyle(ButtonStyle.Primary)
+          .setDisabled(currentPage === 1),
+        new ButtonBuilder()
+          .setCustomId(`view_user_clips:${userId}:${currentPage + 1}`)
+          .setLabel('Next')
+          .setStyle(ButtonStyle.Primary)
+          .setDisabled(currentPage === totalPages)
+      );
+
+      // Check if interaction was an initial click or page switch update flip
+      if (interaction.replied || interaction.deferred) {
+        await interaction.editReply({ embeds: [embed], components: [row] });
+      } else {
+        await interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
+      }
+      return;
+    }
+
     if (interaction.isButton() && interaction.customId === 'toggle_leaderboard_name') {
       const data = loadData();
       const userRecord = ensureUser(data, interaction.member);
