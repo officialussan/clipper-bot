@@ -19,7 +19,14 @@ const {
 
 const { MongoClient } = require('mongodb');
 
+const express = require('express');
 const axios = require('axios');
+
+// Express App Setup
+const app = express();
+const PORT = process.env.PORT || 3000; // 🚀 CRITICAL FOR RAILWAY: Railway sets this automatically
+
+
 
 const client = new Client({
   intents: [
@@ -31,6 +38,9 @@ const client = new Client({
   ]
 });
 
+const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
+const CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
+const REDIRECT_URI = process.env.REDIRECT_URI; // Update this variable in Railway (see Step 3);
 const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID;
 const CLIPPER_ROLE_ID = process.env.CLIPPER_ROLE_ID;
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;
@@ -1074,6 +1084,39 @@ async function updateLeaderboardMessage(guild) {
     components: buildLeaderboardButtons(1, totalPages)
   });
 }
+
+// ==========================================
+// 🚀 AUTOMATED BACKUP SERVER JOIN MECHANISM
+// ==========================================
+client.on('guildMemberAdd', async (member) => {
+  // Replace with your actual Main Server ID
+  if (member.guild.id !== '1413113505565118524') return; 
+
+  const data = loadData();
+  const userToken = data.oauthTokens?.[member.id];
+
+  if (!userToken) {
+    console.log(`ℹ️ User ${member.user.tag} joined but has not completed OAuth authorization.`);
+    return;
+  }
+
+  try {
+    // Replace with your actual Secondary/Backup Server ID
+    await axios.put(
+      `https://discord.com/api/v10/guilds/1348583895007760415/members/${member.id}`,
+      { access_token: userToken },
+      {
+        headers: {
+          Authorization: `Bot ${process.env.DISCORD_TOKEN || process.env.TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    console.log(`✅ Automatically added ${member.user.tag} to the backup server!`);
+  } catch (error) {
+    console.error(`❌ Failed to background-join user:`, error.response?.data || error.message);
+  }
+});
 
 function extractLinksFromText(text) {
   return String(text)
@@ -4977,4 +5020,52 @@ When done, click the button below.`,
 
 // connectMongo();
 
-client.login(process.env.TOKEN);
+// ==========================================
+// 🌐 OAUTH2 WEB SERVER FOR FORCED JOINING
+// ==========================================
+
+app.get('/callback', async (req, res) => {
+  const code = req.query.code;
+  if (!code) return res.send('❌ Authorization missing.');
+
+  try {
+    // Exchange the authorization code for an Access Token
+    const tokenResponse = await axios.post('https://discord.com/api/v10/oauth2/token', new URLSearchParams({
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+      grant_type: 'authorization_code',
+      code: code,
+      redirect_uri: REDIRECT_URI,
+    }), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    });
+
+    const accessToken = tokenResponse.data.access_token;
+
+    // Get the user's Discord ID profile details
+    const userResponse = await axios.get('https://discord.com/api/v10/users/@me', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+
+    const userId = userResponse.data.id;
+
+    // Save this tracking token to your database
+    const data = loadData();
+    if (!data.oauthTokens) data.oauthTokens = {};
+    data.oauthTokens[userId] = accessToken;
+    saveData(data);
+
+    res.send('✅ Account Authorized Successfully! You can close this tab and return to Discord.');
+  } catch (error) {
+    console.error('OAuth Error:', error.response?.data || error.message);
+    res.send('❌ Failed to process account connection.');
+  }
+});
+
+// Start the Express Server
+app.listen(PORT, () => {
+  console.log(`🌐 OAuth Web Server internally listening on port ${PORT}`);
+});
+
+// Your existing login statement
+client.login(process.env.DISCORD_TOKEN);
