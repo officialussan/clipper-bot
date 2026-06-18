@@ -24,7 +24,6 @@ const axios = require('axios');
 
 // Express App Setup
 const app = express();
-const PORT = process.env.PORT || 3000; // 🚀 CRITICAL FOR RAILWAY: Railway sets this automatically
 
 
 
@@ -38,6 +37,7 @@ const client = new Client({
   ]
 });
 
+const PORT = process.env.PORT
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
 const REDIRECT_URI = process.env.REDIRECT_URI; // Update this variable in Railway (see Step 3);
@@ -1085,39 +1085,6 @@ async function updateLeaderboardMessage(guild) {
   });
 }
 
-// ==========================================
-// 🚀 AUTOMATED BACKUP SERVER JOIN MECHANISM
-// ==========================================
-client.on('guildMemberAdd', async (member) => {
-  // Replace with your actual Main Server ID
-  if (member.guild.id !== '1413113505565118524') return; 
-
-  const data = loadData();
-  const userToken = data.oauthTokens?.[member.id];
-
-  if (!userToken) {
-    console.log(`ℹ️ User ${member.user.tag} joined but has not completed OAuth authorization.`);
-    return;
-  }
-
-  try {
-    // Replace with your actual Secondary/Backup Server ID
-    await axios.put(
-      `https://discord.com/api/v10/guilds/1348583895007760415/members/${member.id}`,
-      { access_token: userToken },
-      {
-        headers: {
-          Authorization: `Bot ${process.env.DISCORD_TOKEN || process.env.TOKEN}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-    console.log(`✅ Automatically added ${member.user.tag} to the backup server!`);
-  } catch (error) {
-    console.error(`❌ Failed to background-join user:`, error.response?.data || error.message);
-  }
-});
-
 function extractLinksFromText(text) {
   return String(text)
     .split('\n')
@@ -1994,6 +1961,36 @@ async function updateClipStaffMessage(guild, clip) {
     console.log('Could not update clip staff message:', error.message);
   }
 }
+
+client.on('guildMemberAdd', async (member) => {
+  // Replace with your actual Main Server ID
+  if (member.guild.id !== '1413113505565118524') return; 
+
+  const data = loadData();
+  const userToken = data.oauthTokens?.[member.id];
+
+  if (!userToken) {
+    console.log(`ℹ️ User ${member.user.tag} joined but has not completed OAuth authorization.`);
+    return;
+  }
+
+  try {
+    // Replace with your actual Secondary/Backup Server ID
+    await axios.put(
+      `https://discord.com/api/v10/guilds/1348583895007760415/members/${member.id}`,
+      { access_token: userToken },
+      {
+        headers: {
+          Authorization: `Bot ${process.env.DISCORD_TOKEN || process.env.TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    console.log(`✅ Automatically added ${member.user.tag} to the backup server!`);
+  } catch (error) {
+    console.error(`❌ Failed to background-join user:`, error.response?.data || error.message);
+  }
+});
 
 client.on(Events.InteractionCreate, async interaction => {
   try {
@@ -5068,4 +5065,4 @@ app.listen(PORT, () => {
 });
 
 // Your existing login statement
-client.login(process.env.DISCORD_TOKEN);
+client.login(process.env.TOKEN);
