@@ -53,6 +53,7 @@ const DEMOGRAPHICS_UPLOAD_CATEGORY_ID = process.env.DEMOGRAPHICS_UPLOAD_CATEGORY
 const PAYMENT_STAFF_CHANNEL_ID = process.env.PAYMENT_STAFF_CHANNEL_ID;
 const LEADERBOARD_CHANNEL_ID = '1495692728431018015';
 const LEADERBOARD_MESSAGE_ID = '1508380113056567417';
+const MONSTERLAB_API_KEY = process.env.MONSTERLAB_API_KEY;
 
 const SUPPORTED_COUNTRIES = [
   'United States',
@@ -1840,6 +1841,26 @@ client.on(Events.MessageCreate, async message => {
 
       return;
     } 
+
+    if (message.content === '!monstertest') {
+      const response = await fetch(
+        'https://monsterlab.io/api/account',
+        {
+          headers: {
+            Authorization:
+              `ApiKey ${MONSTERLAB_API_KEY}`
+          }
+        }
+      );
+
+      const data = await response.json();
+
+      console.log(data);
+
+      await message.reply(
+        'Check console for response.'
+      );
+    }
 
     if (message.content === '!verifypanel') {
       if (!isAdmin(message.member)) {
