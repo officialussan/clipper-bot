@@ -3097,20 +3097,18 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 
     // ------------------------------------------
-    // 2. MODAL SUBMIT -> CREATE TICKET
+    // 2. MODAL SUBMIT -> CREATE PROXY TICKET
     // ------------------------------------------
     if (interaction.isModalSubmit() && interaction.customId === 'proxy_purchase_modal') {
 
       await interaction.deferReply({ ephemeral: true });
 
-      // 🟢 FIXED: Removed the non-existent clean() wrapper function
       const country = interaction.fields.getTextInputValue('proxy_country').trim();
       const quantityStr = interaction.fields.getTextInputValue('proxy_quantity').trim();
       const useCase = interaction.fields.getTextInputValue('proxy_usecase').trim();
 
       const quantity = parseInt(quantityStr, 10);
 
-      // ❌ HARD VALIDATION (IMPORTANT FIX)
       if (isNaN(quantity) || quantity <= 0) {
         return interaction.editReply({
           content: '❌ Quantity must be a valid number greater than 0.'
@@ -3120,123 +3118,134 @@ client.on(Events.InteractionCreate, async interaction => {
       const totalPrice = `$${quantity * PRICE_PER_PROXY}`;
 
       try {
-        // ❌ CHECK BOT PERMISSIONS
-        if (!interaction.guild.members.me.permissions.has(PermissionFlagsBits.ManageChannels)) {
-          return interaction.editReply({
-            content: '❌ Bot is missing "Manage Channels" permission.'
-          });
+
+        // Validate Config
+        if (!STAFF_ROLE_ID) {
+          throw new Error('STAFF_ROLE_ID is missing');
         }
 
-        if (!PROXY_STAFF_ROLE_ID) {
-          throw new Error('PROXY_STAFF_ROLE_ID is not defined');
+        if (!TICKET_CATEGORY_ID) {
+         throw new Error('TICKET_CATEGORY_ID is missing');
         }
 
-        // ❌ PREVENT DUPLICATE TICKETS
-        const existing = interaction.guild.channels.cache.find(
-          c =>
-            c.parentId === TICKET_CATEGORY_ID &&
-            c.topic === `proxy-ticket-${interaction.user.id}`
+        const category = interaction.guild.channels.cache.get(TICKET_CATEGORY_ID);
+
+        if (!category) {
+          throw new Error('Ticket category not found');
+        }
+
+        // Prevent duplicate proxy tickets
+        const existingTicket = interaction.guild.channels.cache.find(
+          ch =>
+            ch.name === `proxy-${interaction.user.username.toLowerCase()}` &&
+            ch.parentId === TICKET_CATEGORY_ID
         );
 
-        if (existing) {
+        if (existingTicket) {
           return interaction.editReply({
-            content: `❌ You already have an open ticket: ${existing}`
+            content: `❌ You already have an open proxy ticket: ${existingTicket}`
           });
         }
 
-        // 🟢 FIXED: Replaced toSafeChannelName with a simple regex to keep it safe and avoid crashes
-        const safeName = interaction.user.username.toLowerCase().replace(/[^a-z0-9-]/g, '');
-
-        // ------------------------------------------
-        // CREATE CHANNEL
-        // ------------------------------------------
+        // Create ticket channel
         const ticketChannel = await interaction.guild.channels.create({
-          name: `ticket-${safeName}`,
+          name: `proxy-${interaction.user.username}`.toLowerCase(),
           type: ChannelType.GuildText,
-          parent: TICKET_CATEGORY_ID || null,
+          parent: TICKET_CATEGORY_ID,
           topic: `proxy-ticket-${interaction.user.id}`,
+
           permissionOverwrites: [
             {
               id: interaction.guild.id,
-              deny: [PermissionFlagsBits.ViewChannel],
+              deny: [PermissionsBitField.Flags.ViewChannel]
             },
+
             {
               id: client.user.id,
               allow: [
-                PermissionFlagsBits.ViewChannel,
-                PermissionFlagsBits.SendMessages,
-                PermissionFlagsBits.AttachFiles,
-                PermissionFlagsBits.ReadMessageHistory
-              ],
-            },
-            {
-              id:userId,
-              allow: [
-                 PermissionFlagsBits.ViewChannel,
-                 PermissionFlagsBits.SendMessages,
-                 PermissionFlagsBits.ReadMessageHistory
+                PermissionsBitField.Flags.ViewChannel,
+                PermissionsBitField.Flags.SendMessages,
+                PermissionsBitField.Flags.ReadMessageHistory,
+                PermissionsBitField.Flags.ManageChannels
               ]
             },
+
             {
-              id: PROXY_STAFF_ROLE_ID,
+              id: interaction.user.id,
               allow: [
-                PermissionFlagsBits.ViewChannel,
-                PermissionFlagsBits.SendMessages,
-                PermissionFlagsBits.AttachFiles,
-                PermissionFlagsBits.ReadMessageHistory
-              ],
+                PermissionsBitField.Flags.ViewChannel,
+                PermissionsBitField.Flags.SendMessages,
+                PermissionsBitField.Flags.ReadMessageHistory,
+                PermissionsBitField.Flags.AttachFiles
+              ]
+            },
+
+            {
+              id: STAFF_ROLE_ID,
+              allow: [
+                PermissionsBitField.Flags.ViewChannel,
+                PermissionsBitField.Flags.SendMessages,
+                PermissionsBitField.Flags.ReadMessageHistory,
+                PermissionsBitField.Flags.AttachFiles
+              ]
             }
-          ],
+          ]
         });
 
-        // ------------------------------------------
-        // EMBED
-        // ------------------------------------------
         const ticketEmbed = new EmbedBuilder()
-          .setColor(0x00FF87)
+          .setColor(0x57F287)
+          .setTitle('🚀 Proxy Order Created')
           .setDescription(
-            `## 🚀 Proxy Purchase Ticket Open\n\n` +
             `**Country/Location:** ${country}\n` +
             `**Quantity:** ${quantity}\n` +
             `**Use Case:** ${useCase}\n\n` +
-            `---\n\n` +
-            `### 💰 Total Price\n` +
-            `**$${PRICE_PER_PROXY} per proxy**\n\n` +
-            `**Total:** ${totalPrice}\n\n` +
-            `### 💳 Payment Methods\n\n` +
-            `Binance Pay: \`466875081\`\n` +
-            `Bybit Pay: \`179999980\`\n` +
-            `USDT (TRC20): \`TCKpFZVuuhpupnHP3qxoEGcy938Np6Bw6L\`\n\n` +
+
+            `### 💰 Pricing\n` +
+            `**$${PRICE_PER_PROXY} per proxy**\n` +
+            `**Total Due:** ${totalPrice}\n\n` +
+
+            `### 💳 Payment Methods\n` +
+            `🔸 Binance Pay ID: \`466875081\`\n` +
+            `🔸 Bybit Pay ID: \`179999980\`\n` +
+            `🔸 USDT (TRC20): \`TCKpFZVuuhpupnHP3qxoEGcy938Np6Bw6L\`\n\n` +
+
             `### ⚠️ Next Steps\n` +
-            `1. Pay exact amount\n` +
-            `2. Upload receipt\n` +
-            `3. Send transaction ID`
+            `1. Send payment\n` +
+            `2. Upload payment screenshot\n` +
+            `3. Send transaction ID\n\n` +
+
+            `A staff member will verify payment and deliver your proxies.`
           )
-          .setFooter({ text: 'Creators Elite Order Center' })
+          .setFooter({
+            text: 'Creators Elite Order Center'
+          })
           .setTimestamp();
 
-        // ------------------------------------------
-        // SEND MESSAGE IN TICKET
-        // ------------------------------------------
+        const controls = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId('close_ticket')
+            .setLabel('🔒 Close')
+            .setStyle(ButtonStyle.Secondary)
+        );
+
         await ticketChannel.send({
-          content: `👋 ${interaction.user} | <@&${PROXY_STAFF_ROLE_ID}> New ticket created.`,
-          embeds: [ticketEmbed]
+          content: `👋 ${interaction.user} | <@&${STAFF_ROLE_ID}> New proxy order received.`,
+          embeds: [ticketEmbed],
+          components: [controls]
         });
 
-        // ------------------------------------------
-        // RESPONSE
-        // ------------------------------------------
         await interaction.editReply({
-          content: `✅ Ticket created: ${ticketChannel}`
+          content: `✅ Proxy ticket created: ${ticketChannel}`
         });
 
       } catch (error) {
-        console.error('FULL TICKET ERROR:', error);
-        console.error('STACK:', error.stack);
+
+        console.error('PROXY TICKET ERROR:', error);
 
         await interaction.editReply({
           content: `❌ Failed to create ticket.\n\nError: \`${error.message}\``
-        });
+        }).catch(() => {});
+
       }
 
       return;
