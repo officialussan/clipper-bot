@@ -3134,7 +3134,7 @@ client.on(Events.InteractionCreate, async interaction => {
         // ❌ PREVENT DUPLICATE TICKETS
         const existing = interaction.guild.channels.cache.find(
           c =>
-            c.parentId === TICKETS_CATEGORY_ID &&
+            c.parentId === TICKET_CATEGORY_ID &&
             c.topic === `proxy-ticket-${interaction.user.id}`
         );
 
@@ -3153,7 +3153,7 @@ client.on(Events.InteractionCreate, async interaction => {
         const ticketChannel = await interaction.guild.channels.create({
           name: `ticket-${safeName}`,
           type: ChannelType.GuildText,
-          parent: TICKETS_CATEGORY_ID || null,
+          parent: TICKET_CATEGORY_ID || null,
           topic: `proxy-ticket-${interaction.user.id}`,
           permissionOverwrites: [
             {
