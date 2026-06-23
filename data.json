@@ -58,6 +58,36 @@
       },
       "campaignAccounts": {},
       "campaignStats": {}
+    },
+    "1318324803895165000": {
+      "discordId": "1318324803895165000",
+      "discordName": "cashstrait",
+      "verified": true,
+      "campaigns": [],
+      "stats": {
+        "videosPosted": 0,
+        "videosApproved": 0,
+        "videosRejected": 0,
+        "totalViews": 0,
+        "moneyMade": 0
+      },
+      "campaignAccounts": {},
+      "campaignStats": {}
+    },
+    "1318322406976127156": {
+      "discordId": "1318322406976127156",
+      "discordName": "ogtheeviral",
+      "verified": false,
+      "campaigns": [],
+      "stats": {
+        "videosPosted": 0,
+        "videosApproved": 0,
+        "videosRejected": 0,
+        "totalViews": 0,
+        "moneyMade": 0
+      },
+      "campaignAccounts": {},
+      "campaignStats": {}
     }
   },
   "applications": {

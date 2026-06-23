@@ -806,6 +806,8 @@ function buildSocialStaffButtons(id, status) {
   return [];
 }
 
+console.log(process.env.MONSTERLAB_API_KEY);
+
 function getCampaignPeriod(startDate) {
   const start = new Date(startDate);
   const now = new Date();
@@ -1842,24 +1844,73 @@ client.on(Events.MessageCreate, async message => {
       return;
     } 
 
+    if (message.author.bot) return;
+
+    if (message.content.trim().toLowerCase() === '!proxypanel') {
+
+      if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
+        return;
+
+      const embed = new EmbedBuilder()
+        .setColor(0x7ED957)
+        .setTitle('⚡ Premium Residential Proxies')
+        .setDescription(
+          `Looking for clean, high-performance proxies for automated posting, scraping, or multi-accounting?\n\n` +
+          `💰 **Pricing:** \`$${PRICE_PER_PROXY}\` per proxy\n` +
+          `🌍 **Locations:** US, UK, DE, NG and more\n` +
+          `🔥 **Optimization:** TikTok, Instagram, YouTube and automation workflows`
+        )
+        .setFooter({
+          text: 'Creators Elite Proxy Network'
+        });
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('buy_proxy_trigger')
+          .setLabel('Buy Proxy')
+          .setEmoji('🛒')
+          .setStyle(ButtonStyle.Primary)
+      );
+
+      await message.channel.send({
+        embeds: [embed],
+        components: [row]
+      });
+
+      if (
+        message.guild.members.me.permissions.has(
+          PermissionFlagsBits.ManageMessages
+        )
+      ) {
+        await message.delete().catch(() => null);
+      }
+
+      return;
+    }
+
     if (message.content === '!monstertest') {
-      const response = await fetch(
-        'https://monsterlab.io/api/account',
-        {
-          headers: {
-            Authorization:
-              `ApiKey ${MONSTERLAB_API_KEY}`
+      try {
+        const response = await fetch(
+          'https://monsterlab.io/api/account',
+          {
+            headers: {
+              Authorization: `ApiKey ${MONSTERLAB_API_KEY}`
+            }
           }
-        }
-      );
+        );
 
-      const data = await response.json();
+        console.log('Status:', response.status);
 
-      console.log(data);
+        const text = await response.text();
 
-      await message.reply(
-        'Check console for response.'
-      );
+        console.log('Response:', text);
+
+        await message.reply(
+          'Check console for response.'
+        );
+      } catch (err) {
+        console.error(err);
+      }
     }
 
     if (message.content === '!verifypanel') {
@@ -2991,6 +3042,177 @@ client.on(Events.InteractionCreate, async interaction => {
           content: `⚠️ **Payout Alert - Creators Elite:** There was an issue processing your payout transfer request.\n**Reason:** ${errorReason}\n\nPlease head over to your account configurations panel, double-check your payment credentials by selecting **Edit ID**, or get in touch with our team.`
         }).catch(() => console.log(`Could not send automated DM status update to user ${targetUserId}`));
       }
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'buy_proxy_trigger') {
+      const modal = new ModalBuilder()
+        .setCustomId('proxy_purchase_modal')
+        .setTitle('Proxy Order Configuration');
+
+      const countryInput = new TextInputBuilder()
+        .setCustomId('proxy_country')
+        .setLabel('Country/Location')
+        .setPlaceholder('e.g., USA, UK, Germany')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const quantityInput = new TextInputBuilder()
+        .setCustomId('proxy_quantity')
+        .setLabel('Quantity')
+        .setPlaceholder('How many proxies?')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      const useCaseInput = new TextInputBuilder()
+        .setCustomId('proxy_usecase')
+        .setLabel('Target Website / Use Case')
+        .setPlaceholder('e.g., TikTok, Instagram, automation')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true);
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(countryInput),
+        new ActionRowBuilder().addComponents(quantityInput),
+        new ActionRowBuilder().addComponents(useCaseInput)
+      );
+
+      await interaction.showModal(modal);
+      return;
+    }
+
+    // ------------------------------------------
+    // 2. MODAL SUBMIT -> CREATE TICKET
+    // ------------------------------------------
+    if (interaction.isModalSubmit() && interaction.customId === 'proxy_purchase_modal') {
+
+      await interaction.deferReply({ ephemeral: true });
+
+      const country = clean(interaction.fields.getTextInputValue('proxy_country'));
+      const quantityStr = interaction.fields.getTextInputValue('proxy_quantity').trim();
+      const useCase = clean(interaction.fields.getTextInputValue('proxy_usecase'));
+
+      const quantity = parseInt(quantityStr, 10);
+
+      // ❌ HARD VALIDATION (IMPORTANT FIX)
+      if (isNaN(quantity) || quantity <= 0) {
+        return interaction.editReply({
+          content: '❌ Quantity must be a valid number greater than 0.'
+        });
+      }
+
+      const totalPrice = `$${quantity * PRICE_PER_PROXY}`;
+
+      try {
+        // ❌ CHECK BOT PERMISSIONS
+        if (!interaction.guild.members.me.permissions.has(PermissionFlagsBits.ManageChannels)) {
+          return interaction.editReply({
+            content: '❌ Bot is missing "Manage Channels" permission.'
+          });
+        }
+
+        if (!PROXY_STAFF_ROLE_ID) {
+          throw new Error('PROXY_STAFF_ROLE_ID is not defined');
+        }
+
+        // ❌ PREVENT DUPLICATE TICKETS
+        const existing = interaction.guild.channels.cache.find(
+          c =>
+            c.parentId === TICKETS_CATEGORY_ID &&
+            c.topic === `proxy-ticket-${interaction.user.id}`
+        );
+
+        if (existing) {
+          return interaction.editReply({
+            content: `❌ You already have an open ticket: ${existing}`
+          });
+        }
+
+        const safeName = toSafeChannelName(interaction.user.username);
+
+        // ------------------------------------------
+        // CREATE CHANNEL
+        // ------------------------------------------
+        const ticketChannel = await interaction.guild.channels.create({
+          name: `ticket-${safeName}`,
+          type: ChannelType.GuildText,
+          parent: TICKETS_CATEGORY_ID || null,
+          topic: `proxy-ticket-${interaction.user.id}`,
+          permissionOverwrites: [
+            {
+              id: interaction.guild.roles.everyone.id,
+              deny: [PermissionFlagsBits.ViewChannel],
+            },
+            {
+              id: interaction.user.id,
+              allow: [
+                PermissionFlagsBits.ViewChannel,
+                PermissionFlagsBits.SendMessages,
+                PermissionFlagsBits.AttachFiles,
+                PermissionFlagsBits.ReadMessageHistory
+              ],
+            },
+            {
+              id: PROXY_STAFF_ROLE_ID,
+              allow: [
+                PermissionFlagsBits.ViewChannel,
+                PermissionFlagsBits.SendMessages,
+                PermissionFlagsBits.AttachFiles,
+                PermissionFlagsBits.ReadMessageHistory
+              ],
+            }
+          ],
+        });
+
+        // ------------------------------------------
+        // EMBED
+        // ------------------------------------------
+        const ticketEmbed = new EmbedBuilder()
+          .setColor(0x00FF87)
+          .setDescription(
+            `## 🚀 Proxy Purchase Ticket Open\n\n` +
+            `**Country/Location:** ${country}\n` +
+            `**Quantity:** ${quantity}\n` +
+            `**Use Case:** ${useCase}\n\n` +
+            `---\n\n` +
+            `### 💰 Total Price\n` +
+            `**$${PRICE_PER_PROXY} per proxy**\n\n` +
+            `**Total:** ${totalPrice}\n\n` +
+            `### 💳 Payment Methods\n\n` +
+            `Binance Pay: \`466875081\`\n` +
+            `Bybit Pay: \`179999980\`\n` +
+            `USDT (TRC20): \`TCKpFZVuuhpupnHP3qxoEGcy938Np6Bw6L\`\n\n` +
+            `### ⚠️ Next Steps\n` +
+            `1. Pay exact amount\n` +
+            `2. Upload receipt\n` +
+            `3. Send transaction ID`
+          )
+          .setFooter({ text: 'Creators Elite Order Center' })
+          .setTimestamp();
+
+        // ------------------------------------------
+        // SEND MESSAGE IN TICKET
+        // ------------------------------------------
+        await ticketChannel.send({
+          content: `👋 ${interaction.user} | <@&${PROXY_STAFF_ROLE_ID}> New ticket created.`,
+          embeds: [ticketEmbed]
+        });
+
+        // ------------------------------------------
+        // RESPONSE
+        // ------------------------------------------
+        await interaction.editReply({
+          content: `✅ Ticket created: ${ticketChannel}`
+        });
+
+      } catch (error) {
+        console.error('Ticket system error:', error);
+
+        await interaction.editReply({
+          content: '❌ Failed to create ticket. Contact admin.'
+        });
+      }
+
       return;
     }
 
