@@ -3222,10 +3222,11 @@ client.on(Events.InteractionCreate, async interaction => {
         });
 
       } catch (error) {
-        console.error('Ticket system error:', error);
+        console.error('FULL TICKET ERROR:', error);
+        console.error('STACK:', error.stack);
 
         await interaction.editReply({
-          content: '❌ Failed to create ticket. Contact admin.'
+          content: `❌ Failed to create ticket.\n\nError: \`${error.message}\``
         });
       }
 
