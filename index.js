@@ -55,6 +55,7 @@ const PAYMENT_STAFF_CHANNEL_ID = process.env.PAYMENT_STAFF_CHANNEL_ID;
 const LEADERBOARD_CHANNEL_ID = '1495692728431018015';
 const LEADERBOARD_MESSAGE_ID = '1508380113056567417';
 const MONSTERLAB_API_KEY = process.env.MONSTERLAB_API_KEY;
+const PRICE_PER_PROXY = 7;
 
 const SUPPORTED_COUNTRIES = [
   'United States',
@@ -1470,60 +1471,45 @@ client.on(Events.MessageCreate, async message => {
     if (!message.guild) return;
 
     console.log('MESSAGE RECEIVED:', message.content);
-   
-    if (message.content.trim().toLowerCase() === '!proxypanel') {
-      const embed = new EmbedBuilder()
-        .setColor(0x7ED957)
-        .setTitle('⚡ Premium Residential Proxies')
-        .setDescription(
-          `Looking for clean, high-performance proxies for automated posting, scraping, or multi-accounting?\n\n` +
-          `💰 **Pricing:** \`$${PRICE_PER_PROXY}\` per proxy\n` +
-          `🌍 **Locations:** US, UK, DE, NG and more\n` +
-          `🔥 **Optimization:** TikTok, Instagram, YouTube and automation workflows`
-        )
-        .setFooter({
-          text: 'Creators Elite Proxy Network'
-        });
-
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('buy_proxy_trigger')
-          .setLabel('Buy Proxy')
-          .setEmoji('🛒')
-          .setStyle(ButtonStyle.Primary)
-      );
-
-      await message.channel.send({
-        embeds: [embed],
-        components: [row]
-      });
-      
-      return;
-    }
 
     if (message.content === '!monstertest') {
-      try {
-        const response = await fetch(
-          'https://monsterlab.io/api/account',
-          {
-            headers: {
-              Authorization: `ApiKey ${MONSTERLAB_API_KEY}`
-            }
+      console.log('monster test triggered');
+        
+      const response = await fetch(
+        'https://monsterlab.io/api/account',
+        {
+          headers: {
+            Authorization: `ApiKey ${MONSTERLAB_API_KEY}`
           }
-        );
+        }
+      );
 
-        console.log('Status:', response.status);
+      console.log('Status:', response.status);
 
-        const text = await response.text();
+      const text = await response.text();
 
-        console.log('Response:', text);
+      console.log('Response:', text);
 
-        await message.reply(
-          'Check console for response.'
-        );
-      } catch (err) {
-        console.error(err);
-      }
+      await message.reply('Check console for response.');
+    }
+
+    if (message.content === '!monstercampaigns') {
+      const response = await fetch(
+        'https://monsterlab.io/api/clipit/campaigns',
+        {
+          headers: {
+            Authorization: `ApiKey ${process.env.MONSTERLAB_API_KEY}`
+          }
+        }
+      );
+
+      console.log('Status:', response.status);
+
+      const text = await response.text();
+
+      console.log(text);
+
+      await message.reply('Check console for campaigns.');
     }
 
     if (message.content.trim() === '!ding') {
@@ -1552,6 +1538,36 @@ client.on(Events.MessageCreate, async message => {
         components: [row]
       });
 
+      return;
+    }
+
+    if (message.content.trim().toLowerCase() === '!proxypanel') {
+      const embed = new EmbedBuilder()
+        .setColor(0x57F287)
+        .setTitle('<:whiteCE:1504904179905200148> Premium Residential Proxies')
+        .setDescription(
+          `Looking for clean, high-performance proxies for automated posting, scraping, or multi-accounting?\n\n` +
+          `💰 **Pricing:** \`$${PRICE_PER_PROXY}\` per proxy\n` +
+          `🌍 **Locations:** US, UK, DE, NG and more\n` +
+          `🔥 **Optimization:** TikTok, Instagram, YouTube and automation workflows`
+        )
+        .setFooter({
+          text: 'Creators Elite Proxy Network'
+        });
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('buy_proxy_trigger')
+          .setLabel('Buy Proxy')
+          .setEmoji('🛒')
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      await message.channel.send({
+        embeds: [embed],
+        components: [row]
+      });
+      
       return;
     }
 
