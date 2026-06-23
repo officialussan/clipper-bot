@@ -1470,36 +1470,7 @@ client.on(Events.MessageCreate, async message => {
     if (!message.guild) return;
 
     console.log('MESSAGE RECEIVED:', message.content);
-
-    if (message.content.trim() === '!ping') {
-      await message.reply('✅ Bot can read messages.');
-      return;
-    }
-  
-    if (message.content.trim().toLowerCase() === '!ticketpanel') {
-      const embed = new EmbedBuilder()
-        .setColor(0x57F287)
-        .setTitle('<:whiteCE:1504904179905200148> Support Center')
-        .setDescription(
-          'Need help with campaigns, payments, submissions, or account issues?\n\nOpen a support ticket below.⬇️'
-        );
-
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('open_ticket')
-          .setLabel('Open Ticket')
-          .setEmoji('✉️')
-          .setStyle(ButtonStyle.Secondary)
-      );
-
-      await message.channel.send({
-        embeds: [embed],
-        components: [row]
-      });
-
-      return;
-    }
-
+   
     if (message.content.trim().toLowerCase() === '!proxypanel') {
       const embed = new EmbedBuilder()
         .setColor(0x7ED957)
@@ -1530,7 +1501,7 @@ client.on(Events.MessageCreate, async message => {
       return;
     }
 
-   if (message.content === '!monstertest') {
+    if (message.content === '!monstertest') {
       try {
         const response = await fetch(
           'https://monsterlab.io/api/account',
@@ -1553,6 +1524,35 @@ client.on(Events.MessageCreate, async message => {
       } catch (err) {
         console.error(err);
       }
+    }
+
+    if (message.content.trim() === '!ding') {
+      await message.reply('✅ Bot can read messages.');
+      return;
+    }
+  
+    if (message.content.trim().toLowerCase() === '!ticketpanel') {
+      const embed = new EmbedBuilder()
+        .setColor(0x57F287)
+        .setTitle('<:whiteCE:1504904179905200148> Support Center')
+        .setDescription(
+          'Need help with campaigns, payments, submissions, or account issues?\n\nOpen a support ticket below.⬇️'
+        );
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('open_ticket')
+          .setLabel('Open Ticket')
+          .setEmoji('✉️')
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      await message.channel.send({
+        embeds: [embed],
+        components: [row]
+      });
+
+      return;
     }
 
     if (message.content === '!leaderboard') {
