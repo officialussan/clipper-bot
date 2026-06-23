@@ -57,6 +57,17 @@ const LEADERBOARD_MESSAGE_ID = '1508380113056567417';
 const MONSTERLAB_API_KEY = process.env.MONSTERLAB_API_KEY;
 const PRICE_PER_PROXY = 7;
 
+const clean = (str) =>
+  str.replace(/[`*_|~]/g, '').trim();
+
+const toSafeChannelName = (name) =>
+  name
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 20);
+
 const SUPPORTED_COUNTRIES = [
   'United States',
   'United Kingdom',
@@ -3091,9 +3102,10 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await interaction.deferReply({ ephemeral: true });
 
-      const country = clean(interaction.fields.getTextInputValue('proxy_country'));
+      // 🟢 FIXED: Removed the non-existent clean() wrapper function
+      const country = interaction.fields.getTextInputValue('proxy_country').trim();
       const quantityStr = interaction.fields.getTextInputValue('proxy_quantity').trim();
-      const useCase = clean(interaction.fields.getTextInputValue('proxy_usecase'));
+      const useCase = interaction.fields.getTextInputValue('proxy_usecase').trim();
 
       const quantity = parseInt(quantityStr, 10);
 
@@ -3131,7 +3143,8 @@ client.on(Events.InteractionCreate, async interaction => {
           });
         }
 
-        const safeName = toSafeChannelName(interaction.user.username);
+        // 🟢 FIXED: Replaced toSafeChannelName with a simple regex to keep it safe and avoid crashes
+        const safeName = interaction.user.username.toLowerCase().replace(/[^a-z0-9-]/g, '');
 
         // ------------------------------------------
         // CREATE CHANNEL
