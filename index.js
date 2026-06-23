@@ -14,6 +14,7 @@ const {
   Events,
   ChannelType,
   PermissionsBitField,
+  PermissionFlagsBits,
   EmbedBuilder
 } = require('discord.js');
 
