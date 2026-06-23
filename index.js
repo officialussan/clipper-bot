@@ -3157,17 +3157,25 @@ client.on(Events.InteractionCreate, async interaction => {
           topic: `proxy-ticket-${interaction.user.id}`,
           permissionOverwrites: [
             {
-              id: interaction.guild.roles.everyone.id,
+              id: interaction.guild.id,
               deny: [PermissionFlagsBits.ViewChannel],
             },
             {
-              id: interaction.user.id,
+              id: client.user.id,
               allow: [
                 PermissionFlagsBits.ViewChannel,
                 PermissionFlagsBits.SendMessages,
                 PermissionFlagsBits.AttachFiles,
                 PermissionFlagsBits.ReadMessageHistory
               ],
+            },
+            {
+              id:userId,
+              allow: [
+                 PermissionFlagsBits.ViewChannel,
+                 PermissionFlagsBits.SendMessages,
+                 PermissionFlagsBits.ReadMessageHistory
+              ]
             },
             {
               id: PROXY_STAFF_ROLE_ID,
