@@ -1500,6 +1500,61 @@ client.on(Events.MessageCreate, async message => {
       return;
     }
 
+    if (message.content.trim().toLowerCase() === '!proxypanel') {
+      const embed = new EmbedBuilder()
+        .setColor(0x7ED957)
+        .setTitle('⚡ Premium Residential Proxies')
+        .setDescription(
+          `Looking for clean, high-performance proxies for automated posting, scraping, or multi-accounting?\n\n` +
+          `💰 **Pricing:** \`$${PRICE_PER_PROXY}\` per proxy\n` +
+          `🌍 **Locations:** US, UK, DE, NG and more\n` +
+          `🔥 **Optimization:** TikTok, Instagram, YouTube and automation workflows`
+        )
+        .setFooter({
+          text: 'Creators Elite Proxy Network'
+        });
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('buy_proxy_trigger')
+          .setLabel('Buy Proxy')
+          .setEmoji('🛒')
+          .setStyle(ButtonStyle.Primary)
+      );
+
+      await message.channel.send({
+        embeds: [embed],
+        components: [row]
+      });
+      
+      return;
+    }
+
+   if (message.content === '!monstertest') {
+      try {
+        const response = await fetch(
+          'https://monsterlab.io/api/account',
+          {
+            headers: {
+              Authorization: `ApiKey ${MONSTERLAB_API_KEY}`
+            }
+          }
+        );
+
+        console.log('Status:', response.status);
+
+        const text = await response.text();
+
+        console.log('Response:', text);
+
+        await message.reply(
+          'Check console for response.'
+        );
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
     if (message.content === '!leaderboard') {
       const data = loadData();
       const leaderboard = buildLeaderboardEmbed(data, 1, 10);
@@ -1844,75 +1899,6 @@ client.on(Events.MessageCreate, async message => {
 
       return;
     } 
-
-    if (message.author.bot) return;
-
-    if (message.content.trim().toLowerCase() === '!proxypanel') {
-
-      if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
-        return;
-
-      const embed = new EmbedBuilder()
-        .setColor(0x7ED957)
-        .setTitle('⚡ Premium Residential Proxies')
-        .setDescription(
-          `Looking for clean, high-performance proxies for automated posting, scraping, or multi-accounting?\n\n` +
-          `💰 **Pricing:** \`$${PRICE_PER_PROXY}\` per proxy\n` +
-          `🌍 **Locations:** US, UK, DE, NG and more\n` +
-          `🔥 **Optimization:** TikTok, Instagram, YouTube and automation workflows`
-        )
-        .setFooter({
-          text: 'Creators Elite Proxy Network'
-        });
-
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('buy_proxy_trigger')
-          .setLabel('Buy Proxy')
-          .setEmoji('🛒')
-          .setStyle(ButtonStyle.Primary)
-      );
-
-      await message.channel.send({
-        embeds: [embed],
-        components: [row]
-      });
-
-      if (
-        message.guild.members.me.permissions.has(
-          PermissionFlagsBits.ManageMessages
-        )
-      ) {
-        await message.delete().catch(() => null);
-      }
-
-      return;
-    }
-
-    if (message.content === '!monstertest') {
-      try {
-        const response = await fetch(
-          'https://monsterlab.io/api/account',
-          {
-            headers: {
-              Authorization: `ApiKey ${MONSTERLAB_API_KEY}`
-            }
-          }
-        );
-
-        console.log('Status:', response.status);
-
-        const text = await response.text();
-
-        console.log('Response:', text);
-
-        await message.reply(
-          'Check console for response.'
-        );
-      } catch (err) {
-        console.error(err);
-      }
-    }
 
     if (message.content === '!verifypanel') {
       if (!isAdmin(message.member)) {
