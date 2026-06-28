@@ -15,7 +15,8 @@ const {
   ChannelType,
   PermissionsBitField,
   PermissionFlagsBits,
-  EmbedBuilder
+  EmbedBuilder,
+  Status
 } = require('discord.js');
 
 const { MongoClient } = require('mongodb');
@@ -57,6 +58,7 @@ const LEADERBOARD_CHANNEL_ID = '1495692728431018015';
 const LEADERBOARD_MESSAGE_ID = '1508380113056567417';
 const MONSTERLAB_API_KEY = process.env.MONSTERLAB_API_KEY;
 const PRICE_PER_PROXY = 7;
+const FINISHED_CAMPAIGNS_CATEGORY_ID = '1520064994274709747';
 
 const clean = (str) =>
   str.replace(/[`*_|~]/g, '').trim();
@@ -100,6 +102,7 @@ const CAMPAIGNS = {
     staffChannelId: process.env.TONY_STAFF_CHANNEL_ID,
     roleId: process.env.TONY_ROLE_ID,
     entryChannelId: process.env.TONY_ENTRY_CHANNEL_ID,
+    status: 'active',
     
     panelText: `# <a:fire1:1504871649491554487> **Earn Money Posting Clips – Tony Robbins Clipping Campaign**
 
@@ -150,6 +153,7 @@ Click the button below to start clipping and earning.`
     staffChannelId: process.env.CROWDER_STAFF_CHANNEL_ID,
     roleId: process.env.CROWDER_ROLE_ID,
     entryChannelId: process.env.CROWDER_ENTRY_CHANNEL_ID,
+    status: 'active',
 
     panelText: `
 # <a:fire1:1504871649491554487> Earn Money Posting Clips – Steven Crowder Clipping Campaign
@@ -208,12 +212,210 @@ function loadData() {
   if (!raw.applications) raw.applications = {};
   if (!raw.campaignAccountRequests) raw.campaignAccountRequests = {};
   if (!raw.clips) raw.clips = {};
+  if (!raw.campaignStatus) raw.campaignStatus = {};
 
   return raw;
 }
 
 function saveData(data) {
   fs.writeFileSync(dataFilePath, JSON.stringify(data, null, 2));
+}
+
+async function fetchMonsterLabCampaigns() {
+  try {
+    const response = await fetch(
+      'https://monsterlab.io/api/clips/campaigns',
+      {
+        headers: {
+          Authorization: `ApiKey ${process.env.MONSTERLAB_API_KEY}`
+        }
+      }
+    );
+
+    const result = await response.json();
+
+    return result.data || [];
+
+  } catch (err) {
+    console.error('MonsterLab fetch failed:', err);
+    return [];
+  }
+}
+
+async function syncMonsterLabCampaigns() {
+
+  console.log('Syncing MonsterLab campaigns...');
+
+  const campaigns = await fetchMonsterLabCampaigns();
+
+  const data = loadData();
+
+  if (!data.monsterCampaigns) {
+    data.monsterCampaigns = {};
+  }
+
+  for (const campaign of campaigns) {
+
+    const guild = client.guilds.cache.first();
+
+    let channels = {};
+
+    if (!data.monsterCampaigns[campaign.campaignId]) {
+
+        channels = await createMonsterCampaignChannels(
+            guild,
+            campaign
+        );
+
+    }
+    else{
+
+        channels = data.monsterCampaigns[campaign.campaignId];
+
+    }
+
+    CAMPAIGNS[campaign.campaignId] = {
+
+        id: campaign.campaignId,
+
+        name: campaign.name,
+
+        type: campaign.type,
+
+        platforms: campaign.platforms,
+
+        payoutRates: campaign.payoutRates,
+
+        source: "monsterlab",
+
+        status: "active",
+
+        ...channels,
+
+        lastUpdated: Date.now()
+
+    };
+
+    console.log(
+      `Imported ${campaign.name}`
+    );
+  }
+
+  saveData(data);
+
+  console.log(
+    `${campaigns.length} campaigns synced`
+  );
+}
+
+async function submitClipToMonsterLab(
+  campaignId,
+  clipUrl,
+  label,
+  notes = ''
+) {
+
+  try {
+
+    const response = await fetch(
+      'https://monsterlab.io/api/clips/submit',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `ApiKey ${process.env.MONSTERLAB_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          url: clipUrl,
+          campaignId,
+          label,
+          notes
+        })
+      }
+    );
+
+    const result = await response.json();
+
+    return result;
+
+  } catch (err) {
+
+    console.error(err);
+
+    return {
+      success: false,
+      error: err.message
+    };
+  }
+}
+
+async function createMonsterCampaignChannels(guild, campaign) {
+
+    const category = await guild.channels.create({
+        name: `🎬 ${campaign.name}`,
+        type: ChannelType.GuildCategory
+    });
+
+    const clippingChannel = await guild.channels.create({
+        name: `${campaign.name.toLowerCase().replace(/\s+/g, '-')}-clipping`,
+        type: ChannelType.GuildText,
+        parent: category.id
+    });
+
+    const rulesChannel = await guild.channels.create({
+        name: 'campaign-rules',
+        type: ChannelType.GuildText,
+        parent: category.id
+    });
+
+    const updatesChannel = await guild.channels.create({
+        name: 'updates',
+        type: ChannelType.GuildText,
+        parent: category.id
+    });
+
+    const connectChannel = await guild.channels.create({
+        name: 'connect-accounts',
+        type: ChannelType.GuildText,
+        parent: category.id
+    });
+
+    const guidesChannel = await guild.channels.create({
+        name: 'guides',
+        type: ChannelType.GuildText,
+        parent: category.id
+    });
+
+    const assetsChannel = await guild.channels.create({
+        name: 'clip-assets',
+        type: ChannelType.GuildText,
+        parent: category.id
+    });
+
+    const submitChannel = await guild.channels.create({
+        name: 'submit-clips',
+        type: ChannelType.GuildText,
+        parent: category.id
+    });
+
+    const chatChannel = await guild.channels.create({
+        name: 'chat',
+        type: ChannelType.GuildText,
+        parent: category.id
+    });
+
+    return {
+        categoryId: category.id,
+        clippingChannelId: clippingChannel.id,
+        rulesChannelId: rulesChannel.id,
+        updatesChannelId: updatesChannel.id,
+        connectChannelId: connectChannel.id,
+        guidesChannelId: guidesChannel.id,
+        assetsChannelId: assetsChannel.id,
+        submitChannelId: submitChannel.id,
+        chatChannelId: chatChannel.id
+    };
+
 }
 
 function ensureUser(data, member) {
@@ -357,6 +559,96 @@ function validateClipSubmission(videoUrl) {
   }
 
   return { isValid: true };
+}
+
+async function archiveFinishedCampaigns(client) {
+
+  const data = loadData();
+
+  if (!data.campaignStatus) return;
+
+  for (const campaignId of Object.keys(data.campaignStatus)) {
+
+    const status = data.campaignStatus[campaignId];
+
+    if (status.status !== 'finished') continue;
+
+    if (status.archived) continue;
+
+    if (!status.finishedAt) continue;
+
+    const hoursPassed =
+      (Date.now() - status.finishedAt) /
+      (1000 * 60 * 60);
+
+    if (hoursPassed < 24) continue;
+
+    const campaign = CAMPAIGNS[campaignId];
+
+    if (!campaign) continue;
+
+    const guild =
+      client.guilds.cache.first();
+
+    if (!guild) continue;
+
+    const channel =
+      guild.channels.cache.get(
+        campaign.panelChannelId
+      );
+
+    if (!channel) continue;
+
+    try {
+
+      // Move channel
+      await channel.setParent(
+        FINISHED_CAMPAIGNS_CATEGORY_ID
+      );
+
+      // Hide from everyone
+      await channel.permissionOverwrites.edit(
+        guild.roles.everyone,
+        {
+          ViewChannel: false
+        }
+      );
+
+      // Allow staff
+      await channel.permissionOverwrites.edit(
+        STAFF_ROLE_ID,
+        {
+          ViewChannel: true,
+          SendMessages: true,
+          ReadMessageHistory: true
+        }
+      );
+
+      // Rename channel
+      if (!channel.name.startsWith("closed-")) {
+
+        await channel.setName(
+          `closed-${channel.name}`
+        );
+
+      }
+
+      status.archived = true;
+
+      saveData(data);
+
+      console.log(
+        `${campaign.name} archived successfully.`
+      );
+
+    } catch (err) {
+
+      console.error(err);
+
+    }
+
+  }
+
 }
 
 function renderClipStaffContent(clip) {
@@ -897,7 +1189,11 @@ function buildCampaignStatusEmbed(campaign, data) {
     .setTitle(campaign.name)
     .setDescription(
       `<a:redalert:1504777207648620595> **Campaign Status**\n` +
-      `**Status:** Active\n\n` +
+      `**Status:** ${
+        isFinished
+          ? '🏁 Finished'
+          : '🟢 Active'
+      }\n\n` +
 
       `📅 **Campaign Period**\n` +
       `${formatDateShort(periodStart)} - ${formatDateShort(periodEnd)}\n\n` +
@@ -1009,10 +1305,16 @@ function ensureCampaignPlatformStats(userRecord, campaignId, platform, username 
 function buildCampaignPanelButtons(campaign, data) {
   const totals = getCampaignTotals(data, campaign.id);
 
-  const fulfilledPercent = Math.min(
-    (totals.payout / campaign.weeklyBudget) * 100,
-    100
-  ).toFixed(1);
+  const fulfilledPercent = campaign.weeklyBudget
+    ? Math.min((totals.payout / campaign.weeklyBudget) * 100, 100).toFixed(1)
+    : '0.0';
+
+  const campaignState =
+    data.campaignStatus?.[campaign.id];
+
+  const isFinished =
+    data.campaignStatus?.[campaign.id]?.status === 'finished' ||
+    campaign.status === 'finished';
 
   console.log('campaignPayout', totals.payout);
 
@@ -1021,20 +1323,55 @@ function buildCampaignPanelButtons(campaign, data) {
       .setCustomId(`join_campaign:${campaign.id}`)
       .setLabel('Join Campaign')
       .setEmoji('<a:flyin:1506234392920723546>')
-      .setStyle(ButtonStyle.Success),
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(isFinished),
 
     new ButtonBuilder()
       .setCustomId(`campaign_status:${campaign.id}`)
-      .setLabel('Campaign Status')
-      .setEmoji('<a:chart1:1504773558415523931>')
-      .setStyle(ButtonStyle.Primary),
+      .setLabel(
+         isFinished
+           ? 'Campaign Finished'
+           : 'Campaign Status'   
+           
+      )
+      .setEmoji(
+         isFinished       
+           ? '🏁'
+           : '<a:chart1:1504773558415523931>'      
+
+      )
+      .setStyle(
+         isFinished
+           ? ButtonStyle.Secondary
+           : ButtonStyle.Primary
+      ),
 
     new ButtonBuilder()
       .setCustomId(`campaign_fulfilled:${campaign.id}`)
       .setLabel(`Fulfilled: ${fulfilledPercent}%`)
       .setStyle(ButtonStyle.Secondary)
       .setEmoji('<a:Loadin:1506234461459714100>')
-      .setDisabled(true)
+      .setDisabled(true),
+
+    new ButtonBuilder()
+      .setCustomId(`finish_campaign:${campaign.id}`)
+      .setLabel(
+         isFinished
+           ? 'Reopen Campaign'
+           : 'Finish Campaign'
+
+      )
+     .setEmoji(
+        isFinished      
+          ? '🔄'
+          : '🏁'
+      )
+      .setStyle(
+         isFinished
+           ? ButtonStyle.Success
+           : ButtonStyle.Danger
+      )  
+    
   );
    
   return [row];
@@ -1477,6 +1814,18 @@ client.once(Events.ClientReady, () => {
   setInterval(autoTrackClipViews, 30 * 60 * 1000);
 });
 
+client.once('ready', async () => {
+
+  await syncMonsterLabCampaigns();
+
+  setInterval(async () => {
+
+    await syncMonsterLabCampaigns();
+
+  }, 10 * 60 * 1000);
+
+});
+
 client.on(Events.MessageCreate, async message => {
   try {
     if (message.author.bot) return;
@@ -1507,8 +1856,9 @@ client.on(Events.MessageCreate, async message => {
 
     if (message.content === '!monstercampaigns') {
       const response = await fetch(
-        'https://monsterlab.io/api/clipit/campaigns',
+        'https://monsterlab.io/api/clips/campaigns',
         {
+          method: 'GET',
           headers: {
             Authorization: `ApiKey ${process.env.MONSTERLAB_API_KEY}`
           }
@@ -1522,6 +1872,47 @@ client.on(Events.MessageCreate, async message => {
       console.log(text);
 
       await message.reply('Check console for campaigns.');
+    }
+
+    if (message.content === '!monsterraw') {
+      const response = await fetch(
+        'https://monsterlab.io/api/clips/campaigns',
+        {
+          headers: {
+            Authorization: `ApiKey ${process.env.MONSTERLAB_API_KEY}`
+          }
+        }
+      );
+ 
+      const data = await response.json();
+
+      console.log(
+        JSON.stringify(data, null, 2)
+      );
+
+      await message.reply('Printed campaign data to console.');
+    }
+
+    if (message.content === "!synccampaigns") {
+
+        if (!isAdmin(message.member))
+            return;
+
+        await syncMonsterLabCampaigns();
+
+        await message.reply(
+            "✅ MonsterLab campaigns synced."
+        );
+
+    }
+
+    if (message.content === '!syncmonster') {
+
+      await syncMonsterLabCampaigns();
+
+      return message.reply(
+        'MonsterLab campaigns synced.'
+      );
     }
 
     if (message.content.trim() === '!ding') {
@@ -1581,6 +1972,20 @@ client.on(Events.MessageCreate, async message => {
       });
       
       return;
+    }
+
+    if (message.content === '!monstercampaigns') {
+
+      const data = loadData();
+
+      const campaigns =
+        Object.values(data.monsterCampaigns || {});
+
+      return message.reply(
+        campaigns
+          .map(c => c.name)
+          .join('\n')
+      );
     }
 
     if (message.content === '!leaderboard') {
@@ -4145,6 +4550,11 @@ client.on(Events.InteractionCreate, async interaction => {
       const [, campaignId, platform] = interaction.customId.split(':');
       const campaign = CAMPAIGNS[campaignId];
 
+      if (campaign.status === 'finished') {
+        await interaction.reply({ content: '❌ This campaign has already been closed.', ephemeral: true });
+        return;
+      }
+
       if (!campaign) {
         await interaction.reply({ content: '❌ Campaign not found.', ephemeral: true });
         return;
@@ -4199,64 +4609,184 @@ client.on(Events.InteractionCreate, async interaction => {
       let duplicateCount = 0; // Tracks if any links in the batch were duplicates
 
       for (const videoUrl of links) {
-        // FIX: Check every single link in the loop against the database
-        const urlValidation = validateClipSubmission(videoUrl);
 
-        if (!urlValidation.isValid) {
-          duplicateCount += 1;
-          continue; // Skips this specific link and jumps to the next one
-        }
+          // ----------------------------
+          // MONSTERLAB CAMPAIGNS
+          // ----------------------------
+          if (campaign.source === "monsterlab") {
 
-        const clipId = makeClipId();
-        const clip = {
-          id: clipId,
-          userId: interaction.user.id,
-          campaignId,
-          campaignName: campaign.name,
-          platform,
-          username,
-          videoUrl,
-          status: 'pending',
-          views: 0,
-          moneyMade: 0,
-          submittedAt: new Date().toISOString(),
-          staffMessageId: null
-        };
+              const monsterResult =
+                  await submitClipToMonsterLab(
+                      campaign.id,
+                      videoUrl,
+                      campaign.password || "",
+                      "",
+                      ""
+                  );
 
-        data.clips[clipId] = clip;
-        platformStats.videosPosted += 1;
-        userRecord.stats.videosPosted += 1;
+              if (!monsterResult.success) {
+                  duplicateCount++;
+                  continue;
+              }
 
-        if (staffChannel) {
-          const sent = await staffChannel.send({
-            content: renderClipStaffContent(clip),
-            components: buildClipStaffButtons(clip)
-          }).catch(() => null);
+              data.clips[monsterResult.data.submissionId] = {
 
-          if (sent) {
-            clip.staffMessageId = sent.id;
-            data.clips[clipId] = clip;
+                  submissionId: monsterResult.data.submissionId,
+
+                  userId: interaction.user.id,
+
+                  campaignId,
+
+                  campaignName: campaign.name,
+
+                  platform: monsterResult.data.platform,
+
+                  username: monsterResult.data.handle,
+
+                  videoUrl,
+
+                  status: monsterResult.data.status,
+
+                  submittedAt: Date.now(),
+
+                  monsterlab: true
+
+              };
+
+              submittedCount++;
+
+              continue;
           }
-        }
 
-        submittedCount += 1;
+          // ----------------------------
+          // EXISTING SYSTEM
+          // ----------------------------
+
+          const urlValidation = validateClipSubmission(videoUrl);
+
+          if (!urlValidation.isValid) {
+
+              duplicateCount++;
+
+              continue;
+
+          }
+
+          const clipId = makeClipId();
+
+          const clip = {
+
+              id: clipId,
+
+              userId: interaction.user.id,
+
+              campaignId,
+
+              campaignName: campaign.name,
+
+              platform,
+
+              username,
+
+              videoUrl,
+
+              status: "pending",
+
+              views: 0,
+
+              moneyMade: 0,
+
+              submittedAt: new Date().toISOString(),
+
+              staffMessageId: null
+
+          };
+
+          data.clips[clipId] = clip;
+
+          platformStats.videosPosted++;
+
+          userRecord.stats.videosPosted++;
+
+          if (staffChannel) {
+
+              const sent = await staffChannel.send({
+
+                  content: renderClipStaffContent(clip),
+
+                  components: buildClipStaffButtons(clip)
+
+              }).catch(() => null);
+
+              if (sent) {
+
+                  clip.staffMessageId = sent.id;
+
+                  data.clips[clipId] = clip;
+
+              }
+
+          }
+
+          submittedCount++;
+
       }
 
       saveData(data);
 
-      // Construct a response message that handles clean submittals vs duplicates found
-      let responseMessage = `✅ Submitted **${submittedCount}** clip(s) for **${campaign.name}** on **${formatPlatform(platform)}** (@${username}).`;
+      // Construct response message
+      let responseMessage =
+        `✅ Submitted **${submittedCount}** clip(s) for **${campaign.name}** on **${formatPlatform(platform)}** (@${username}).`;
+
       if (duplicateCount > 0) {
-        responseMessage += `\n⚠️ **${duplicateCount}** link(s) were ignored because they were already submitted before.`;
+
+        responseMessage +=
+          `\n⚠️ **${duplicateCount}** link(s) were ignored because they were already submitted before.`;
+
       }
 
-      // If they pasted links, but ALL of them were duplicates
-      if (submittedCount === 0 && duplicateCount > 0) {
-        responseMessage = `❌ Submission failed. All links you provided have already been submitted to the system!`;
+      // If all submitted links were duplicates
+      if (
+        submittedCount === 0 &&
+        duplicateCount > 0
+      ) {
+
+        responseMessage =
+          `❌ Submission failed. All links you provided have already been submitted to the system!`;
+
       }
 
+      // Single Discord reply
       await interaction.reply({
+
         content: responseMessage,
+
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0x57F287)
+            .setTitle('✅ Clip Submitted')
+            .setDescription(
+              `Submission ID: \`${monsterResult.data.submissionId}\``
+            )
+            .addFields(
+              {
+                name: 'Platform',
+                value:
+                  monsterResult.data.platform ||
+                  'Unknown',
+                inline: true
+              },
+              {
+                name: 'Status',
+                value:
+                  monsterResult.data.status ||
+                  'Pending',
+                inline: true
+              }
+            )
+            .setTimestamp()
+        ],
+
         ephemeral: true
       });
 
@@ -4291,6 +4821,102 @@ client.on(Events.InteractionCreate, async interaction => {
       });
 
       return;
+    }
+
+    if (
+      interaction.isButton() &&
+      interaction.customId.startsWith('finish_campaign:')
+    ) {
+
+      if (
+        !interaction.member.permissions.has('Administrator')
+      ) {
+
+        return interaction.reply({
+
+          content:
+            '❌ Only staff can do this.',
+
+          ephemeral: true
+
+        });
+
+      }
+
+      const campaignId =
+        interaction.customId.split(':')[1];
+
+      const campaign =
+        CAMPAIGNS[campaignId];
+
+      if (!campaign) {
+
+        return interaction.reply({
+
+          content:
+            '❌ Campaign not found.',
+
+          ephemeral: true
+
+        });
+
+      }
+
+      const data = loadData();
+
+      if (!data.campaignStatus) {
+        data.campaignStatus = {};
+      }
+
+      if (!data.campaignStatus[campaign.id]) {
+        data.campaignStatus[campaign.id] = {};
+      }
+
+      const isFinished =
+        data.campaignStatus[campaign.id].status === 'finished';
+        data.campaignStatus[campaign.id].finishedAt =
+        Date.now();
+
+        data.campaignStatus[campaign.id].archived =
+        false;
+
+      if (isFinished) {
+
+        data.campaignStatus[campaign.id].status = 'active';
+        delete data.campaignStatus[campaign.id].finishedAt;
+        data.campaignStatus[campaign.id].archived = false;
+
+      } else {
+
+        data.campaignStatus[campaign.id].status = 'finished';
+        delete data.campaignStatus[campaign.id].finishedAt;
+
+        data.campaignStatus[campaign.id].archived =
+        false;
+
+      }
+
+      saveData(data);
+
+      await updateCampaignPanelMessage(
+        interaction.guild,
+        campaign.id
+      );
+
+      await updateLeaderboardMessage(
+        interaction.guild,
+        campaign.id
+      );
+
+      await interaction.reply({
+        content: isFinished
+          ? '🏁 Campaign finished.'
+          : '🟢 Campaign reopened.',
+        ephemeral: true
+      });
+
+      return;
+
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('remove_clip:')) {
@@ -5340,6 +5966,20 @@ app.get('/callback', async (req, res) => {
 // Start the Express Server
 app.listen(PORT, () => {
   console.log(`🌐 OAuth Web Server internally listening on port ${PORT}`);
+});
+
+client.once('ready', () => {
+
+  console.log('Campaign archive scheduler started.');
+
+  archiveFinishedCampaigns(client);
+
+  setInterval(() => {
+
+    archiveFinishedCampaigns(client);
+
+  }, 5 * 60 * 1000);
+
 });
 
 // Your existing login statement
