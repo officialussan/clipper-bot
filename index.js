@@ -260,12 +260,48 @@ async function syncMonsterLabCampaigns() {
 
     let channels = {};
 
+    if (
+        CAMPAIGNS[campaign.campaignId]
+    ) {
+
+        console.log(
+          `${campaign.name} already exists`
+        );
+
+        continue;
+
+    }
+
     if (!data.monsterCampaigns[campaign.campaignId]) {
 
-        channels = await createMonsterCampaignChannels(
-            guild,
-            campaign
-        );
+        channels =
+          await createMonsterCampaignChannels(
+              guild,
+              campaign
+          );
+
+        const clippingChannel =
+            guild.channels.cache.get(
+                channels.clippingChannelId
+            );
+
+        const panelMessage =
+            await clippingChannel.send({
+
+                content: campaign.panelText || '',
+
+                components: buildCampaignPanelButtons(
+                    CAMPAIGNS[campaign.campaignId],
+                    loadData()
+                )
+
+            });
+
+        channels.panelChannelId =
+            clippingChannel.id;
+
+        channels.panelMessageId =
+            panelMessage.id;      
 
     }
     else{
@@ -357,49 +393,49 @@ async function createMonsterCampaignChannels(guild, campaign) {
     });
 
     const clippingChannel = await guild.channels.create({
-        name: `${campaign.name.toLowerCase().replace(/\s+/g, '-')}-clipping`,
+        name: `💰 | ${campaign.name.toLowerCase().replace(/\s+/g, '-')}-clipping`,
         type: ChannelType.GuildText,
         parent: category.id
     });
 
     const rulesChannel = await guild.channels.create({
-        name: 'campaign-rules',
+        name: '📘 | campaign-rules',
         type: ChannelType.GuildText,
         parent: category.id
     });
 
     const updatesChannel = await guild.channels.create({
-        name: 'updates',
+        name: '🚨 | updates',
         type: ChannelType.GuildText,
         parent: category.id
     });
 
     const connectChannel = await guild.channels.create({
-        name: 'connect-accounts',
+        name: '🔗 | connect-accounts',
         type: ChannelType.GuildText,
         parent: category.id
     });
 
     const guidesChannel = await guild.channels.create({
-        name: 'guides',
+        name: '⭐ | guides',
         type: ChannelType.GuildText,
         parent: category.id
     });
 
     const assetsChannel = await guild.channels.create({
-        name: 'clip-assets',
+        name: '📦 | clip-assets',
         type: ChannelType.GuildText,
         parent: category.id
     });
 
     const submitChannel = await guild.channels.create({
-        name: 'submit-clips',
+        name: '📤 | submit-clips',
         type: ChannelType.GuildText,
         parent: category.id
     });
 
     const chatChannel = await guild.channels.create({
-        name: 'chat',
+        name: '💬 | chat',
         type: ChannelType.GuildText,
         parent: category.id
     });
@@ -883,12 +919,17 @@ function buildLeaderboardEmbed(guild, data, page = 1, perPage = 10) {
       );
 
       // FIX: If database doesn't have a name, fetch it directly from the Discord server cache
-      let fetchedUsername = userRecord.username || userRecord.tag || userRecord.displayName;
+      let fetchedUsername =  userRecord.displayName || userRecord.discordUsername || userRecord.username || userRecord.tag;
       
       if (!fetchedUsername && guild) {
         const member = guild.members.cache.get(userId);
+
         if (member) {
-          fetchedUsername = member.user.username;
+          fetchedUsername = member.displayName;
+
+          // Save it so next update doesn't need to fetch again
+          userRecord.displayName = member.displayName;
+          userRecord.discordUsername = member.user.username;
         }
       }
 
@@ -5969,16 +6010,20 @@ app.listen(PORT, () => {
 });
 
 client.once('ready', () => {
+  console.log('Monsterlab sync is manual.');
+});
 
-  console.log('Campaign archive scheduler started.');
+client.on('messageCreate', async message => {
 
-  archiveFinishedCampaigns(client);
+    if (message.author.bot) return;
 
-  setInterval(() => {
+    if (message.content !== '!synccampaigns') return;
 
-    archiveFinishedCampaigns(client);
+    await message.reply('Syncing campaigns...');
 
-  }, 5 * 60 * 1000);
+    await syncMonsterLabCampaigns();
+
+    await message.reply('Done.');
 
 });
 
