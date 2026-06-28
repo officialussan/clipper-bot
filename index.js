@@ -274,34 +274,46 @@ async function syncMonsterLabCampaigns() {
 
     if (!data.monsterCampaigns[campaign.campaignId]) {
 
-        channels =
-          await createMonsterCampaignChannels(
-              guild,
-              campaign
-          );
+        // Check if category already exists in Discord
+        const existingCategory = guild.channels.cache.find(
+            ch =>
+                ch.type === ChannelType.GuildCategory &&
+                ch.name === `🎬 ${campaign.name}`
+        );
 
-        const clippingChannel =
-            guild.channels.cache.get(
-                channels.clippingChannelId
-            );
+        if (existingCategory) {
 
-        const panelMessage =
-            await clippingChannel.send({
+            console.log(`${campaign.name} already exists in Discord. Skipping.`);
 
-                content: campaign.panelText || '',
+            continue;
+        }
 
-                components: buildCampaignPanelButtons(
-                    CAMPAIGNS[campaign.campaignId],
-                    loadData()
-                )
+        channels = await createMonsterCampaignChannels(
+            guild,
+            campaign
+        );
 
-            });
+      }
+      
+      if(!channels.panelMessageId) {
 
-        channels.panelChannelId =
-            clippingChannel.id;
+         const clippingChannel =
+             guild.channels.cache.get(
+                 channels.clippingChannelId
+             );
 
-        channels.panelMessageId =
-            panelMessage.id;      
+         const panelMessage =
+             await clippingChannel.send({
+                 content: campaign.panelText || '',
+                 components: buildCampaignPanelButtons(
+                     CAMPAIGNS[campaign.campaignId],
+                     loadData()
+                 )
+
+             });
+
+         channels.panelChannelId = clippingChannel.id;
+         channels.panelMessageId = panelMessage.id;      
 
     }
     else{
@@ -388,7 +400,7 @@ async function submitClipToMonsterLab(
 async function createMonsterCampaignChannels(guild, campaign) {
 
     const category = await guild.channels.create({
-        name: `🎬 ${campaign.name}`,
+        name: `🎬 | ${campaign.name}`,
         type: ChannelType.GuildCategory
     });
 
