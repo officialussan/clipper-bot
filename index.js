@@ -59,6 +59,7 @@ const LEADERBOARD_MESSAGE_ID = '1508380113056567417';
 const MONSTERLAB_API_KEY = process.env.MONSTERLAB_API_KEY;
 const PRICE_PER_PROXY = 7;
 const FINISHED_CAMPAIGNS_CATEGORY_ID = '1520064994274709747';
+const STAFF_CONTROL_CHANNEL_ID = "1521116369909710889";
 
 const clean = (str) =>
   str.replace(/[`*_|~]/g, '').trim();
@@ -148,7 +149,7 @@ Click the button below to start clipping and earning.`
     startDate: '2026-04-28',
     ratePerMillion: 300,
     viewCap: 7000000,
-    panelChannelId:'1492151253306703933',
+    panelChannelId:'1521116686252507207',
     panelMessageId:'1506295734729707540',
     staffChannelId: process.env.CROWDER_STAFF_CHANNEL_ID,
     roleId: process.env.CROWDER_ROLE_ID,
@@ -221,141 +222,6 @@ function saveData(data) {
   fs.writeFileSync(dataFilePath, JSON.stringify(data, null, 2));
 }
 
-async function fetchMonsterLabCampaigns() {
-  try {
-    const response = await fetch(
-      'https://monsterlab.io/api/clips/campaigns',
-      {
-        headers: {
-          Authorization: `ApiKey ${process.env.MONSTERLAB_API_KEY}`
-        }
-      }
-    );
-
-    const result = await response.json();
-
-    return result.data || [];
-
-  } catch (err) {
-    console.error('MonsterLab fetch failed:', err);
-    return [];
-  }
-}
-
-async function syncMonsterLabCampaigns() {
-
-  console.log('Syncing MonsterLab campaigns...');
-
-  const campaigns = await fetchMonsterLabCampaigns();
-
-  const data = loadData();
-
-  if (!data.monsterCampaigns) {
-    data.monsterCampaigns = {};
-  }
-
-  for (const campaign of campaigns) {
-
-    const guild = client.guilds.cache.first();
-
-    let channels = {};
-
-    if (
-        CAMPAIGNS[campaign.campaignId]
-    ) {
-
-        console.log(
-          `${campaign.name} already exists`
-        );
-
-        continue;
-
-    }
-
-    if (!data.monsterCampaigns[campaign.campaignId]) {
-
-        // Check if category already exists in Discord
-        const existingCategory = guild.channels.cache.find(
-            ch =>
-                ch.type === ChannelType.GuildCategory &&
-                ch.name === `🎬 ${campaign.name}`
-        );
-
-        if (existingCategory) {
-
-            console.log(`${campaign.name} already exists in Discord. Skipping.`);
-
-            continue;
-        }
-
-        channels = await createMonsterCampaignChannels(
-            guild,
-            campaign
-        );
-
-      }
-      
-      if(!channels.panelMessageId) {
-
-         const clippingChannel =
-             guild.channels.cache.get(
-                 channels.clippingChannelId
-             );
-
-         const panelMessage =
-             await clippingChannel.send({
-                 content: campaign.panelText || '',
-                 components: buildCampaignPanelButtons(
-                     CAMPAIGNS[campaign.campaignId],
-                     loadData()
-                 )
-
-             });
-
-         channels.panelChannelId = clippingChannel.id;
-         channels.panelMessageId = panelMessage.id;      
-
-    }
-    else{
-
-        channels = data.monsterCampaigns[campaign.campaignId];
-
-    }
-
-    CAMPAIGNS[campaign.campaignId] = {
-
-        id: campaign.campaignId,
-
-        name: campaign.name,
-
-        type: campaign.type,
-
-        platforms: campaign.platforms,
-
-        payoutRates: campaign.payoutRates,
-
-        source: "monsterlab",
-
-        status: "active",
-
-        ...channels,
-
-        lastUpdated: Date.now()
-
-    };
-
-    console.log(
-      `Imported ${campaign.name}`
-    );
-  }
-
-  saveData(data);
-
-  console.log(
-    `${campaigns.length} campaigns synced`
-  );
-}
-
 async function submitClipToMonsterLab(
   campaignId,
   clipUrl,
@@ -395,75 +261,6 @@ async function submitClipToMonsterLab(
       error: err.message
     };
   }
-}
-
-async function createMonsterCampaignChannels(guild, campaign) {
-
-    const category = await guild.channels.create({
-        name: `🎬 | ${campaign.name}`,
-        type: ChannelType.GuildCategory
-    });
-
-    const clippingChannel = await guild.channels.create({
-        name: `💰 | ${campaign.name.toLowerCase().replace(/\s+/g, '-')}-clipping`,
-        type: ChannelType.GuildText,
-        parent: category.id
-    });
-
-    const rulesChannel = await guild.channels.create({
-        name: '📘 | campaign-rules',
-        type: ChannelType.GuildText,
-        parent: category.id
-    });
-
-    const updatesChannel = await guild.channels.create({
-        name: '🚨 | updates',
-        type: ChannelType.GuildText,
-        parent: category.id
-    });
-
-    const connectChannel = await guild.channels.create({
-        name: '🔗 | connect-accounts',
-        type: ChannelType.GuildText,
-        parent: category.id
-    });
-
-    const guidesChannel = await guild.channels.create({
-        name: '⭐ | guides',
-        type: ChannelType.GuildText,
-        parent: category.id
-    });
-
-    const assetsChannel = await guild.channels.create({
-        name: '📦 | clip-assets',
-        type: ChannelType.GuildText,
-        parent: category.id
-    });
-
-    const submitChannel = await guild.channels.create({
-        name: '📤 | submit-clips',
-        type: ChannelType.GuildText,
-        parent: category.id
-    });
-
-    const chatChannel = await guild.channels.create({
-        name: '💬 | chat',
-        type: ChannelType.GuildText,
-        parent: category.id
-    });
-
-    return {
-        categoryId: category.id,
-        clippingChannelId: clippingChannel.id,
-        rulesChannelId: rulesChannel.id,
-        updatesChannelId: updatesChannel.id,
-        connectChannelId: connectChannel.id,
-        guidesChannelId: guidesChannel.id,
-        assetsChannelId: assetsChannel.id,
-        submitChannelId: submitChannel.id,
-        chatChannelId: chatChannel.id
-    };
-
 }
 
 function ensureUser(data, member) {
@@ -1192,16 +989,30 @@ function formatDateShort(date) {
 
 function getCampaignTotals(data, campaignId) {
   const campaign = CAMPAIGNS[campaignId];
-  const currentCycle = getCampaignCycle(campaign.startDate);
 
+  if (!campaign) {
+      return {
+          users: 0,
+          videos: 0,
+          views: 0,
+          payout: 0
+      };
+  }
+
+  const currentCycle = campaign.startDate
+      ? getCampaignCycle(campaign.startDate)
+      : null;
   const users = Object.values(data.users || {}).filter(user =>
     user.campaigns?.includes(campaignId)
   ).length;
 
   const clips = Object.values(data.clips || {}).filter(clip =>
-    clip.campaignId === campaignId &&
-    clip.status === 'approved' &&
-    clip.cycle === currentCycle
+      clip.campaignId === campaignId &&
+      clip.status === 'approved' &&
+      (
+          !currentCycle ||
+          (currentCycle === null || clip.cycle === currentCycle)
+      )
   );
 
   const videos = clips.length;
@@ -1371,63 +1182,63 @@ function buildCampaignPanelButtons(campaign, data) {
 
   console.log('campaignPayout', totals.payout);
 
-  const row = new ActionRowBuilder().addComponents( 
+  const components = [
     new ButtonBuilder()
       .setCustomId(`join_campaign:${campaign.id}`)
-      .setLabel('Join Campaign')
-      .setEmoji('<a:flyin:1506234392920723546>')
+      .setLabel("Join Campaign")
+      .setEmoji("<a:flyin:1506234392920723546>")
       .setStyle(ButtonStyle.Success)
       .setDisabled(isFinished),
 
     new ButtonBuilder()
       .setCustomId(`campaign_status:${campaign.id}`)
-      .setLabel(
-         isFinished
-           ? 'Campaign Finished'
-           : 'Campaign Status'   
-           
-      )
-      .setEmoji(
-         isFinished       
-           ? '🏁'
-           : '<a:chart1:1504773558415523931>'      
-
-      )
-      .setStyle(
-         isFinished
-           ? ButtonStyle.Secondary
-           : ButtonStyle.Primary
-      ),
+      .setLabel(isFinished ? "Campaign Finished" : "Campaign Status")
+      .setEmoji(isFinished ? "🏁" : "<a:chart1:1504773558415523931>")
+      .setStyle(isFinished ? ButtonStyle.Secondary : ButtonStyle.Primary),
 
     new ButtonBuilder()
       .setCustomId(`campaign_fulfilled:${campaign.id}`)
       .setLabel(`Fulfilled: ${fulfilledPercent}%`)
+      .setEmoji("<a:Loadin:1506234461459714100>")
       .setStyle(ButtonStyle.Secondary)
-      .setEmoji('<a:Loadin:1506234461459714100>')
-      .setDisabled(true),
+      .setDisabled(true)
+  ];
 
-    new ButtonBuilder()
-      .setCustomId(`finish_campaign:${campaign.id}`)
-      .setLabel(
-         isFinished
-           ? 'Reopen Campaign'
-           : 'Finish Campaign'
-
-      )
-     .setEmoji(
-        isFinished      
-          ? '🔄'
-          : '🏁'
-      )
-      .setStyle(
-         isFinished
-           ? ButtonStyle.Success
-           : ButtonStyle.Danger
-      )  
-    
-  );
-   
   return [row];
+}
+
+async function createStaffCampaignPanel(campaign) {
+
+    const channel = client.channels.cache.get(STAFF_CONTROL_CHANNEL_ID);
+
+    if (!channel) return;
+
+    const row = new ActionRowBuilder().addComponents(
+
+        new ButtonBuilder()
+            .setCustomId(`finish_campaign:${campaign.id}`)
+            .setLabel("Finish Campaign")
+            .setEmoji("🏁")
+            .setStyle(ButtonStyle.Danger),
+
+        new ButtonBuilder()
+            .setCustomId(`reopen_campaign:${campaign.id}`)
+            .setLabel("Reopen Campaign")
+            .setEmoji("🔄")
+            .setStyle(ButtonStyle.Success)
+
+    );
+
+    await channel.send({
+        content:
+`## ${campaign.name}
+
+Staff Controls
+
+Only moderators should use these buttons.`,
+        components: [row]
+    });
+
 }
 
 async function updateCampaignPanelMessage(guild, campaignId) {
@@ -1867,16 +1678,16 @@ client.once(Events.ClientReady, () => {
   setInterval(autoTrackClipViews, 30 * 60 * 1000);
 });
 
-client.once('ready', async () => {
+client.on('messageCreate', async (message) => {
+    console.log(`Received: ${message.content}`);
 
-  await syncMonsterLabCampaigns();
+    if (message.author.bot) return;
 
-  setInterval(async () => {
+    if (message.content !== '!cleanupchannels') return;
 
-    await syncMonsterLabCampaigns();
+    console.log('Cleanup command received');
 
-  }, 10 * 60 * 1000);
-
+    await message.reply('Cleanup started...');
 });
 
 client.on(Events.MessageCreate, async message => {
@@ -1944,28 +1755,6 @@ client.on(Events.MessageCreate, async message => {
       );
 
       await message.reply('Printed campaign data to console.');
-    }
-
-    if (message.content === "!synccampaigns") {
-
-        if (!isAdmin(message.member))
-            return;
-
-        await syncMonsterLabCampaigns();
-
-        await message.reply(
-            "✅ MonsterLab campaigns synced."
-        );
-
-    }
-
-    if (message.content === '!syncmonster') {
-
-      await syncMonsterLabCampaigns();
-
-      return message.reply(
-        'MonsterLab campaigns synced.'
-      );
     }
 
     if (message.content.trim() === '!ding') {
@@ -6029,15 +5818,44 @@ client.on('messageCreate', async message => {
 
     if (message.author.bot) return;
 
-    if (message.content !== '!synccampaigns') return;
+    if (message.content !== '!cleanupchannels') return;
 
-    await message.reply('Syncing campaigns...');
+    console.log('Cleanup command received');
 
-    await syncMonsterLabCampaigns();
+    await message.reply('Cleanup started...');
 
-    await message.reply('Done.');
+    const prefixes = [
+        '-clipping',
+        'campaign-rules',
+        'updates',
+        'connect-accounts',
+        'guides',
+        'clip-assets',
+        'submit-clips',
+        'chat'
+    ];
 
+    let deleted = 0;
+
+    for (const channel of message.guild.channels.cache.values()) {
+
+        if (channel.type !== ChannelType.GuildText) continue;
+
+        if (prefixes.some(name => channel.name.includes(name))) {
+
+            try {
+                console.log('Deleting:', channel.name);
+                await channel.delete();
+                deleted++;
+            } catch (err) {
+                console.log('Failed:', channel.name, err.message);
+            }
+
+        }
+    }
+
+    await message.reply(`✅ Deleted ${deleted} channels.`);
 });
 
 // Your existing login statement
-client.login(process.env.TOKEN);
+client.login(process.env.TOKEN); 
