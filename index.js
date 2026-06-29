@@ -150,10 +150,11 @@ Click the button below to start clipping and earning.`
     ratePerMillion: 300,
     viewCap: 7000000,
     panelChannelId:'1521116686252507207',
-    panelMessageId:'1506295734729707540',
+    panelMessageId:'1521136965427400716',
     staffChannelId: process.env.CROWDER_STAFF_CHANNEL_ID,
     roleId: process.env.CROWDER_ROLE_ID,
     entryChannelId: process.env.CROWDER_ENTRY_CHANNEL_ID,
+    source: 'monsterlab'
     status: 'active',
 
     panelText: `
