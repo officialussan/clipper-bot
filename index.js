@@ -154,7 +154,7 @@ Click the button below to start clipping and earning.`
     staffChannelId: process.env.CROWDER_STAFF_CHANNEL_ID,
     roleId: process.env.CROWDER_ROLE_ID,
     entryChannelId: process.env.CROWDER_ENTRY_CHANNEL_ID,
-    source: 'monsterlab'
+    source: 'monsterlab',
     status: 'active',
 
     panelText: `
@@ -1205,6 +1205,10 @@ function buildCampaignPanelButtons(campaign, data) {
       .setDisabled(true)
   ];
 
+  const row = new ActionRowBuilder().addComponents(
+    ...components
+  );
+
   return [row];
 }
 
@@ -2206,6 +2210,58 @@ client.on(Events.MessageCreate, async message => {
       });
 
       return;
+    }
+
+    if (message.content.trim().toLowerCase().startsWith('!staffpanel')) {
+
+        if (!isAdmin(message.member)) {
+            await message.reply('❌ Admin only.');
+            return;
+        }
+
+        const args = message.content.trim().split(/\s+/);
+        const campaignId = args[1];
+
+        if (!campaignId || !CAMPAIGNS[campaignId]) {
+            await message.reply('❌ Invalid campaign.');
+            return;
+        }
+
+        const campaign = CAMPAIGNS[campaignId];
+
+        const row = new ActionRowBuilder().addComponents(
+
+            new ButtonBuilder()
+              .setCustomId(`finish_campaign:${campaign.id}`)
+              .setLabel('Finish Campaign')
+              .setEmoji('🏁')
+              .setStyle(ButtonStyle.Danger),
+
+            new ButtonBuilder()
+              .setCustomId(`reopen_campaign:${campaign.id}`)
+              .setLabel('Reopen Campaign')
+              .setEmoji('🔄')
+              .setStyle(ButtonStyle.Success)
+
+        );
+
+        const channel =
+            client.channels.cache.get(STAFF_CONTROL_CHANNEL_ID);
+
+        await channel.send({
+
+            content:
+    `## ${campaign.name}
+
+    Staff Controls`,
+
+            components: [row]
+
+        });
+
+        await message.reply('✅ Staff panel created.');
+
+        return;
     }
 
     

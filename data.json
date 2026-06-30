@@ -114,5 +114,168 @@
       "status": "pending_country",
       "createdAt": 1779706995845
     }
-  }
+  },
+  "monsterCampaigns": {
+    "uNr9yj1bcoo7sAq3lOXe": {
+      "id": "uNr9yj1bcoo7sAq3lOXe",
+      "name": "Debates Clipping - June '26",
+      "type": "private",
+      "platforms": [
+        "tiktok",
+        "instagram",
+        "youtube"
+      ],
+      "payoutRates": {
+        "tiktok": {
+          "shares": 0.02,
+          "likes": 0.01,
+          "comments": 0.05,
+          "views": 0.001
+        },
+        "instagram": {
+          "views": 0.001,
+          "comments": 0.05,
+          "shares": 0.02,
+          "likes": 0.01
+        },
+        "youtube": {
+          "views": 0.002,
+          "shares": 0.05,
+          "likes": 0.02,
+          "comments": 0.1
+        }
+      },
+      "source": "monsterlab",
+      "lastUpdated": 1782288673381
+    },
+    "GwKw3AgGU2bB7GCFVWJH": {
+      "id": "GwKw3AgGU2bB7GCFVWJH",
+      "name": "Elephant Clipping - June '26",
+      "type": "private",
+      "platforms": [
+        "tiktok",
+        "instagram",
+        "youtube"
+      ],
+      "payoutRates": {
+        "tiktok": {
+          "views": 0.001,
+          "likes": 0.01,
+          "comments": 0.05,
+          "shares": 0.02
+        },
+        "instagram": {
+          "views": 0.001,
+          "likes": 0.01,
+          "comments": 0.05,
+          "shares": 0.02
+        },
+        "youtube": {
+          "views": 0.002,
+          "likes": 0.02,
+          "comments": 0.1,
+          "shares": 0.05
+        }
+      },
+      "source": "monsterlab",
+      "lastUpdated": 1782288673381
+    },
+    "AfqIWZ7OLgPcXcawvOhX": {
+      "id": "AfqIWZ7OLgPcXcawvOhX",
+      "name": "N3ON X EARLY CLIPPING",
+      "type": "public",
+      "platforms": [
+        "tiktok",
+        "instagram",
+        "youtube"
+      ],
+      "payoutRates": {
+        "tiktok": {
+          "views": 0.001,
+          "likes": 0.01,
+          "comments": 0.05,
+          "shares": 0.02
+        },
+        "instagram": {
+          "views": 0.001,
+          "likes": 0.01,
+          "comments": 0.05,
+          "shares": 0.02
+        },
+        "youtube": {
+          "views": 0.002,
+          "likes": 0.02,
+          "comments": 0.1,
+          "shares": 0.05
+        }
+      },
+      "source": "monsterlab",
+      "lastUpdated": 1782288673382
+    },
+    "oJq3ZU6UiBe2dFyMvuxA": {
+      "id": "oJq3ZU6UiBe2dFyMvuxA",
+      "name": "Political Clipping - June '26",
+      "type": "private",
+      "platforms": [
+        "tiktok",
+        "instagram",
+        "youtube"
+      ],
+      "payoutRates": {
+        "youtube": {
+          "comments": 0.1,
+          "shares": 0.05,
+          "views": 0.002,
+          "likes": 0.02
+        },
+        "instagram": {
+          "comments": 0.05,
+          "shares": 0.02,
+          "views": 0.001,
+          "likes": 0.01
+        },
+        "tiktok": {
+          "comments": 0.05,
+          "shares": 0.02,
+          "views": 0.001,
+          "likes": 0.01
+        }
+      },
+      "source": "monsterlab",
+      "lastUpdated": 1782288673382
+    },
+    "VoETqo74c8uM6pJuGJli": {
+      "id": "VoETqo74c8uM6pJuGJli",
+      "name": "Street Clipping - June '26",
+      "type": "private",
+      "platforms": [
+        "tiktok",
+        "instagram",
+        "youtube"
+      ],
+      "payoutRates": {
+        "instagram": {
+          "likes": 0.01,
+          "shares": 0.02,
+          "comments": 0.05,
+          "views": 0.001
+        },
+        "youtube": {
+          "shares": 0.05,
+          "comments": 0.1,
+          "views": 0.002,
+          "likes": 0.02
+        },
+        "tiktok": {
+          "shares": 0.02,
+          "comments": 0.05,
+          "views": 0.001,
+          "likes": 0.01
+        }
+      },
+      "source": "monsterlab",
+      "lastUpdated": 1782288673382
+    }
+  },
+  "campaignStatus": {}
 }
