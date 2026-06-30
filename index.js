@@ -1661,6 +1661,104 @@ async function autoTrackClipViews() {
   }
 }
 
+async function archiveFinishedCampaigns() {
+
+    const data = loadData();
+
+    if (!data.campaignStatus) return;
+
+    const guild = client.guilds.cache.first();
+
+    if (!guild) return;
+
+    for (const [campaignId, state] of Object.entries(data.campaignStatus)) {
+
+        if (state.status !== "finished") continue;
+
+        if (state.archived) continue;
+
+        if (
+            Date.now() - state.finishedAt <
+            24 * 60 * 60 * 1000
+        ) continue;
+
+        const campaign =
+            CAMPAIGNS[campaignId];
+
+        if (!campaign) continue;
+
+        try {
+
+            const category =
+                guild.channels.cache.get(
+                    campaign.categoryId
+                );
+
+            if (!category) continue;
+
+            let finishedCategory =
+                guild.channels.cache.find(
+                    c =>
+                        c.type === ChannelType.GuildCategory &&
+                        c.name === "📁 Finished Campaigns"
+                );
+
+            if (!finishedCategory) {
+
+                finishedCategory =
+                    await guild.channels.create({
+
+                        name: "📁 Finished Campaigns",
+
+                        type: ChannelType.GuildCategory
+
+                    });
+
+            }
+
+            const channels =
+                guild.channels.cache.filter(
+                    c => c.parentId === category.id
+                );
+
+            for (const [, channel] of channels) {
+
+                await channel.setParent(
+                    finishedCategory.id
+                );
+
+                await channel.permissionOverwrites.edit(
+
+                    guild.roles.everyone,
+
+                    {
+                        ViewChannel: false
+                    }
+
+                );
+
+            }
+
+            await category.delete().catch(() => {});
+
+            state.archived = true;
+
+            console.log(
+                `${campaign.name} archived`
+            );
+
+        } catch (err) {
+
+            console.error(err);
+
+        }
+
+    }
+
+    saveData(data);
+
+}
+
 async function updateSocialStaffMessage(guild, request) {
   const ch = guild.channels.cache.get(process.env.SOCIAL_STAFF_CHANNEL_ID);
   if (!ch) return;
@@ -1681,6 +1779,9 @@ client.once(Events.ClientReady, () => {
 
   autoTrackClipViews();
   setInterval(autoTrackClipViews, 30 * 60 * 1000);
+
+  archiveFinishedCampaigns();
+  setInterval(archiveFinishedCampaigns, 5 * 60 * 1000);
 });
 
 client.on('messageCreate', async (message) => {
@@ -4722,100 +4823,177 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
+    // ===============================
+    // Finish Campaign
+    // ===============================
     if (
-      interaction.isButton() &&
-      interaction.customId.startsWith('finish_campaign:')
+       interaction.isButton() &&
+       interaction.customId.startsWith("finish_campaign:")
     ) {
 
-      if (
-        !interaction.member.permissions.has('Administrator')
-      ) {
+       if (!isAdmin(interaction.member)) {
+           return interaction.reply({
+               content: "❌ Staff only.",
+               ephemeral: true
+           });
+       }
 
-        return interaction.reply({
+       const campaignId = interaction.customId.split(":")[1];
 
-          content:
-            '❌ Only staff can do this.',
+       const campaign = CAMPAIGNS[campaignId];
 
-          ephemeral: true
+       if (!campaign)
+           return interaction.reply({
+               content: "Campaign not found.",
+               ephemeral: true
+           });
 
+       campaign.status = "finished";
+
+       const data = loadData();
+
+       if (!data.campaignStatus)
+           data.campaignStatus = {};
+
+       data.campaignStatus[campaignId] = {
+           status: "finished",
+           finishedAt: Date.now(),
+           archived: false
+       };
+
+       saveData(data);
+
+       campaign.status = "finished"
+
+       await updateCampaignPanelMessage(
+           interaction.guild,
+           campaignId
+       );
+
+       await interaction.reply({
+           content:
+               "🏁 Campaign finished.\nIt will automatically move in 24 hours.",
+           ephemeral: true
+       });
+
+       setTimeout(async () => {
+
+           try {
+
+               const guild = interaction.guild;
+
+               const category =
+                   guild.channels.cache.get(
+                       campaign.categoryId
+                   );
+
+               if (!category) return;
+
+               let finishedCategory =
+                   guild.channels.cache.find(
+                       c =>
+                           c.type === ChannelType.GuildCategory &&
+                           c.name === "📁 Finished Campaigns"
+                   );
+
+               if (!finishedCategory) {
+
+                   finishedCategory =
+                       await guild.channels.create({
+                           name: "📁 Finished Campaigns",
+                           type: ChannelType.GuildCategory
+                       });
+
+               }
+
+               const children =
+                   guild.channels.cache.filter(
+                       c => c.parentId === category.id
+                   );
+
+               for (const [, ch] of children) {
+
+                   await ch.setParent(finishedCategory.id);
+
+                   await ch.permissionOverwrites.edit(
+                       guild.roles.everyone,
+                       {
+                           ViewChannel: false
+                       }
+                   );
+
+               }
+
+               await category.delete().catch(() => {});
+
+           } catch (err) {
+
+               console.error(
+                   "Move finished campaign failed:",
+                   err
+               );
+
+           }
+
+       }, 24 * 60 * 60 * 1000);
+
+       return;
+    }
+
+
+
+    // ===============================
+    // Reopen Campaign
+    // ===============================
+    if (
+        interaction.isButton() &&
+        interaction.customId.startsWith("reopen_campaign:")
+    ) {
+
+        if (!isAdmin(interaction.member)) {
+            return interaction.reply({
+                content: "❌ Staff only.",
+                ephemeral: true
+            });
+        }
+
+        const campaignId =
+            interaction.customId.split(":")[1];
+
+        const campaign =
+            CAMPAIGNS[campaignId];
+
+        if (!campaign)
+            return interaction.reply({
+                content: "Campaign not found.",
+                ephemeral: true
+           });
+
+        campaign.status = "active";
+
+        const data = loadData();
+
+        if (data.campaignStatus?.[campaignId]) {
+            data.campaignStatus[campaignId].status = "active";
+            delete data.campaignStatus[campaignId].finishedAt;
+            data.campaignStatus[campaignId].archived = false;
+        }
+
+        saveData(data);
+
+        campaign.status = "active";
+
+        await updateCampaignPanelMessage(
+            interaction.guild,
+            campaignId
+        );
+
+        await interaction.reply({
+            content: "✅ Campaign reopened.",
+            ephemeral: true
         });
 
-      }
-
-      const campaignId =
-        interaction.customId.split(':')[1];
-
-      const campaign =
-        CAMPAIGNS[campaignId];
-
-      if (!campaign) {
-
-        return interaction.reply({
-
-          content:
-            '❌ Campaign not found.',
-
-          ephemeral: true
-
-        });
-
-      }
-
-      const data = loadData();
-
-      if (!data.campaignStatus) {
-        data.campaignStatus = {};
-      }
-
-      if (!data.campaignStatus[campaign.id]) {
-        data.campaignStatus[campaign.id] = {};
-      }
-
-      const isFinished =
-        data.campaignStatus[campaign.id].status === 'finished';
-        data.campaignStatus[campaign.id].finishedAt =
-        Date.now();
-
-        data.campaignStatus[campaign.id].archived =
-        false;
-
-      if (isFinished) {
-
-        data.campaignStatus[campaign.id].status = 'active';
-        delete data.campaignStatus[campaign.id].finishedAt;
-        data.campaignStatus[campaign.id].archived = false;
-
-      } else {
-
-        data.campaignStatus[campaign.id].status = 'finished';
-        delete data.campaignStatus[campaign.id].finishedAt;
-
-        data.campaignStatus[campaign.id].archived =
-        false;
-
-      }
-
-      saveData(data);
-
-      await updateCampaignPanelMessage(
-        interaction.guild,
-        campaign.id
-      );
-
-      await updateLeaderboardMessage(
-        interaction.guild,
-        campaign.id
-      );
-
-      await interaction.reply({
-        content: isFinished
-          ? '🏁 Campaign finished.'
-          : '🟢 Campaign reopened.',
-        ephemeral: true
-      });
-
-      return;
-
+        return;
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('remove_clip:')) {
