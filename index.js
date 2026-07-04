@@ -89,9 +89,9 @@ const dataFilePath =
   process.env.DATA_FILE_PATH || path.join(__dirname, 'data.json');
 
 const CAMPAIGNS = {
-  tony: {
+  elephant: {
     id: 'elephant',
-    name: '<:tr:1505143223507750973> Elepant Clipping Campaign',
+    name: '<:tr:1505143223507750973> Elephant Clipping Campaign',
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
     payoutThreshold: 25000,
     weeklyBudget: 2000,
@@ -268,46 +268,41 @@ async function submitClipToMonsterLab(
 }
 
 function ensureUser(data, member) {
-  if (!data.users[member.id]) {
-    data.users[member.id] = {
-      discordId: member.id,
-      discordName: member.user.username,
-      verified: false,
-      campaigns: [],
-      stats: {
-        videosPosted: 0,
-        videosApproved: 0,
-        videosRejected: 0,
-        totalViews: 0,
-        moneyMade: 0
-      },
-      campaignAccounts: {},
-      campaignStats: {}
-    };
-  }
 
-  const user = data.users[member.id];
+    if (!data.users) data.users = {};
 
-  if (!user.stats) {
-    user.stats = {
-      videosPosted: 0,
-      videosApproved: 0,
-      videosRejected: 0,
-      totalViews: 0,
-      moneyMade: 0
-    };
-  }
+    const id = member.id;
 
-  if (!user.campaignAccounts) {
-    user.campaignAccounts = {};
-  }
+    if (!data.users[id]) {
 
-  if (!user.campaignStats) {
-    user.campaignStats = {};
-  }
+        data.users[id] = {
 
-  user.discordName = member.user.username;
-  return user;
+            discordId: id,
+            username: member.user.username,
+            discordUsername: member.user.username,
+            displayName: member.displayName,
+            tag: member.user.tag,
+            avatar: member.user.displayAvatarURL(),
+
+            stats: {},
+            campaigns: [],
+            campaignAccounts: {}
+
+        };
+
+    }
+
+    const user = data.users[id];
+
+    // Always refresh these
+    user.username = member.user.username;
+    user.discordUsername = member.user.username;
+    user.displayName = member.displayName;
+    user.tag = member.user.tag;
+    user.avatar = member.user.displayAvatarURL();
+
+    return user;
+
 }
 
 function isAdmin(member) {
@@ -340,14 +335,20 @@ function makeApplicationId() {
   return `app_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 }
 
-function getCampaignCycle(startDate) {
-  const start = new Date(startDate);
-  const now = new Date();
+function getCampaignCycle() {
 
-  const diffMs = now - start;
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    const now = new Date();
 
-  return Math.floor(diffDays / 7);
+    // Monday 7AM UTC epoch
+    const epoch = Date.UTC(2025, 0, 6, 7, 0, 0); // Monday Jan 6 2025 07:00 UTC
+
+    const diff =
+        now.getTime() - epoch;
+
+    return Math.floor(
+        diff / (7 * 24 * 60 * 60 * 1000)
+    );
+
 }
 
 function getStatusLabel(status) {
@@ -756,23 +757,12 @@ function buildLeaderboardEmbed(guild, data, page = 1, perPage = 10) {
         0
       );
 
-      // FIX: If database doesn't have a name, fetch it directly from the Discord server cache
-      let fetchedUsername =  userRecord.displayName || userRecord.discordUsername || userRecord.username || userRecord.tag;
-      
-      if (!fetchedUsername && guild) {
-        const member = guild.members.cache.get(userId);
-
-        if (member) {
-          fetchedUsername = member.displayName;
-
-          // Save it so next update doesn't need to fetch again
-          userRecord.displayName = member.displayName;
-          userRecord.discordUsername = member.user.username;
-        }
-      }
-
-      // Final safety fallback if they completely left the Discord server
-      const finalName = fetchedUsername || `User-${userId.slice(-4)}`;
+      const finalName =
+          userRecord.displayName ||
+          userRecord.discordUsername ||
+          userRecord.username ||
+          userRecord.tag ||
+          `User-${userId.slice(-4)}`;
 
       return {
         userId,
@@ -993,20 +983,32 @@ function buildSocialStaffButtons(id, status) {
 
 console.log(process.env.MONSTERLAB_API_KEY);
 
-function getCampaignPeriod(startDate) {
-  const start = new Date(startDate);
-  const now = new Date();
+function getCampaignPeriod() {
 
-  const diffDays = Math.floor((now - start) / (1000 * 60 * 60 * 24));
-  const weekNumber = Math.floor(diffDays / 7);
+    const cycle = getCampaignCycle();
 
-  const periodStart = new Date(start);
-  periodStart.setDate(start.getDate() + weekNumber * 7);
+    const epoch =
+        new Date(Date.UTC(2025, 0, 6, 7, 0, 0));
 
-  const periodEnd = new Date(periodStart);
-  periodEnd.setDate(periodStart.getDate() + 7);
+    const periodStart =
+        new Date(epoch);
 
-  return { periodStart, periodEnd };
+    periodStart.setUTCDate(
+        periodStart.getUTCDate() + cycle * 7
+    );
+
+    const periodEnd =
+        new Date(periodStart);
+
+    periodEnd.setUTCDate(
+        periodEnd.getUTCDate() + 7
+    );
+
+    return {
+        periodStart,
+        periodEnd
+    };
+
 }
 
 function formatDateShort(date) {
@@ -1028,9 +1030,7 @@ function getCampaignTotals(data, campaignId) {
       };
   }
 
-  const currentCycle = campaign.startDate
-      ? getCampaignCycle(campaign.startDate)
-      : null;
+  const currentCycle = getCampaignCycle();
   const users = Object.values(data.users || {}).filter(user =>
     user.campaigns?.includes(campaignId)
   ).length;
@@ -1322,6 +1322,19 @@ async function updateLeaderboardMessage(guild) {
   if (!msg) return;
 
   const data = loadData();
+
+  for (const member of guild.members.cache.values()) {
+
+      if (!data.users?.[member.id]) continue;
+
+      data.users[member.id].displayName = member.displayName;
+      data.users[member.id].discordUsername = member.user.username;
+      data.users[member.id].username = member.user.username;
+      data.users[member.id].tag = member.user.tag;
+
+  }
+
+  saveData(data);
 
   // FIX: Pass guild as the very first argument here!
   const { embed, totalPages } = buildLeaderboardEmbed(guild, data, 1); 
