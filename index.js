@@ -99,7 +99,7 @@ const CAMPAIGNS = {
     ratePerMillion: 300,
     viewCap: 5000000,
     panelChannelId:'1492239981308018698',
-    panelMessageId:'1506295895900291172',
+    panelMessageId:'1522950418747887626',
     staffChannelId: process.env.N30N_STAFF_CHANNEL_ID,
     roleId: process.env.N3ON_ROLE_ID,
     entryChannelId: process.env.N3ON_ENTRY_CHANNEL_ID,
@@ -119,7 +119,7 @@ All you have to do is **register for the campaign below** and follow the guideli
 
 • **Platforms:** <:tiktok1:1504871476485029979> TikTok, <:ig1:1504871708664922162> Instagram Reels & <:ytshort:1504774704123220099> YouTube Shorts
 
-• **Requirement:** All uploaded videos must follow the campaign rules → <1492248546156609778>
+• **Requirement:** All uploaded videos must follow the campaign rules → <#1492248546156609778>
 
 • **Editing Style:** Deliver value, maintain strong retention, and present SWA positively.
 
