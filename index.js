@@ -90,45 +90,47 @@ const dataFilePath =
 
 const CAMPAIGNS = {
   tony: {
-    id: 'tony',
-    name: '<:tr:1505143223507750973> Tony Robbins Clipping Campaign',
+    id: 'elephant',
+    name: '<:tr:1505143223507750973> Elepant Clipping Campaign',
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
     payoutThreshold: 25000,
     weeklyBudget: 2000,
-    startDate: '2026-05-18',
-    ratePerMillion: 400,
+    startDate: '2026-06-29',
+    ratePerMillion: 300,
     viewCap: 5000000,
-    panelChannelId:'1504128280167710751',
+    panelChannelId:'1492239981308018698',
     panelMessageId:'1506295895900291172',
-    staffChannelId: process.env.TONY_STAFF_CHANNEL_ID,
-    roleId: process.env.TONY_ROLE_ID,
-    entryChannelId: process.env.TONY_ENTRY_CHANNEL_ID,
+    staffChannelId: process.env.N30N_STAFF_CHANNEL_ID,
+    roleId: process.env.N3ON_ROLE_ID,
+    entryChannelId: process.env.N3ON_ENTRY_CHANNEL_ID,
+    source: 'monsterlab',
+    monsterCampaignId: "fbFMAJpxpQkZ0Honf7z4",
     status: 'active',
     
-    panelText: `# <a:fire1:1504871649491554487> **Earn Money Posting Clips – Tony Robbins Clipping Campaign**
+    panelText: `# <a:fire1:1504871649491554487> **Earn Money Posting Clips – Elephant Clipping Campaign**
 
-Earn money by posting high-retention clips and edits from Tony Robbins content across short-form platforms. Your goal is simple: create engaging clips, generate views, and grow your pages while earning from performance.
+Earn money by posting high-retention clips and edits from Elephant content across short-form platforms. Your goal is simple: create engaging clips, generate views, and grow your pages while earning from performance.
 
 All you have to do is **register for the campaign below** and follow the guidelines to start earning.
 
 ## <a:chart1:1504773558415523931> Campaign Overview
 
-• **Content:** Any content from the Tony Robbins YouTube channel. Light B-rolls and cinematic edits are allowed.
+• **Content:** You can only post content from the <#1521232893370826802>
 
 • **Platforms:** <:tiktok1:1504871476485029979> TikTok, <:ig1:1504871708664922162> Instagram Reels & <:ytshort:1504774704123220099> YouTube Shorts
 
-• **Requirement:** All uploaded videos must follow the campaign rules → <#1504129290449588244>
+• **Requirement:** All uploaded videos must follow the campaign rules → <1492248546156609778>
 
-• **Editing Style:** Deliver value, maintain strong retention, and present Tony Robbins positively.
+• **Editing Style:** Deliver value, maintain strong retention, and present SWA positively.
 
-• **Campaign Goal:** Post powerful, motivational, and respectful clips of Tony Robbins (and occasionally Sage Robbins).
+• **Campaign Goal:** Post informative clips from prominent conservative figures. Focus on politics, policy, and social issues.
 
 • **Strict Rule:** Low-quality, spam, or misleading edits may result in removal from the campaign.
 
 ## <a:Cash1:1504871843419521115> Payment Details
 
 > **Campaign Budget:** $2,000 per week  
-> **Rate:** $400 per 1M eligible views  
+> **Rate:** $300 per 1M eligible views  
 > **Eligible Views:** Tier 1 countries only  
 > **Payout Schedule:** Weekly  
 > **Payment Method:** Crypto
@@ -149,12 +151,13 @@ Click the button below to start clipping and earning.`
     startDate: '2026-04-28',
     ratePerMillion: 300,
     viewCap: 7000000,
-    panelChannelId:'1521116686252507207',
-    panelMessageId:'1521136965427400716',
+    panelChannelId:'1521565850505838672',
+    panelMessageId:'1521819135464702013',
     staffChannelId: process.env.CROWDER_STAFF_CHANNEL_ID,
     roleId: process.env.CROWDER_ROLE_ID,
     entryChannelId: process.env.CROWDER_ENTRY_CHANNEL_ID,
     source: 'monsterlab',
+    monsterCampaignId: "Qgl6rzYPcDIVxqZ23kXI",
     status: 'active',
 
     panelText: `
@@ -512,40 +515,65 @@ function renderClipStaffContent(clip) {
 }
 
 function buildClipStaffButtons(clip) {
-  if (clip.status === 'pending') {
-    return [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`clip_approve:${clip.id}`)
-          .setLabel('Approve')
-          .setStyle(ButtonStyle.Success),
 
-        new ButtonBuilder()
-          .setCustomId(`clip_reject:${clip.id}`)
-          .setLabel('Reject')
-          .setStyle(ButtonStyle.Danger)
-      )
-    ];
-  }
+    const row = new ActionRowBuilder();
 
-  if (clip.platform === 'instagram' && clip.status === 'approved') {
-    return [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`clip_done:${clip.id}`)
-          .setLabel('Approved')
-          .setStyle(ButtonStyle.Success)
-          .setDisabled(true),
+    if (clip.status === "pending") {
 
-        new ButtonBuilder()
-          .setCustomId(`instagram_views:${clip.id}`)
-          .setLabel('Update Views')
-          .setStyle(ButtonStyle.Primary)
-      )
-    ];
-  }
+        row.addComponents(
 
-  return [];
+            new ButtonBuilder()
+                .setCustomId(`clip_approve:${clip.id}`)
+                .setLabel("Approve")
+                .setEmoji("✅")
+                .setStyle(ButtonStyle.Success),
+
+            new ButtonBuilder()
+                .setCustomId(`clip_reject:${clip.id}`)
+                .setLabel("Reject")
+                .setEmoji("❌")
+                .setStyle(ButtonStyle.Danger)
+
+        );
+
+    }
+
+    else if (clip.status === "approved") {
+
+        row.addComponents(
+
+            new ButtonBuilder()
+                .setCustomId(`clip_reject:${clip.id}`)
+                .setLabel("Reject")
+                .setEmoji("❌")
+                .setStyle(ButtonStyle.Danger),
+
+            new ButtonBuilder()
+                .setCustomId(`update_views:${clip.id}`)
+                .setLabel("Update Views")
+                .setEmoji("📈")
+                .setStyle(ButtonStyle.Primary)
+
+        );
+
+    }
+
+    else if (clip.status === "rejected") {
+
+        row.addComponents(
+
+            new ButtonBuilder()
+                .setCustomId(`restore_clip:${clip.id}`)
+                .setLabel("Restore")
+                .setEmoji("♻️")
+                .setStyle(ButtonStyle.Success)
+
+        );
+
+    }
+
+    return [row];
+
 }
 
 function renderClipStaffContent(clip) {
@@ -1054,11 +1082,7 @@ function buildCampaignStatusEmbed(campaign, data) {
     .setTitle(campaign.name)
     .setDescription(
       `<a:redalert:1504777207648620595> **Campaign Status**\n` +
-      `**Status:** ${
-        isFinished
-          ? '🏁 Finished'
-          : '🟢 Active'
-      }\n\n` +
+      `**Status:** Active\n\n` +
 
       `📅 **Campaign Period**\n` +
       `${formatDateShort(periodStart)} - ${formatDateShort(periodEnd)}\n\n` +
@@ -4625,13 +4649,31 @@ client.on(Events.InteractionCreate, async interaction => {
                   );
 
               if (!monsterResult.success) {
-                  duplicateCount++;
-                  continue;
+
+                  await interaction.reply({
+
+                      content:
+              `❌ Failed to submit this clip to MonsterLab.
+
+              Reason:
+
+              ${monsterResult.error || monsterResult.message || "Unknown error."}`,
+
+                      ephemeral: true
+
+                  });
+
+                  return;
+
               }
 
-              data.clips[monsterResult.data.submissionId] = {
+              const clipId = makeClipId();
 
-                  submissionId: monsterResult.data.submissionId,
+              const clip = {
+
+                id: clipId,
+                
+                monsterlabSubmissionId: monsterResult.data.submissionId,
 
                   userId: interaction.user.id,
 
@@ -4645,13 +4687,42 @@ client.on(Events.InteractionCreate, async interaction => {
 
                   videoUrl,
 
-                  status: monsterResult.data.status,
+                  status: "pending",
 
-                  submittedAt: Date.now(),
+                  views: 0,
+
+                  moneyMade: 0,
+
+                  staffMessageId: null,
 
                   monsterlab: true
 
               };
+
+              data.clips[clipId] = clip;
+
+              if (staffChannel) {
+
+                  const sent =
+                      await staffChannel.send({
+
+                          content:
+                              renderClipStaffContent(clip),
+
+                          components:
+                              buildClipStaffButtons(clip)
+
+                      }).catch(() => null);
+
+                  if (sent) {
+
+                      clip.staffMessageId = sent.id;
+
+                      data.clips[clipId] = clip;
+
+                  }
+              
+              }
 
               submittedCount++;
 
@@ -4736,7 +4807,11 @@ client.on(Events.InteractionCreate, async interaction => {
 
       // Construct response message
       let responseMessage =
-        `✅ Submitted **${submittedCount}** clip(s) for **${campaign.name}** on **${formatPlatform(platform)}** (@${username}).`;
+        `✅ Submitted **${submittedCount}** clip(s).
+        
+        🟡 Status: Pending Staff Review
+
+        Your clip was successfully submitted.`;
 
       if (duplicateCount > 0) {
 
@@ -4760,32 +4835,6 @@ client.on(Events.InteractionCreate, async interaction => {
       await interaction.reply({
 
         content: responseMessage,
-
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x57F287)
-            .setTitle('✅ Clip Submitted')
-            .setDescription(
-              `Submission ID: \`${monsterResult.data.submissionId}\``
-            )
-            .addFields(
-              {
-                name: 'Platform',
-                value:
-                  monsterResult.data.platform ||
-                  'Unknown',
-                inline: true
-              },
-              {
-                name: 'Status',
-                value:
-                  monsterResult.data.status ||
-                  'Pending',
-                inline: true
-              }
-            )
-            .setTimestamp()
-        ],
 
         ephemeral: true
       });
@@ -5358,6 +5407,97 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
+    if (interaction.customId.startsWith("update_views:")) {
+
+        const clipId = interaction.customId.split(":")[1];
+
+        const modal = new ModalBuilder()
+            .setCustomId(`update_views_modal:${clipId}`)
+            .setTitle("Update Clip Views");
+
+        const viewsInput = new TextInputBuilder()
+            .setCustomId("views")
+            .setLabel("Current Views")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true);
+
+        modal.addComponents(
+            new ActionRowBuilder().addComponents(viewsInput)
+        );
+
+        await interaction.showModal(modal);
+
+        return;
+    }
+
+    if (interaction.customId.startsWith("update_views_modal:")) {
+
+        const clipId = interaction.customId.split(":")[1];
+
+        const data = loadData();
+
+        const clip = data.clips[clipId];
+
+        if (!clip) {
+
+            return interaction.reply({
+                content: "❌ Clip not found.",
+                ephemeral: true
+            });
+
+        }
+
+        const campaign = CAMPAIGNS[clip.campaignId];
+
+        const newViews = Number(
+            interaction.fields.getTextInputValue("views")
+        );
+
+        if (isNaN(newViews) || newViews < 0) {
+
+            return interaction.reply({
+                content: "❌ Invalid view count.",
+                ephemeral: true
+            });
+
+        }
+
+        clip.views = newViews;
+
+        clip.moneyMade =
+            (newViews / 1000000) *
+            (campaign.ratePerMillion || 0);
+
+        data.clips[clipId] = clip;
+
+        saveData(data);
+
+        await updateLeaderboardMessage(
+            interaction.guild
+        );
+
+        await updateCampaignPanelMessage(
+            interaction.guild,
+            clip.campaignId
+        );
+
+        await updateClipStaffMessage(
+            interaction.guild,
+            clip
+        );
+
+        await interaction.reply({
+
+            content:
+                `✅ Views updated to ${newViews.toLocaleString()}.`,
+
+            ephemeral: true
+
+        });
+
+        return;
+    }
+
     if (interaction.isButton() && interaction.customId.startsWith('clip_reject:')) {
       if (!interaction.guild || !isAdmin(interaction.member)) {
         await interaction.reply({
@@ -5476,6 +5616,43 @@ client.on(Events.InteractionCreate, async interaction => {
       });
    
       return;
+    }
+
+    if (interaction.customId.startsWith("restore_clip:")) {
+
+        const clipId = interaction.customId.split(":")[1];
+
+        const data = loadData();
+
+        const clip = data.clips[clipId];
+
+        if (!clip) {
+            return interaction.reply({
+                content: "❌ Clip not found.",
+                ephemeral: true
+            });
+        }
+
+        clip.status = "approved";
+        clip.rejectReason = null;
+        clip.restoredAt = Date.now();
+        clip.restoredBy = interaction.user.id;
+
+        data.clips[clipId] = clip;
+
+        saveData(data);
+
+        await updateClipStaffMessage(
+            interaction.guild,
+            clip
+        );
+
+        await interaction.reply({
+            content: "✅ Clip restored successfully.",
+            ephemeral: true
+        });
+
+        return;
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('campaign_account_select:')) {
