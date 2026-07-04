@@ -91,7 +91,7 @@ const dataFilePath =
 const CAMPAIGNS = {
   elephant: {
     id: 'elephant',
-    name: '<:tr:1505143223507750973> Elephant Clipping Campaign',
+    name: 'Elephant Clipping Campaign',
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
     payoutThreshold: 25000,
     weeklyBudget: 2000,
