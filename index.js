@@ -94,8 +94,9 @@ const CAMPAIGNS = {
     name: 'Elephant Clipping Campaign',
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
     payoutThreshold: 25000,
-    weeklyBudget: 2000,
+    campaignBudget: 2000,
     startDate: '2026-06-29',
+    cycleWeeks: 4,
     ratePerMillion: 300,
     viewCap: 5000000,
     panelChannelId:'1492239981308018698',
@@ -147,8 +148,9 @@ Click the button below to start clipping and earning.`
     name: '<:SC:1505154364229156954> Steven Crowder Clipping Campaign',
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
     payoutThreshold: 35000,
-    weeklyBudget: 2100,
-    startDate: '2026-04-28',
+    campaignBudget: 2100,
+    startDate: '2026-06-29',
+    cycleWeeks: 4,
     ratePerMillion: 300,
     viewCap: 7000000,
     panelChannelId:'1521565850505838672',
@@ -335,19 +337,20 @@ function makeApplicationId() {
   return `app_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 }
 
-function getCampaignCycle() {
+function getCampaignCycle(campaign) {
 
     const now = new Date();
 
-    // Monday 7AM UTC epoch
-    const epoch = Date.UTC(2025, 0, 6, 7, 0, 0); // Monday Jan 6 2025 07:00 UTC
+    const epoch = Date.UTC(2025, 0, 6, 7, 0, 0);
 
-    const diff =
-        now.getTime() - epoch;
-
-    return Math.floor(
-        diff / (7 * 24 * 60 * 60 * 1000)
+    const diffWeeks = Math.floor(
+        (now.getTime() - epoch) /
+        (7 * 24 * 60 * 60 * 1000)
     );
+
+   const cycleWeeks = campaign?.cycleWeeks || 1;
+
+   return Math.floor(diffWeeks / cycleWeeks);
 
 }
 
@@ -983,25 +986,26 @@ function buildSocialStaffButtons(id, status) {
 
 console.log(process.env.MONSTERLAB_API_KEY);
 
-function getCampaignPeriod() {
+function getCampaignPeriod(campaign) {
 
-    const cycle = getCampaignCycle();
+    const cycle = getCampaignCycle(campaign);
 
-    const epoch =
-        new Date(Date.UTC(2025, 0, 6, 7, 0, 0));
-
-    const periodStart =
-        new Date(epoch);
-
-    periodStart.setUTCDate(
-        periodStart.getUTCDate() + cycle * 7
+    const epoch = new Date(
+        Date.UTC(2025, 0, 6, 7, 0, 0)
     );
 
-    const periodEnd =
-        new Date(periodStart);
+    const periodStart = new Date(epoch);
+
+    periodStart.setUTCDate(
+        periodStart.getUTCDate() +
+        cycle * (campaign.cycleWeeks || 1) * 7
+    );
+
+    const periodEnd = new Date(periodStart);
 
     periodEnd.setUTCDate(
-        periodEnd.getUTCDate() + 7
+        periodEnd.getUTCDate() +
+        (campaign.cycleWeeks || 1) * 7
     );
 
     return {
@@ -1060,21 +1064,21 @@ function getCampaignTotals(data, campaignId) {
 }
 
 function buildCampaignStatusEmbed(campaign, data) {
-  const { periodStart, periodEnd } = getCampaignPeriod(campaign.startDate);
+  const { periodStart, periodEnd } = getCampaignPeriod(campaign);
   const totals = getCampaignTotals(data, campaign.id);
 
   const cappedPayout = Math.min(
     totals.payout || 0,
-    campaign.weeklyBudget || 0
+    campaign.campaignBudget || 0
   );
 
   const remaining = Math.max(
-    (campaign.weeklyBudget || 0) - cappedPayout,
+    (campaign.campaignBudget || 0) - cappedPayout,
     0
   );
 
-  const fulfilledPercent = campaign.weeklyBudget
-    ? Math.min((cappedPayout / campaign.weeklyBudget) * 100, 100)
+  const fulfilledPercent = campaign.campaignBudget
+    ? Math.min((cappedPayout / campaign.campaignBudget) * 100, 100)
     : 0;
 
   return new EmbedBuilder()
@@ -1093,7 +1097,7 @@ function buildCampaignStatusEmbed(campaign, data) {
       `**Views:** ${formatNumber(totals.views)}\n\n` +
 
       `<a:Cash1:1504871843419521115> **Payout & Budget**\n` +
-      `**Budget:** $${formatNumber(campaign.weeklyBudget)} / week\n` +
+      `**Campaign Budget:** $${formatNumber(campaign.campaignBudget)}\n` +
       `**Remaining:** $${formatNumber(remaining)}\n` +
       `**Payout:** $${formatNumber(cappedPayout)} (${fulfilledPercent.toFixed(1)}%)\n\n` +
 
@@ -1194,8 +1198,8 @@ function ensureCampaignPlatformStats(userRecord, campaignId, platform, username 
 function buildCampaignPanelButtons(campaign, data) {
   const totals = getCampaignTotals(data, campaign.id);
 
-  const fulfilledPercent = campaign.weeklyBudget
-    ? Math.min((totals.payout / campaign.weeklyBudget) * 100, 100).toFixed(1)
+  const fulfilledPercent = campaign.campaignBudget
+    ? Math.min((totals.payout / campaign.campaignBudget) * 100, 100).toFixed(1)
     : '0.0';
 
   const campaignState =
@@ -2427,8 +2431,8 @@ client.on(Events.MessageCreate, async message => {
       const cappedViews = Math.min(totals.views, campaign.viewCap || totals.views);
       const payout = (cappedViews / 1000000) * (campaign.ratePerMillion || 0);
 
-      const fulfilledPercent = campaign.weeklyBudget
-        ? ((payout / campaign.weeklyBudget) * 100).toFixed(1)
+      const fulfilledPercent = campaign.campaignBudget
+        ? ((payout / campaign.campaignBudget) * 100).toFixed(1)
         : '0.0';
 
       const row = new ActionRowBuilder().addComponents(
