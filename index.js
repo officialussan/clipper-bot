@@ -143,8 +143,8 @@ Click the button below to start clipping and earning.`
 
   },
 
-  n30n: {
-    id: 'n30n',
+  n3on: {
+    id: 'n3on',
     name: '<:n3:1523649827357851678> N3on X Early Clipping Campaign',
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
     payoutThreshold: 25000,
@@ -1087,7 +1087,7 @@ function getCampaignTotals(data, campaignId) {
       };
   }
 
-  const currentCycle = getCampaignCycle();
+  const currentCycle = getCampaignCycle(campaign);
   const users = Object.values(data.users || {}).filter(user =>
     user.campaigns?.includes(campaignId)
   ).length;
@@ -1095,10 +1095,7 @@ function getCampaignTotals(data, campaignId) {
   const clips = Object.values(data.clips || {}).filter(clip =>
       clip.campaignId === campaignId &&
       clip.status === 'approved' &&
-      (
-          !currentCycle ||
-          (currentCycle === null || clip.cycle === currentCycle)
-      )
+      (clip.cycle ?? 0) === currentCycle
   );
 
   const videos = clips.length;
