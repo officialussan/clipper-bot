@@ -60,6 +60,11 @@ const MONSTERLAB_API_KEY = process.env.MONSTERLAB_API_KEY;
 const PRICE_PER_PROXY = 7;
 const FINISHED_CAMPAIGNS_CATEGORY_ID = '1520064994274709747';
 const STAFF_CONTROL_CHANNEL_ID = "1521116369909710889";
+const GOAL_CHANNEL_ID = process.env.GOAL_CHANNEL_ID;
+const PAID_CHANNEL_ID = process.env.PAID_CHANNEL_ID;
+const AVAILABLE_CHANNEL_ID = process.env.AVAILABLE_CHANNEL_ID;
+const VIEWS_CHANNEL_ID = process.env.VIEWS_CHANNEL_ID;
+const ACTIVE_CAMPAIGNS_CHANNEL_ID = process.env.ACTIVE_CAMPAIGNS_CHANNEL_ID;
 
 const clean = (str) =>
   str.replace(/[`*_|~]/g, '').trim();
@@ -1111,6 +1116,90 @@ function getCampaignTotals(data, campaignId) {
   );
 
   return { users, videos, views, payout };
+}
+
+async function updateServerStats(guild) {
+
+    const data = loadData();
+
+    // ===========================
+    // YEAR GOAL
+    // ===========================
+
+    const YEAR_GOAL = 20000;
+
+    // ===========================
+    // TOTAL PAID
+    // ===========================
+
+    const totalPaid = Object.values(data.clips || {})
+        .filter(c => c.status === "approved")
+        .reduce((sum, c) => sum + (Number(c.moneyMade) || 0), 0);
+
+    // ===========================
+    // TOTAL VIEWS
+    // ===========================
+
+    const totalViews = Object.values(data.clips || {})
+        .filter(c => c.status === "approved")
+        .reduce((sum, c) => sum + (Number(c.views) || 0), 0);
+
+    // ===========================
+    // ACTIVE CAMPAIGNS
+    // ===========================
+
+    const activeCampaigns =
+        Object.values(CAMPAIGNS)
+            .filter(c => c.status === "active")
+            .length;
+
+    // ===========================
+    // AVAILABLE MONEY
+    // ===========================
+
+    let availableMoney = 0;
+
+    for (const campaign of Object.values(CAMPAIGNS)) {
+
+        if (campaign.status !== "active") continue;
+
+        const totals = getCampaignTotals(data, campaign.id);
+
+        availableMoney += Math.max(
+            (campaign.campaignBudget || campaign.weeklyBudget || 0) -
+            totals.payout,
+            0
+        );
+    }
+
+    // ===========================
+    // UPDATE CHANNELS
+    // ===========================
+
+    await guild.channels.cache
+        .get(process.env.GOAL_CHANNEL_ID)
+        ?.setName(`🎯・2026 Goal: $${formatNumber(YEAR_GOAL)}`)
+        .catch(() => {});
+
+    await guild.channels.cache
+        .get(process.env.PAID_CHANNEL_ID)
+        ?.setName(`🏦・Paid: $${formatNumber(totalPaid)}`)
+        .catch(() => {});
+
+    await guild.channels.cache
+        .get(process.env.AVAILABLE_CHANNEL_ID)
+        ?.setName(`💰・Available: $${formatNumber(availableMoney)}`)
+        .catch(() => {});
+
+    await guild.channels.cache
+        .get(process.env.VIEWS_CHANNEL_ID)
+        ?.setName(`📈・Views: ${formatNumber(totalViews)}`)
+        .catch(() => {});
+
+    await guild.channels.cache
+        .get(process.env.ACTIVE_CAMPAIGNS_CHANNEL_ID)
+        ?.setName(`🚀・Active Campaigns: ${activeCampaigns}`)
+        .catch(() => {});
 }
 
 function buildCampaignStatusEmbed(campaign, data) {
@@ -3481,6 +3570,10 @@ client.on(Events.InteractionCreate, async interaction => {
       };
       saveData(data);
 
+      if (guild) {
+          updateServerStats(guild);
+      }
+
       const originalEmbed = interaction.message.embeds[0];
       const updatedEmbed = EmbedBuilder.from(originalEmbed)
         .setColor(0x7ED957) // Success Green
@@ -3534,6 +3627,10 @@ client.on(Events.InteractionCreate, async interaction => {
         updatedAt: Date.now()
       };
       saveData(data);
+
+      if (guild) {
+          updateServerStats(guild);
+      }
 
       const originalEmbed = interaction.message.embeds[0];
       const updatedEmbed = EmbedBuilder.from(originalEmbed)
@@ -4979,6 +5076,12 @@ client.on(Events.InteractionCreate, async interaction => {
 
        saveData(data);
 
+       const guild = client.guilds.cache.get(process.env.GUILD_ID);
+
+       if (guild) {
+           updateServerStats(guild);
+       }
+
        campaign.status = "finished"
 
        await updateCampaignPanelMessage(
@@ -5096,6 +5199,10 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         saveData(data);
+
+        if (guild) {
+            updateServerStats(guild);
+        }
 
         campaign.status = "active";
 
@@ -5386,6 +5493,12 @@ client.on(Events.InteractionCreate, async interaction => {
       data.clips[clipId] = clip;
       saveData(data);
 
+      const guild = client.guilds.cache.get(process.env.GUILD_ID);
+
+      if (guild) {
+          updateServerStats(guild);
+      }
+
       await updateClipStaffMessage(interaction.guild, clip);
 
       await interaction.reply({
@@ -5539,6 +5652,12 @@ client.on(Events.InteractionCreate, async interaction => {
 
         saveData(data);
 
+        const guild = client.guilds.cache.get(process.env.GUILD_ID);
+
+        if (guild) {
+            updateServerStats(guild);
+        }
+
         await updateLeaderboardMessage(
             interaction.guild
         );
@@ -5665,6 +5784,12 @@ client.on(Events.InteractionCreate, async interaction => {
 
       saveData(data);
 
+      const guild = client.guilds.cache.get(process.env.GUILD_ID);
+
+      if (guild) {
+          updateServerStats(guild);
+      }
+
       await updateClipStaffMessage(interaction.guild, clip);
 
       const member = await interaction.guild.members.fetch(clip.userId).catch(() => null);
@@ -5708,6 +5833,12 @@ client.on(Events.InteractionCreate, async interaction => {
         data.clips[clipId] = clip;
 
         saveData(data);
+
+        const guild = client.guilds.cache.get(process.env.GUILD_ID);
+
+        if (guild) {
+            updateServerStats(guild);
+        }
 
         await updateClipStaffMessage(
             interaction.guild,
@@ -6289,8 +6420,24 @@ app.listen(PORT, () => {
   console.log(`🌐 OAuth Web Server internally listening on port ${PORT}`);
 });
 
-client.once('ready', () => {
-  console.log('Monsterlab sync is manual.');
+client.once('ready', async () => {
+
+    console.log('Monsterlab sync is manual.');
+
+    const guild = client.guilds.cache.get(process.env.GUILD_ID);
+
+    if (guild) {
+
+        await updateServerStats(guild);
+
+        setInterval(async () => {
+
+            await updateServerStats(guild);
+
+        }, 5 * 60 * 1000);
+
+    }
+
 });
 
 client.on('messageCreate', async message => {
