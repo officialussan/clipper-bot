@@ -4821,39 +4821,31 @@ client.on(Events.InteractionCreate, async interaction => {
           }
 
           const clipId = makeClipId();
+          const tempClip = { platform, url: videoUrl.trim() };
+          let initialViews = 0;
+
+          try {
+              initialViews = await fetchClipViews(tempClip);
+          } catch (err) {
+              console.error(`⚠️ Live view fetch failed: ${err.message}`);
+              initialViews = 0; 
+          }
 
           const clip = {
-
               id: clipId,
-
               userId: interaction.user.id,
-
               campaignId,
-
               campaignName: campaign.name,
-
               platform,
-
-              username,
-
+              username: campaignAccount.username,
               videoUrl,
-
-              status: "pending",
-
-              views: 0,
-
-              startingViews: intialViews,
-
-              currentViews: intialViews,
-
-              moneyMade: 0,
-
+              status: "pending",             
+              views: 0,                      
+              startingViews: initialViews,   // 🟢 Fixed typo here
+              currentViews: initialViews,    // 🟢 Fixed typo here
               submittedAt: new Date().toISOString(),
-
-              lastChecked: Date.now(),
-
+              lastChecked: Date.now(),       
               staffMessageId: null
-
           };
 
           data.clips[clipId] = clip;
