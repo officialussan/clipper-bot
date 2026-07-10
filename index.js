@@ -1748,7 +1748,7 @@ async function autoTrackClipViews() {
 
       // 3. Accumulate data into user profiles ONLY if the clip is approved
       // This ensures stats/leaderboards don't show unapproved views!
-      if (clip.status === 'approved') {
+      if (clip.status === 'approved' || clip.status === 'pending') {
         const userId = clip.userId;
         if (data.users[userId]) {
           const userRecord = data.users[userId];
@@ -4867,9 +4867,15 @@ client.on(Events.InteractionCreate, async interaction => {
 
               views: 0,
 
+              startingViews: intialViews,
+
+              currentViews: intialViews,
+
               moneyMade: 0,
 
               submittedAt: new Date().toISOString(),
+
+              lastChecked: Date.now(),
 
               staffMessageId: null
 
@@ -5364,11 +5370,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
     if (interaction.isButton() && interaction.customId.startsWith('clip_approve:')) {
       if (!interaction.guild || !isAdmin(interaction.member)) {
-        await interaction.reply({
-          content: '❌ You are not allowed to do this.',
-          ephemeral: true
-        });
-        return;
+        return interaction.reply({ content: '❌ You are not allowed to do this.', ephemeral: true });
       }
 
       const clipId = interaction.customId.split(':')[1];
@@ -5376,14 +5378,34 @@ client.on(Events.InteractionCreate, async interaction => {
       const clip = data.clips?.[clipId];
 
       if (!clip) {
-        await interaction.reply({ content: '❌ Clip not found.', ephemeral: true });
-        return;
+        return interaction.reply({ content: '❌ Clip not found.', ephemeral: true });
       }
 
       if (clip.status === 'approved') {
-        await interaction.reply({ content: '❌ This clip is already approved.', ephemeral: true });
-        return;
+        return interaction.reply({ content: '❌ This clip is already approved.', ephemeral: true });
       }
+
+      // Transition the clip status to approved
+      clip.status = 'approved';
+      clip.cycle = getCampaignCycle(CAMPAIGNS[clip.campaignId].startDate);
+      clip.approvedAt = Date.now();
+
+      data.clips[clipId] = clip;
+      saveData(data);
+
+      const guild = client.guilds.cache.get(process.env.GUILD_ID);
+      if (guild) {
+          updateServerStats(guild);
+      }
+
+      await updateClipStaffMessage(interaction.guild, clip);
+
+      await interaction.reply({
+        content: `✅ Clip structural verification approved. Auto-tracking continue smoothly from its live background loop baseline.`,
+        ephemeral: true
+      });
+      return;
+    }
 
       if (clip.platform === 'instagram') {
         clip.status = 'approved';
