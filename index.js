@@ -4552,6 +4552,55 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
+    if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_remove:')) {
+      const campaignId = interaction.customId.split(':')[1];
+      const campaign = CAMPAIGNS[campaignId];
+
+      if (!campaign) {
+        return interaction.reply({ content: '❌ Campaign not found.', ephemeral: true });
+      }
+
+      const data = loadData();
+      const userRecord = data.users?.[interaction.user.id];
+      const accounts = userRecord?.campaignAccounts?.[campaignId] || {};
+      const platforms = Object.keys(accounts);
+
+      // Rule 1: Check if they have any linked accounts to begin with
+      if (platforms.length === 0) {
+        return interaction.reply({
+          content: '📭 You don\'t have any accounts linked to this campaign.',
+          ephemeral: true
+        });
+      }
+
+      // Rule 2: Baseline safety check (User must leave at least one account)
+      if (platforms.length === 1) {
+        return interaction.reply({
+          content: `⚠️ **Action Denied:** You only have one account linked to this campaign (\`${formatPlatform(platforms[0])}: @${accounts[platforms[0]].username}\`). To protect your stats, you must leave at least one active account. If you want to stop entirely, use the **Leave Campaign** option instead.`,
+          ephemeral: true
+        });
+      }
+
+      // Build the selection menu out of their active linked accounts
+      const select = new StringSelectMenuBuilder()
+        .setCustomId(`campaign_connect_remove_select:${campaignId}`) // 🔗 Targets your existing select menu handler!
+        .setPlaceholder('Select a platform account to delete')
+        .addOptions(
+          platforms.map(platform => ({
+            label: `${formatPlatform(platform)} — @${accounts[platform].username}`,
+            description: `Unlinks this handle from ${campaign.name.replace(/<a?:\w+:\d+>/g, '').trim()}`,
+            value: platform
+          }))
+        );
+
+      await interaction.reply({
+        content: '🗑️ **Select which account you want to remove from this campaign:**',
+        components: [new ActionRowBuilder().addComponents(select)],
+        ephemeral: true
+      });
+      return;
+    }
+
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('campaign_connect_remove_select:')) {
       const campaignId = interaction.customId.split(':')[1];
       const platform = interaction.values[0];
