@@ -1079,88 +1079,63 @@ function getCampaignTotals(data, campaignId) {
   return { users, videos, views, payout };
 }
 
+// Global tracking timestamp to block excessive name edits
+let lastChannelUpdateTimestamp = 0;
+
 async function updateServerStats(guild) {
-
-    const data = loadData();
-
-    // ===========================
-    // YEAR GOAL
-    // ===========================
-
-    const YEAR_GOAL = 20000;
-
-    // ===========================
-    // TOTAL PAID
-    // ===========================
-
-    const totalPaid = Object.values(data.clips || {})
-        .filter(c => c.status === "approved")
-        .reduce((sum, c) => sum + (Number(c.moneyMade) || 0), 0);
-
-    // ===========================
-    // TOTAL VIEWS
-    // ===========================
-
-    const totalViews = Object.values(data.clips || {})
-        .filter(c => c.status === "approved")
-        .reduce((sum, c) => sum + (Number(c.views) || 0), 0);
-
-    // ===========================
-    // ACTIVE CAMPAIGNS
-    // ===========================
-
-    const activeCampaigns =
-        Object.values(CAMPAIGNS)
-            .filter(c => c.status === "active")
-            .length;
-
-    // ===========================
-    // AVAILABLE MONEY
-    // ===========================
-
-    let availableMoney = 0;
-
-    for (const campaign of Object.values(CAMPAIGNS)) {
-
-        if (campaign.status !== "active") continue;
-
-        const totals = getCampaignTotals(data, campaign.id);
-
-        availableMoney += Math.max(
-            (campaign.campaignBudget || campaign.weeklyBudget || 0) -
-            totals.payout,
-            0
-        );
+    // 🟢 Fix 1: Ensure the guild payload exists cleanly
+    if (!guild) {
+        console.error("❌ Stats update aborted: Valid Guild object missing.");
+        return;
     }
 
-    // ===========================
-    // UPDATE CHANNELS
-    // ===========================
+    // 🟢 Fix 2: Safety guard to prevent rate-limit crashes (must wait at least 5 minutes between name updates)
+    const now = Date.now();
+    if (now - lastChannelUpdateTimestamp < 5 * 60 * 1000) {
+        console.log("⏳ Skipping stats channel names update to prevent Discord API rate-limiting.");
+        return;
+    }
 
-    await guild.channels.cache
-        .get(process.env.GOAL_CHANNEL_ID)
-        ?.setName(`🎯・2026 Goal: $${formatNumber(YEAR_GOAL)}`)
-        .catch(() => {});
+    const data = loadData();
+    const YEAR_GOAL = 20000;
 
-    await guild.channels.cache
-        .get(process.env.PAID_CHANNEL_ID)
-        ?.setName(`🏦・Paid: $${formatNumber(totalPaid)}`)
-        .catch(() => {});
+    // Aggregations with safe array fallback selectors
+    const approvedClips = Object.values(data.clips || {}).filter(c => c.status === "approved");
 
-    await guild.channels.cache
-        .get(process.env.AVAILABLE_CHANNEL_ID)
-        ?.setName(`💰・Available: $${formatNumber(availableMoney)}`)
-        .catch(() => {});
+    const totalPaid = approvedClips.reduce((sum, c) => sum + (Number(c.moneyMade) || 0), 0);
+    const totalViews = approvedClips.reduce((sum, c) => sum + (Number(c.views) || 0), 0);
+    const activeCampaigns = Object.values(CAMPAIGNS).filter(c => c.status === "active").length;
 
-    await guild.channels.cache
-        .get(process.env.VIEWS_CHANNEL_ID)
-        ?.setName(`📈・Views: ${formatNumber(totalViews)}`)
-        .catch(() => {});
+    let availableMoney = 0;
+    for (const campaign of Object.values(CAMPAIGNS)) {
+        if (campaign.status !== "active") continue;
+        const totals = getCampaignTotals(data, campaign.id);
+        availableMoney += Math.max((campaign.campaignBudget || 0) - totals.payout, 0);
+    }
 
-    await guild.channels.cache
-        .get(process.env.ACTIVE_CAMPAIGNS_CHANNEL_ID)
-        ?.setName(`🚀・Active Campaigns: ${activeCampaigns}`)
-        .catch(() => {});
+    try {
+        // Update channels safely using native fallback chains
+        const goalChannel = guild.channels.cache.get(process.env.GOAL_CHANNEL_ID || GOAL_CHANNEL_ID);
+        if (goalChannel) await goalChannel.setName(`🎯・2026 Goal: $${formatNumber(YEAR_GOAL)}`).catch(() => null);
+
+        const paidChannel = guild.channels.cache.get(process.env.PAID_CHANNEL_ID || PAID_CHANNEL_ID);
+        if (paidChannel) await paidChannel.setName(`🏦・Paid: $${formatNumber(totalPaid)}`).catch(() => null);
+
+        const availChannel = guild.channels.cache.get(process.env.AVAILABLE_CHANNEL_ID || AVAILABLE_CHANNEL_ID);
+        if (availChannel) await availChannel.setName(`💰・Available: $${formatNumber(availableMoney)}`).catch(() => null);
+
+        const viewsChannel = guild.channels.cache.get(process.env.VIEWS_CHANNEL_ID || VIEWS_CHANNEL_ID);
+        if (viewsChannel) await viewsChannel.setName(`📈・Views: ${formatNumber(totalViews)}`).catch(() => null);
+
+        const activeChannel = guild.channels.cache.get(process.env.ACTIVE_CAMPAIGNS_CHANNEL_ID || ACTIVE_CAMPAIGNS_CHANNEL_ID);
+        if (activeChannel) await activeChannel.setName(`🚀・Active Campaigns: ${activeCampaigns}`).catch(() => null);
+
+        // Mark update time as successful
+        lastChannelUpdateTimestamp = now;
+        console.log("📈 Server counter voice channels synced successfully!");
+    } catch (err) {
+        console.error("⚠️ Failed to write channel names updates:", err.message);
+    }
 }
 
 function buildCampaignStatusEmbed(campaign, data) {
@@ -6234,23 +6209,30 @@ app.listen(PORT, () => {
 });
 
 client.once('ready', async () => {
+    console.log(`🤖 Online and registered as ${client.user.tag}`);
 
-    console.log('Monsterlab sync is manual.');
-
-    const guild = client.guilds.cache.get(process.env.GUILD_ID);
-
-    if (guild) {
-
-        await updateServerStats(guild);
-
-        setInterval(async () => {
-
-            await updateServerStats(guild);
-
-        }, 5 * 60 * 1000);
-
+    // Fetch target server cleanly via environment key arrays
+    const targetGuildId = process.env.GUILD_ID;
+    if (!targetGuildId) {
+        console.error("❌ Startup aborted: GUILD_ID environment variable is missing inside .env");
+        return;
     }
 
+    const mainGuild = client.guilds.cache.get(targetGuildId);
+    if (mainGuild) {
+        // Execute initial load
+        await updateServerStats(mainGuild);
+
+        // Run the timer every 5 minutes passing the cached mainGuild variable layout
+        setInterval(async () => {
+            const freshGuildRef = client.guilds.cache.get(targetGuildId);
+            if (freshGuildRef) {
+                await updateServerStats(freshGuildRef);
+            }
+        }, 5 * 60 * 1000);
+    } else {
+        console.error(`❌ Bot could not locate or access server with matching ID: ${targetGuildId}`);
+    }
 });
 
 client.on('messageCreate', async message => {
