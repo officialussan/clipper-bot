@@ -91,7 +91,9 @@ const ticketCooldowns = new Map();
 const claimedTickets = new Map();
 
 const dataFilePath =
-  process.env.DATA_FILE_PATH || path.join(__dirname, 'data.json');
+  process.env.RAILWAY_ENVIRONMENT
+    ? "/data/data.json"
+    : path.join(__dirname, "data.json");
 
 const CAMPAIGNS = {
   elephant: {
@@ -1493,22 +1495,6 @@ function extractLinksFromText(text) {
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean);
-}
-
-function ensureCampaignAccount(userRecord, campaignId, platform, username) {
-  if (!userRecord.campaignAccounts) {
-    userRecord.campaignAccounts = {};
-  }
-
-  if (!userRecord.campaignAccounts[campaignId]) {
-    userRecord.campaignAccounts[campaignId] = {};
-  }
-
-  userRecord.campaignAccounts[campaignId][platform] = {
-    username
-  };
-
-  return userRecord.campaignAccounts[campaignId][platform];
 }
 
 function getCampaignPlatformsForUser(userRecord, campaignId) {
@@ -4498,6 +4484,10 @@ client.on(Events.InteractionCreate, async interaction => {
       );
 
       campaignAccount.verified = true;
+      console.log(
+          "AFTER APPROVAL:",
+          JSON.stringify(userRecord.campaignAccounts, null, 2)
+      );
       campaignAccount.bioCode = request.bioCode || null;
 
       ensureCampaignPlatformStats(
@@ -4530,6 +4520,20 @@ client.on(Events.InteractionCreate, async interaction => {
       };
 
       saveData(data);
+     
+      console.log(
+          "Approved user:",
+          app.userId
+      );
+
+      console.log(
+          JSON.stringify(
+              data.users[app.userId],
+              null,
+              2
+          )
+      );
+     
       await updateCampaignAccountStaffMessage(interaction.guild, request);
       
       await member.send(
@@ -4778,7 +4782,28 @@ client.on(Events.InteractionCreate, async interaction => {
         return;
       }
 
+      console.log("Submit user:", interaction.user.id);
+      console.log("Submit username:", interaction.user.username);
+
       const userRecord = ensureUser(data, member);
+
+      console.log(
+        "Loaded campaignAccounts:",
+        JSON.stringify(userRecord.campaignAccounts, null, 2)
+      );
+
+      console.log(
+          "User loaded:",
+         JSON.stringify(userRecord, null, 2)
+      );
+      
+      console.log("Campaign ID:", campaignId);
+      console.log("Platform:", platform);
+
+      console.log(
+          "Saved accounts:",
+          JSON.stringify(userRecord.campaignAccounts, null, 2)
+      );
       const campaignAccount = userRecord.campaignAccounts?.[campaignId]?.[platform];
       
       if (!campaignAccount || !campaignAccount.verified) {
@@ -6284,13 +6309,6 @@ When done, click the button below.`,
       if (!userRecord.campaigns.includes(app.campaignId)) {
         userRecord.campaigns.push(app.campaignId);
       }
-
-      ensureCampaignAccount(
-        userRecord,
-        app.campaignId,
-        app.platform,
-        app.username
-      );
 
       const campaignAccount = ensureCampaignAccount(
         userRecord,
