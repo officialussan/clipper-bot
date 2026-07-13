@@ -1298,7 +1298,8 @@ function buildCampaignPanelButtons(campaign, data) {
       .setCustomId(`campaign_status:${campaign.id}`)
       .setLabel(isFinished ? "Campaign Finished" : "Campaign Status")
       .setEmoji(isFinished ? "🏁" : "<a:chart1:1504773558415523931>")
-      .setStyle(isFinished ? ButtonStyle.Secondary : ButtonStyle.Primary),
+      .setStyle(isFinished ? ButtonStyle.Secondary : ButtonStyle.Primary)
+      .setDisabled(isFinished),
 
     new ButtonBuilder()
       .setCustomId(`campaign_fulfilled:${campaign.id}`)
