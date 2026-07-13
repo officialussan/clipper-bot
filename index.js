@@ -814,13 +814,28 @@ function buildLeaderboardEmbed(guild, data, page = 1, perPage = 10) {
   } else {
     pageUsers.forEach((user, index) => {
       const overallRank = startIdx + index + 1;
-      let medal = '🏅';
-      if (overallRank === 1) medal = '🥇';
-      if (overallRank === 2) medal = '🥈';
-      if (overallRank === 3) medal = '🥉';
 
-      const displayName = user.hideFromLeaderboard ? '*Hidden*' : user.username;
-      leaderboardText += `${medal} **${displayName}**: ${formatNumber(user.totalViews)} Views\n`;
+      let rankDisplay;
+
+      switch (overallRank) {
+        case 1:
+          rankDisplay = "🥇";
+          break;
+        case 2:
+          rankDisplay = "🥈";
+          break;
+        case 3:
+          rankDisplay = "🥉";
+          break;
+        default:
+          rankDisplay = `\`${overallRank}.\``;
+      }
+
+      const displayName = user.hideFromLeaderboard
+        ? "*Hidden*"
+        : user.username;
+
+      leaderboardText += `${rankDisplay} **${displayName}**: ${formatNumber(user.totalViews)} Views\n`;
     });
   }
 
