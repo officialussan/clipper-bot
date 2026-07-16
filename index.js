@@ -161,7 +161,7 @@ Click the button below to start clipping and earning.`
     ratePerMillion: 700,
     viewCap: 7000000,
     panelChannelId:'1526930673846452358',
-    panelMessageId:'1523670386867175454',
+    panelMessageId:'1527339469664157747',
     staffChannelId: process.env.EARLY_STAFF_CHANNEL_ID,
     roleId: process.env.EARLY_ROLE_ID,
     entryChannelId: process.env.EARLY_ENTRY_CHANNEL_ID,
