@@ -155,11 +155,11 @@ Click the button below to start clipping and earning.`
     name: '<:n3:1523649827357851678> Early Clipping Campaign',
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
     payoutThreshold: 15000,
-    campaignBudget: 3000,
+    campaignBudget: 3500,
     startDate: '2026-07-11',
     cycleWeeks: 4,
     ratePerMillion: 700,
-    viewCap: 7000000,
+    viewCap: 5000000,
     panelChannelId:'1526930673846452358',
     panelMessageId:'1527339469664157747',
     staffChannelId: process.env.EARLY_STAFF_CHANNEL_ID,
@@ -189,7 +189,7 @@ All you have to do is **register for the campaign below** and follow the guideli
 
 ## <a:Cash1:1504871843419521115> Payment Details
 
-> **Campaign Budget:** $3,000  
+> **Campaign Budget:** $3,500  
 > **Rate:** $700 per 1M eligible views  
 > **Eligible Views:** Tier 1 countries only  
 > **Payout Schedule:** Monthly  
