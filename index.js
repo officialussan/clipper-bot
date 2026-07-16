@@ -150,26 +150,26 @@ Click the button below to start clipping and earning.`
 
   },
 
-  n3on: {
-    id: 'n3on',
-    name: '<:n3:1523649827357851678> N3on X Early Clipping Campaign',
+  early: {
+    id: 'early',
+    name: '<:n3:1523649827357851678> Early Clipping Campaign',
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
-    payoutThreshold: 25000,
-    campaignBudget: 2500,
-    startDate: '2026-06-9',
+    payoutThreshold: 15000,
+    campaignBudget: 3000,
+    startDate: '2026-07-11',
     cycleWeeks: 4,
-    ratePerMillion: 500,
-    viewCap: 5000000,
-    panelChannelId:'1523644638152626216',
+    ratePerMillion: 700,
+    viewCap: 7000000,
+    panelChannelId:'1526930673846452358',
     panelMessageId:'1523670386867175454',
-    staffChannelId: process.env.N3ON_STAFF_CHANNEL_ID,
-    roleId: process.env.N3ON_ROLE_ID,
-    entryChannelId: process.env.N3ON_ENTRY_CHANNEL_ID,
+    staffChannelId: process.env.EARLY_STAFF_CHANNEL_ID,
+    roleId: process.env.EARLY_ROLE_ID,
+    entryChannelId: process.env.EARLY_ENTRY_CHANNEL_ID,
     source: 'monsterlab',
     monsterCampaignId: "AfqIWZ70LgPcXcawvOhX",
     status: 'active',
     
-    panelText: `# <a:fire1:1504871649491554487> **Earn Money Posting Clips – N3on X Early Clipping Campaign**
+    panelText: `# <a:fire1:1504871649491554487> **Earn Money Posting Clips – Early Clipping Campaign**
 
 Earn money by posting high-retention clips and edits from N3on content across short-form platforms. Your goal is simple: create engaging clips, generate views, and grow your pages while earning from performance.
 
@@ -177,22 +177,20 @@ All you have to do is **register for the campaign below** and follow the guideli
 
 ## <a:chart1:1504773558415523931> Campaign Overview
 
-• **Content:** Clip anything from his stream - highlights, funny moments, reactions. 👉 <#1523645407140249671>
+• **Content:** Clip anything from his vlogs - highlights, funny moments, reactions.
 
 • **Platforms:** <:tiktok1:1504871476485029979> TikTok, <:ig1:1504871708664922162> Instagram Reels & <:ytshort:1504774704123220099> YouTube Shorts
 
-• **Requirement:** All uploaded videos must follow the campaign rules → <#1523645063345868810>
+• **Requirement:** All uploaded videos must follow the campaign rules → <#1526930713998266459>
 
 • **Editing Style:** Strong hooks, high retention, clear context.
-
-• **Content Standard:** Only clip up to the 3 hour mark. Do not clip content past the 3 hour mark of the stream.
 
 • **Strict Rule:** Must tag the correct @ on each platform. @ on IG: @early @ on TikTok: @early.
 
 ## <a:Cash1:1504871843419521115> Payment Details
 
-> **Campaign Budget:** $2,500  
-> **Rate:** $500 per 1M eligible views  
+> **Campaign Budget:** $3,000  
+> **Rate:** $700 per 1M eligible views  
 > **Eligible Views:** Tier 1 countries only  
 > **Payout Schedule:** Monthly  
 > **Payment Method:** Crypto
@@ -1129,15 +1127,21 @@ async function updateServerStats(guild) {
     }
 
     try {
-        // Update channels safely using native fallback chains
+        // 🟢 FIXED: Format currencies properly with commas and decimal cents
         const goalChannel = guild.channels.cache.get(process.env.GOAL_CHANNEL_ID || GOAL_CHANNEL_ID);
-        if (goalChannel) await goalChannel.setName(`🎯・2026 Goal: $${formatNumber(YEAR_GOAL)}`).catch(() => null);
+        if (goalChannel) {
+          await goalChannel.setName(`🎯・2026 Goal: $${YEAR_GOAL.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`).catch(() => null);
+        }
 
         const paidChannel = guild.channels.cache.get(process.env.PAID_CHANNEL_ID || PAID_CHANNEL_ID);
-        if (paidChannel) await paidChannel.setName(`🏦・Paid: $${formatNumber(totalPaid)}`).catch(() => null);
+        if (paidChannel) {
+          await paidChannel.setName(`🏦・Paid: $${totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`).catch(() => null);
+        }
 
         const availChannel = guild.channels.cache.get(process.env.AVAILABLE_CHANNEL_ID || AVAILABLE_CHANNEL_ID);
-        if (availChannel) await availChannel.setName(`💰・Available: $${formatNumber(availableMoney)}`).catch(() => null);
+        if (availChannel) {
+          await availChannel.setName(`💰・Available: $${availableMoney.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`).catch(() => null);
+        }
 
         const viewsChannel = guild.channels.cache.get(process.env.VIEWS_CHANNEL_ID || VIEWS_CHANNEL_ID);
         if (viewsChannel) await viewsChannel.setName(`📈・Views: ${formatNumber(totalViews)}`).catch(() => null);
