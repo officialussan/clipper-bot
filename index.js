@@ -171,7 +171,7 @@ Click the button below to start clipping and earning.`
     
     panelText: `# <a:fire1:1504871649491554487> **Earn Money Posting Clips – Early Clipping Campaign**
 
-Earn money by posting high-retention clips and edits from N3on content across short-form platforms. Your goal is simple: create engaging clips, generate views, and grow your pages while earning from performance.
+Earn money by posting high-retention clips and edits from Early content across short-form platforms. Your goal is simple: create engaging clips, generate views, and grow your pages while earning from performance.
 
 All you have to do is **register for the campaign below** and follow the guidelines to start earning.
 
