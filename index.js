@@ -912,7 +912,11 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
   const payoutThreshold = campaign?.payoutThreshold || 100000;
 
   // 🟢 Fix 2: Use the passed userId or fallback to userRecord safely to avoid 'interaction' crash
-  const targetUserId = userId || userRecord?.id || userRecord?.userId;
+  const targetUserId =
+  userId ||
+  userRecord?.discordId ||
+  userRecord?.userId ||
+  userRecord?.id;
 
   if (!targetUserId) {
     return new EmbedBuilder()
