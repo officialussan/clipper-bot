@@ -907,13 +907,16 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName) {
       .setDescription('❌ Campaign not found. Please rejoin the campaign or contact staff.');
   }
 
-  const currentCycle = getCampaignCycle(campaign); // Pass the whole object so it reads cycleWeeks: 4!
+  const currentCycle = getCampaignCycle(campaign); 
   const payoutThreshold = campaign?.payoutThreshold || 100000;
 
+  // 🟢 FIXED: Checks both potential user ID keys and safely coerces cycles to strings for a flawless match
+  const targetUserId = userRecord.discordId || userRecord.id;
+
   const userClips = Object.values(data.clips || {}).filter(clip =>
-    clip.userId === userRecord.discordId &&
+    clip.userId === targetUserId &&
     clip.campaignId === campaignId &&
-    clip.cycle === currentCycle
+    String(clip.cycle) === String(currentCycle)
   );
 
   const approvedClips = userClips.filter(c => c.status === 'approved');
@@ -1099,7 +1102,7 @@ async function updateServerStats(guild) {
     if (!guild) return;
 
     const data = loadData();
-    const YEAR_GOAL = 50000; // Updated from your image configuration
+    const YEAR_GOAL = 100000; // Updated from your image configuration
 
     const approvedClips = Object.values(data.clips || {}).filter(c => c.status === "approved");
 
