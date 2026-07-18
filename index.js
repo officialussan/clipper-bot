@@ -152,7 +152,7 @@ Click the button below to start clipping and earning.`
 
   early: {
     id: 'early',
-    name: '<:n3:1523649827357851678> Early Clipping Campaign',
+    name: 'Early Clipping Campaign',
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
     payoutThreshold: 15000,
     campaignBudget: 3500,
@@ -1096,23 +1096,11 @@ function getCampaignTotals(data, campaignId) {
 let lastChannelUpdateTimestamp = 0;
 
 async function updateServerStats(guild) {
-    // 🟢 Fix 1: Ensure the guild payload exists cleanly
-    if (!guild) {
-        console.error("❌ Stats update aborted: Valid Guild object missing.");
-        return;
-    }
-
-    // 🟢 Fix 2: Safety guard to prevent rate-limit crashes (must wait at least 5 minutes between name updates)
-    const now = Date.now();
-    if (now - lastChannelUpdateTimestamp < 5 * 60 * 1000) {
-        console.log("⏳ Skipping stats channel names update to prevent Discord API rate-limiting.");
-        return;
-    }
+    if (!guild) return;
 
     const data = loadData();
-    const YEAR_GOAL = 20000;
+    const YEAR_GOAL = 50000; // Updated from your image configuration
 
-    // Aggregations with safe array fallback selectors
     const approvedClips = Object.values(data.clips || {}).filter(c => c.status === "approved");
 
     const totalPaid = approvedClips.reduce((sum, c) => sum + (Number(c.moneyMade) || 0), 0);
@@ -1126,35 +1114,35 @@ async function updateServerStats(guild) {
         availableMoney += Math.max((campaign.campaignBudget || 0) - totals.payout, 0);
     }
 
-    try {
-        // 🟢 FIXED: Format currencies properly with commas and decimal cents
-        const goalChannel = guild.channels.cache.get(process.env.GOAL_CHANNEL_ID || GOAL_CHANNEL_ID);
-        if (goalChannel) {
-          await goalChannel.setName(`🎯・2026 Goal: $${YEAR_GOAL.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`).catch(() => null);
+    // Format metrics into clean visual target strings
+    const goalText = `🎯・2026 Goal: $${YEAR_GOAL.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const paidText = `🏦・Paid: $${totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const availText = `💰・Available: $${availableMoney.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const viewsText = `📈・Views: ${formatNumber(totalViews)}`;
+    const activeText = `🚀・Active Campaigns: ${activeCampaigns}`;
+
+    // Target arrays mapping channels to their desired names safely
+    const updates = [
+        { id: process.env.GOAL_CHANNEL_ID || GOAL_CHANNEL_ID, name: goalText },
+        { id: process.env.PAID_CHANNEL_ID || PAID_CHANNEL_ID, name: paidText },
+        { id: process.env.AVAILABLE_CHANNEL_ID || AVAILABLE_CHANNEL_ID, name: availText },
+        { id: process.env.VIEWS_CHANNEL_ID || VIEWS_CHANNEL_ID, name: viewsText },
+        { id: process.env.ACTIVE_CAMPAIGNS_CHANNEL_ID || ACTIVE_CAMPAIGNS_CHANNEL_ID, name: activeText }
+    ];
+
+    // Fire the name updates sequentially with micro-delays to eliminate Discord API rate-limiting blocks
+    for (let i = 0; i < updates.length; i++) {
+        const target = updates[i];
+        if (!target.id) continue;
+        
+        const channel = guild.channels.cache.get(target.id);
+        if (channel && channel.name !== target.name) {
+            // Introduce a 500ms separation delay per channel change execution loop
+            await new Promise(resolve => setTimeout(resolve, 500));
+            await channel.setName(target.name).catch(err => console.error(`⚠️ Channel update failed for ID ${target.id}:`, err.message));
         }
-
-        const paidChannel = guild.channels.cache.get(process.env.PAID_CHANNEL_ID || PAID_CHANNEL_ID);
-        if (paidChannel) {
-          await paidChannel.setName(`🏦・Paid: $${totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`).catch(() => null);
-        }
-
-        const availChannel = guild.channels.cache.get(process.env.AVAILABLE_CHANNEL_ID || AVAILABLE_CHANNEL_ID);
-        if (availChannel) {
-          await availChannel.setName(`💰・Available: $${availableMoney.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`).catch(() => null);
-        }
-
-        const viewsChannel = guild.channels.cache.get(process.env.VIEWS_CHANNEL_ID || VIEWS_CHANNEL_ID);
-        if (viewsChannel) await viewsChannel.setName(`📈・Views: ${formatNumber(totalViews)}`).catch(() => null);
-
-        const activeChannel = guild.channels.cache.get(process.env.ACTIVE_CAMPAIGNS_CHANNEL_ID || ACTIVE_CAMPAIGNS_CHANNEL_ID);
-        if (activeChannel) await activeChannel.setName(`🚀・Active Campaigns: ${activeCampaigns}`).catch(() => null);
-
-        // Mark update time as successful
-        lastChannelUpdateTimestamp = now;
-        console.log("📈 Server counter voice channels synced successfully!");
-    } catch (err) {
-        console.error("⚠️ Failed to write channel names updates:", err.message);
     }
+    console.log("📈 Counter display sync completed successfully!");
 }
 
 function buildCampaignStatusEmbed(campaign, data) {
