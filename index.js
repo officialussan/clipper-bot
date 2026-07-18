@@ -907,7 +907,7 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName) {
       .setDescription('❌ Campaign not found. Please rejoin the campaign or contact staff.');
   }
 
-  const currentCycle = getCampaignCycle(campaign.startDate);
+  const currentCycle = getCampaignCycle(campaign); // Pass the whole object so it reads cycleWeeks: 4!
   const payoutThreshold = campaign?.payoutThreshold || 100000;
 
   const userClips = Object.values(data.clips || {}).filter(clip =>
