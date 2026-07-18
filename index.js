@@ -1304,18 +1304,18 @@ function ensureCampaignPlatformStats(userRecord, campaignId, platform, username 
 function buildCampaignPanelButtons(campaign, data) {
   const totals = getCampaignTotals(data, campaign.id);
 
+  // Safely compute percentage
   const fulfilledPercent = campaign.campaignBudget
     ? Math.min((totals.payout / campaign.campaignBudget) * 100, 100).toFixed(1)
     : '0.0';
 
-  const campaignState =
-    data.campaignStatus?.[campaign.id];
-
+  // 🟢 FIX: Dynamic fallbacks to check both the state tree and the raw campaign object properties safely
   const isFinished =
     data.campaignStatus?.[campaign.id]?.status === 'finished' ||
+    data.campaigns?.[campaign.id]?.status === 'finished' ||
     campaign.status === 'finished';
 
-  console.log('campaignPayout', totals.payout);
+  console.log(`📊 Campaign UI Build [${campaign.name || campaign.id}] - Payout Total: $${totals.payout} | Finished: ${isFinished}`);
 
   const components = [
     new ButtonBuilder()
@@ -1340,10 +1340,7 @@ function buildCampaignPanelButtons(campaign, data) {
       .setDisabled(true)
   ];
 
-  const row = new ActionRowBuilder().addComponents(
-    ...components
-  );
-
+  const row = new ActionRowBuilder().addComponents(...components);
   return [row];
 }
 
