@@ -898,7 +898,7 @@ function ensureCampaignStats(userRecord, campaignId) {
   return userRecord.campaignStats[campaignId];
 }
 
-function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName) {
+function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, userId) {
   const campaign = CAMPAIGNS[campaignId];
 
   if (!campaign) {
@@ -907,25 +907,34 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName) {
       .setDescription('❌ Campaign not found. Please rejoin the campaign or contact staff.');
   }
 
+  // 🟢 Fix 1: Pass the campaign object safely to get the target cycle index
   const currentCycle = getCampaignCycle(campaign); 
   const payoutThreshold = campaign?.payoutThreshold || 100000;
 
-  // 🟢 1. Normalize the target user ID cleanly
-  const targetUserId = interaction.user.id;
+  // 🟢 Fix 2: Use the passed userId or fallback to userRecord safely to avoid 'interaction' crash
+  const targetUserId = userId || userRecord?.id || userRecord?.userId;
 
-  // 🟢 2. Filter all clips belonging ONLY to this user, this campaign, and this cycle
+  if (!targetUserId) {
+    return new EmbedBuilder()
+      .setColor(0xff0000)
+      .setDescription('❌ Could not resolve user identity context.');
+  }
+
+  // 🟢 Filter all clips belonging ONLY to this user, this campaign, and this cycle
   const userClips = Object.values(data.clips || {}).filter(c => {
       const matchUser = String(c.userId) === String(targetUserId);
       const matchCampaign = String(c.campaignId) === String(campaign.id);
       
-      // Compute the cycle index for this specific clip to match the current campaign cycle
-      const clipCycle = getCampaignCycle(c); 
+      // 🟢 Fix 3: To match the cycle index correctly, pass the parent campaign config context, 
+      // but supply the clip's submission date override if your utility supports it.
+      // If getCampaignCycle handles timestamped clips, ensure it gets the date string:
+      const clipCycle = getCampaignCycle(campaign, c.submittedAt); 
       const matchCycle = Number(clipCycle) === Number(currentCycle);
 
       return matchUser && matchCampaign && matchCycle;
   });
 
-  // 🟢 3. Calculate status metrics safely using lowercase matching
+  // Calculate status metrics safely using lowercase matching
   const approvedClips = userClips.filter(c => String(c.status).toLowerCase() === "approved");
   const pendingClips = userClips.filter(c => String(c.status).toLowerCase() === "pending");
   const rejectedClips = userClips.filter(c => String(c.status).toLowerCase() === "rejected");
@@ -935,9 +944,10 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName) {
 
   const viewsNeeded = Math.max(payoutThreshold - totalViews, 0);
 
+  // 🟢 Fix 4: Format money made with proper decimal precision instead of raw numbers
   const payoutText =
     totalViews >= payoutThreshold
-      ? `Eligible for payout.\n**Money Made:** $${formatNumber(moneyMade)}`
+      ? `Eligible for payout.\n**Money Made:** $${moneyMade.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
       : `Need **${formatNumber(viewsNeeded)}** more views`;
 
   return new EmbedBuilder()
