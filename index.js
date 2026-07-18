@@ -910,18 +910,25 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName) {
   const currentCycle = getCampaignCycle(campaign); 
   const payoutThreshold = campaign?.payoutThreshold || 100000;
 
-  // 🟢 FIXED: Checks both potential user ID keys and safely coerces cycles to strings for a flawless match
-  const targetUserId = userRecord.discordId || userRecord.id;
+  // 🟢 1. Normalize the target user ID cleanly
+  const targetUserId = interaction.user.id;
 
-  const userClips = Object.values(data.clips || {}).filter(clip =>
-    clip.userId === targetUserId &&
-    clip.campaignId === campaignId &&
-    String(clip.cycle) === String(currentCycle)
-  );
+  // 🟢 2. Filter all clips belonging ONLY to this user, this campaign, and this cycle
+  const userClips = Object.values(data.clips || {}).filter(c => {
+      const matchUser = String(c.userId) === String(targetUserId);
+      const matchCampaign = String(c.campaignId) === String(campaign.id);
+      
+      // Compute the cycle index for this specific clip to match the current campaign cycle
+      const clipCycle = getCampaignCycle(c); 
+      const matchCycle = Number(clipCycle) === Number(currentCycle);
 
-  const approvedClips = userClips.filter(c => c.status === 'approved');
-  const rejectedClips = userClips.filter(c => c.status === 'rejected');
-  const pendingClips = userClips.filter(c => c.status === 'pending');
+      return matchUser && matchCampaign && matchCycle;
+  });
+
+  // 🟢 3. Calculate status metrics safely using lowercase matching
+  const approvedClips = userClips.filter(c => String(c.status).toLowerCase() === "approved");
+  const pendingClips = userClips.filter(c => String(c.status).toLowerCase() === "pending");
+  const rejectedClips = userClips.filter(c => String(c.status).toLowerCase() === "rejected");
 
   const totalViews = approvedClips.reduce((sum, c) => sum + (Number(c.views) || 0), 0);
   const moneyMade = approvedClips.reduce((sum, c) => sum + (Number(c.moneyMade) || 0), 0);
