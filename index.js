@@ -101,14 +101,15 @@ const CAMPAIGNS = {
     name: 'Elephant Clipping Campaign',
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
     payoutThreshold: 25000,
-    campaignBudget: 2000,
+    campaignBudget: 5000,
     startDate: '2026-06-29',
-    cycleWeeks: 4,
+    campaignMode: "weekly",
+    budgetCycle: "weekly",
+    earningCycle: "monthly",
+    ViewCap: 8000000,
     ratePerMillion: 300,
-    viewCap: 5000000,
     panelChannelId:'1492239981308018698',
     panelMessageId:'1523670659660517396',
-    staffChannelId: process.env.ELEPHANT_STAFF_CHANNEL_ID,
     roleId: process.env.ELEPHANT_ROLE_ID,
     entryChannelId: process.env.ELEPHANT_ENTRY_CHANNEL_ID,
     source: 'monsterlab',
@@ -137,7 +138,7 @@ All you have to do is **register for the campaign below** and follow the guideli
 
 ## <a:Cash1:1504871843419521115> Payment Details
 
-> **Campaign Budget:** $2,000  
+> **Weekly Budget:** $2,400  
 > **Rate:** $300 per 1M eligible views  
 > **Eligible Views:** Tier 1 countries only  
 > **Payout Schedule:** Monthly  
@@ -157,7 +158,9 @@ Click the button below to start clipping and earning.`
     payoutThreshold: 15000,
     campaignBudget: 3500,
     startDate: '2026-07-11',
-    cycleWeeks: 4,
+    campaignMode: "monthly",
+    budgetCycle: "monthly",
+    earningCycle: "monthly",
     ratePerMillion: 700,
     viewCap: 5000000,
     panelChannelId:'1526930673846452358',
@@ -209,7 +212,9 @@ Click the button below to start clipping and earning.`
     payoutThreshold: 35000,
     campaignBudget: 2100,
     startDate: '2026-06-29',
-    cycleWeeks: 4,
+    cycleWeeks: "4",
+    budgetCycle: "monthly",
+    earningCycle: "monthly",
     ratePerMillion: 300,
     viewCap: 7000000,
     panelChannelId:'1521565850505838672',
@@ -355,14 +360,26 @@ function makeApplicationId() {
   return `app_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 }
 
-function getCampaignCycle(campaign) {
+function getCampaignCycle(campaign, date = new Date()) {
+
+    if (campaign.campaignMode === "monthly") {
+
+        const start = new Date(campaign.startDate);
+
+        const diffMonths =
+            (date.getUTCFullYear() - start.getUTCFullYear()) * 12 +
+            (date.getUTCMonth() - start.getUTCMonth());
+
+        return Math.max(0, diffMonths);
+
+    }
+
+    // Existing code ↓↓↓
 
     const start = new Date(campaign.startDate);
 
-    const now = new Date();
-
     const diffWeeks = Math.floor(
-        (now.getTime() - start.getTime()) /
+        (date.getTime() - start.getTime()) /
         (7 * 24 * 60 * 60 * 1000)
     );
 
@@ -383,6 +400,47 @@ function getStatusLabel(status) {
     approved: 'Approved',
     rejected: 'Rejected'
   }[status] || status;
+}
+
+async function sendAccountForStaffReview(guild, campaignId, accountData) {
+    const campaign = CAMPAIGNS[campaignId];
+    const channelId = campaign?.staffChannels?.linkAccount;
+    if (!channelId) return;
+
+    const channel = guild.channels.cache.get(channelId);
+    if (channel) {
+        // Send account linking review payload with Accept/Reject buttons
+        await channel.send({ embeds: [/* Account Link Embed */], components: [/* Staff Action Buttons */] });
+    }
+}
+
+// Dynamic routing helper for clip reviews
+async function sendClipForStaffReview(guild, clip) {
+    const data = loadData();
+    const campaignStaffMap = data.campaignStaffChannels?.[clip.campaignId];
+    
+    if (!campaignStaffMap) {
+        console.error(`⚠️ No staff channels configured for campaign: ${clip.campaignId}`);
+        return;
+    }
+
+    // Pick channel ID based on clip platform ('instagram', 'tiktok', 'youtube')
+    const platformKey = clip.platform.toLowerCase();
+    const targetChannelId = campaignStaffMap[platformKey];
+
+    if (!targetChannelId) {
+        console.error(`⚠️ No target channel ID found for platform: ${platformKey}`);
+        return;
+    }
+
+    const channel = guild.channels.cache.get(targetChannelId);
+    if (channel) {
+        await channel.send({
+            content: `📌 **New ${clip.platform.toUpperCase()} Submission** from <@${clip.userId}>`,
+            embeds: [/* Clip Review Embed */],
+            components: [/* Approve / Reject Action Row Buttons */]
+        });
+    }
 }
 
 function validateAccountSubmission(userId, campaignId, platform, username) {
@@ -1048,6 +1106,33 @@ console.log(process.env.MONSTERLAB_API_KEY);
 
 function getCampaignPeriod(campaign) {
 
+    if (campaign.campaignMode === "monthly") {
+
+        const cycle = getCampaignCycle(campaign);
+
+        const periodStart =
+            new Date(campaign.startDate);
+
+        periodStart.setUTCMonth(
+            periodStart.getUTCMonth() + cycle
+        );
+
+        const periodEnd =
+            new Date(periodStart);
+
+        periodEnd.setUTCMonth(
+            periodEnd.getUTCMonth() + 1
+        );
+
+        return {
+            periodStart,
+            periodEnd
+        };
+
+    }
+
+    // Existing code ↓↓↓
+
     const cycle = getCampaignCycle(campaign);
 
     const periodStart = new Date(campaign.startDate);
@@ -1095,11 +1180,24 @@ function getCampaignTotals(data, campaignId) {
     user.campaigns?.includes(campaignId)
   ).length;
 
-  const clips = Object.values(data.clips || {}).filter(clip =>
-      clip.campaignId === campaignId &&
-      clip.status === 'approved' &&
-      (clip.cycle ?? 0) === currentCycle
-  );
+  const clips = Object.values(data.clips || {}).filter(clip => {
+
+      if (
+          clip.campaignId !== campaignId ||
+          clip.status !== "approved"
+      ) {
+          return false;
+      }
+
+      if (campaign.campaignMode === "monthly") {
+
+          return (clip.cycle ?? 0) === currentCycle;
+
+      }
+
+      return (clip.cycle ?? 0) === currentCycle;
+
+  });
 
   const videos = clips.length;
 
@@ -1913,16 +2011,101 @@ client.once(Events.ClientReady, () => {
   setInterval(archiveFinishedCampaigns, 5 * 60 * 1000);
 });
 
-client.on('messageCreate', async (message) => {
-    console.log(`Received: ${message.content}`);
+// ==========================================
+// 🛠️ AUTOMATED STAFF CHANNEL CREATOR
+// ==========================================
+client.on('messageCreate', async message => {
+    if (message.author.bot || !message.guild) return;
 
-    if (message.author.bot) return;
+    // Command structure: !setupcampaignstaff elephant
+    if (!message.content.startsWith('!setupcampaignstaff')) return;
 
-    if (message.content !== '!cleanupchannels') return;
+    // Check for administrator permissions
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return message.reply("❌ You need Administrator permissions to run this setup command.");
+    }
 
-    console.log('Cleanup command received');
+    const args = message.content.split(' ');
+    const campaignId = args[1]?.toLowerCase();
 
-    await message.reply('Cleanup started...');
+    if (!campaignId || !CAMPAIGNS[campaignId]) {
+        const available = Object.keys(CAMPAIGNS).join(', ') || 'None';
+        return message.reply(`❌ Invalid or missing campaign ID. Available campaigns: \`${available}\``);
+    }
+
+    const campaign = CAMPAIGNS[campaignId];
+    const statusMsg = await message.reply(`⏳ Generating staff category & review channels for **${campaign.name}**...`);
+
+    try {
+        // 1. Create Private Staff Category
+        const category = await message.guild.channels.create({
+            name: `🔒 ${campaign.name} Staff`,
+            type: ChannelType.GuildCategory,
+            permissionOverwrites: [
+                {
+                    id: message.guild.id, // @everyone role
+                    deny: [PermissionFlagsBits.ViewChannel] // Hide from regular members
+                }
+            ]
+        });
+
+        // 2. Create the 4 channel destinations inside the category
+        const linkChan = await message.guild.channels.create({
+            name: '🔗・link-accounts',
+            type: ChannelType.GuildText,
+            parent: category.id,
+            topic: `Account linking verification requests for ${campaign.name}`
+        });
+
+        const igChan = await message.guild.channels.create({
+            name: '📸・ig-clips',
+            type: ChannelType.GuildText,
+            parent: category.id,
+            topic: `Instagram Reels review queue for ${campaign.name}`
+        });
+
+        const ttChan = await message.guild.channels.create({
+            name: '🎵・tiktok-clips',
+            type: ChannelType.GuildText,
+            parent: category.id,
+            topic: `TikTok clip review queue for ${campaign.name}`
+        });
+
+        const ytChan = await message.guild.channels.create({
+            name: '📺・yt-clips',
+            type: ChannelType.GuildText,
+            parent: category.id,
+            topic: `YouTube Shorts review queue for ${campaign.name}`
+        });
+
+        // 3. Save directly into data.json runtime structure
+        const data = loadData();
+        if (!data.campaignStaffChannels) data.campaignStaffChannels = {};
+
+        data.campaignStaffChannels[campaignId] = {
+            category: category.id,
+            linkAccount: linkChan.id,
+            instagram: igChan.id,
+            tiktok: ttChan.id,
+            youtube: ytChan.id
+        };
+        saveData(data);
+
+        // 4. Confirm Setup Completion
+        await statusMsg.edit({
+            content: `✅ **Staff Channels Successfully Created for ${campaign.name}!**\n\n` +
+                     `**Category:** <#${category.id}>\n` +
+                     `• **Account Linking:** <#${linkChan.id}> (\`${linkChan.id}\`)\n` +
+                     `• **Instagram Clips:** <#${igChan.id}> (\`${igChan.id}\`)\n` +
+                     `• **TikTok Clips:** <#${ttChan.id}> (\`${ttChan.id}\`)\n` +
+                     `• **YouTube Clips:** <#${ytChan.id}> (\`${ytChan.id}\`)\n\n` +
+                     `*Channel IDs have been registered automatically to your database!*`
+        });
+
+    } catch (err) {
+        console.error("⚠️ Failed to generate campaign staff channels:", err);
+        await statusMsg.edit(`❌ An error occurred while creating channels: \`${err.message}\``);
+    }
 });
 
 client.on(Events.MessageCreate, async message => {
