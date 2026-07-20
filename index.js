@@ -4485,13 +4485,15 @@ client.on(Events.InteractionCreate, async interaction => {
 
       const code = interaction.fields.getTextInputValue('campaign_staff_code_input').trim();
 
+      // Update state data
       request.bioCode = code;
       request.status = 'waiting_confirm';
+      request.staffChannelId = interaction.channelId; // 🟢 Save staff channel ID
+      request.staffMessageId = interaction.message?.id || request.messageId; // 🟢 Save staff message ID
       data.campaignAccountRequests[requestId] = request;
       saveData(data);
 
-      await updateCampaignAccountStaffMessage(interaction.guild, request);
-
+      // 1. Send DM to user with confirmation button
       const confirmRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`campaign_user_confirm:${requestId}`)
@@ -4514,7 +4516,6 @@ client.on(Events.InteractionCreate, async interaction => {
           components: [confirmRow]
         }).catch(async () => {
           const sourceChannel = interaction.guild.channels.cache.get(request.sourceChannelId);
-
           if (sourceChannel) {
             await sourceChannel.send({
               content: `<@${request.userId}> I could not DM you. Please enable DMs from server members, then ask staff to resend your code.`
@@ -4523,10 +4524,22 @@ client.on(Events.InteractionCreate, async interaction => {
         });
       }
 
-      await interaction.reply({
-        content: `✅ Bio code sent to <@${request.userId}> via DM.`,
-        ephemeral: true
-      });
+      // 2. 🟢 UPDATE THE STAFF MESSAGE BUTTON IN #link-accounts TO "Waiting for User"
+      const waitingRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('waiting_btn')
+          .setLabel('⏳ Waiting for User...')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(true)
+      );
+
+      if (interaction.message) {
+        await interaction.update({ components: [waitingRow] });
+        await interaction.followUp({ content: `✅ Bio code sent to <@${request.userId}> via DM.`, ephemeral: true });
+      } else {
+        await updateCampaignAccountStaffMessage(interaction.guild, request);
+        await interaction.reply({ content: `✅ Bio code sent to <@${request.userId}> via DM.`, ephemeral: true });
+      }
 
       return;
     }
@@ -4571,36 +4584,47 @@ client.on(Events.InteractionCreate, async interaction => {
       const request = data.campaignAccountRequests[requestId];
 
       if (!request) {
-        await interaction.reply({
-          content: '❌ Request not found.',
-          ephemeral: true
-        });
-        return;
-      }
-  
-      if (interaction.user.id !== request.userId) {
-        await interaction.reply({
-          content: '❌ This confirmation is not for you.',
-          ephemeral: true
-        });
+        await interaction.reply({ content: '❌ Verification request not found or expired.', ephemeral: true });
         return;
       }
 
-      request.status = 'verifying';
+      await interaction.deferReply({ ephemeral: true });
+
+      request.status = 'ready_for_review';
       data.campaignAccountRequests[requestId] = request;
       saveData(data);
 
-      const guild = client.guilds.cache.get(request.guildId);
+      // 🟢 FETCH THE MESSAGES IN THE STAFF CHANNEL AND UPDATE TO ACCEPT / REJECT
+      try {
+        const staffChannel = await interaction.client.channels.fetch(request.staffChannelId || request.sourceChannelId);
+        if (staffChannel && request.staffMessageId) {
+          const staffMsg = await staffChannel.messages.fetch(request.staffMessageId);
+          if (staffMsg) {
+            const reviewRow = new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`campaign_staff_accept:${requestId}`)
+                .setLabel('✅ Accept Account')
+                .setStyle(ButtonStyle.Success),
+              new ButtonBuilder()
+                .setCustomId(`campaign_staff_reject:${requestId}`)
+                .setLabel('❌ Reject Account')
+                .setStyle(ButtonStyle.Danger)
+            );
 
-      if (guild) {
-        await updateCampaignAccountStaffMessage(guild, request);
+            // Update Embed Status to Ready
+            const updatedEmbed = EmbedBuilder.from(staffMsg.embeds[0])
+              .setColor('#F59E0B');
+
+            await staffMsg.edit({ embeds: [updatedEmbed], components: [reviewRow] });
+          }
+        }
+      } catch (err) {
+        console.error("Failed to update staff message components:", err.message);
       }
 
-      await interaction.reply({
-        content: '✅ Confirmation submitted. Staff will now review your bio.',
-        ephemeral: true
+      await interaction.editReply({
+        content: '✅ Thank you! Staff has been notified that your bio code is updated and ready for review.'
       });
-
       return;
     }
 
@@ -4708,44 +4732,83 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('campaign_staff_reject:')) {
-      if (!interaction.guild || !isAdmin(interaction.member)) {
-        await interaction.reply({ content: '❌ You are not allowed to do this.', ephemeral: true });
+        if (!interaction.guild || !isAdmin(interaction.member)) {
+            return interaction.reply({ content: '❌ You are not allowed to do this.', ephemeral: true });
+        }
+
+        const requestId = interaction.customId.split(':')[1];
+
+        const modal = new ModalBuilder()
+            .setCustomId(`campaign_staff_reject_modal:${requestId}`)
+            .setTitle('Account Rejection Reason');
+
+        modal.addComponents(
+            new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                    .setCustomId('campaign_reject_reason_input')
+                    .setLabel('Reason for Rejection')
+                    .setPlaceholder('e.g. Bio code was not found, account is private, etc.')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setRequired(true)
+            )
+        );
+
+        await interaction.showModal(modal);
         return;
-      }
+    }
 
-      const requestId = interaction.customId.split(':')[1];
-      const data = loadData();
-      const request = data.campaignAccountRequests[requestId];
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('campaign_staff_reject_modal:')) {
+        if (!interaction.guild || !isAdmin(interaction.member)) {
+            return interaction.reply({ content: '❌ You are not allowed to do this.', ephemeral: true });
+        }
 
-      if (!request) {
-        await interaction.reply({ content: '❌ Request not found.', ephemeral: true });
-        return;
-      }
+        const requestId = interaction.customId.split(':')[1];
+        const data = loadData();
+        const request = data.campaignAccountRequests[requestId];
 
-      request.status = 'rejected';
-      data.campaignAccountRequests[requestId] = request;
-      saveData(data);
+        if (!request) {
+            return interaction.reply({ content: '❌ Request not found.', ephemeral: true });
+        }
 
-      await updateCampaignAccountStaffMessage(interaction.guild, request);
+        const reason = interaction.fields.getTextInputValue('campaign_reject_reason_input').trim();
 
-      const member = await interaction.guild.members
-        .fetch(request.userId)
-        .catch(() => null);
+        request.status = 'rejected';
+        request.rejectReason = reason;
+        data.campaignAccountRequests[requestId] = request;
+        saveData(data);
 
-      if (member) {
-        await member.send(
-          `❌ **Campaign Account Rejected**\n\n` +
-          `Your **${formatPlatform(request.platform)}** account **@${request.username}** for **${request.campaignName}** was rejected.\n\n` +
-          `Please check your bio code and try again if needed.`
-        ).catch(() => {});
-      }
+        // Update staff message components to show rejected state
+        const rejectedRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('rejected_btn')
+                .setLabel('❌ Account Rejected')
+                .setStyle(ButtonStyle.Danger)
+                .setDisabled(true)
+        );
 
-      await interaction.reply({
-        content: `❌ Rejected **${formatPlatform(request.platform)}** account **@${request.username}**.`,
-        ephemeral: true
-      });
+        const updatedEmbed = EmbedBuilder.from(interaction.message ? interaction.message.embeds[0] : {})
+            .setColor('#EF4444')
+            .addFields({ name: '❌ Rejection Reason', value: reason, inline: false });
 
-      return;
+        if (interaction.message) {
+            await interaction.update({ embeds: [updatedEmbed], components: [rejectedRow] });
+        } else {
+        await interaction.reply({ content: `❌ Account request rejected with reason: "${reason}"`, ephemeral: true });
+        }
+
+        // Send DM notification to user with the custom reason
+        const targetMember = await interaction.guild.members.fetch(request.userId).catch(() => null);
+        if (targetMember) {
+            const dmEmbed = new EmbedBuilder()
+                .setTitle('❌ Account Verification Rejected')
+                .setDescription(`Your account request (@${request.username}) for **${request.campaignName}** was rejected by staff.`)
+                .addFields({ name: '📌 Reason', value: reason })
+                .setColor('#EF4444');
+
+            await targetMember.send({ embeds: [dmEmbed] }).catch(() => {});
+        }
+
+        return interaction.followUp({ content: `❌ Rejected account request for <@${request.userId}>. Reason: "${reason}"`, ephemeral: true });
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_remove:')) {
