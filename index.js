@@ -109,7 +109,7 @@ const CAMPAIGNS = {
     ViewCap: 8000000,
     ratePerMillion: 300,
     panelChannelId:'1492239981308018698',
-    panelMessageId:'1523670659660517396',
+    panelMessageId:'1528713090651394209',
     roleId: process.env.ELEPHANT_ROLE_ID,
     entryChannelId: process.env.ELEPHANT_ENTRY_CHANNEL_ID,
     source: 'monsterlab',
@@ -4400,10 +4400,19 @@ client.on(Events.InteractionCreate, async interaction => {
         sourceChannelId: interaction.channelId
       };
 
-      const staffChannel = interaction.guild.channels.cache.get(campaign.staffChannelId);
+       // 2. Fetch staff channel mapping for this campaign
+      const campaignStaffMap = data.campaignStaffChannels?.[campaignId];
+
+      // 3. Fallback check for linkAccount (supports both data.json and static campaign fallback)
+      const staffChannelId = campaignStaffMap?.linkAccount 
+          || campaignStaffMap?.accountLinking 
+          || campaign?.staffChannels?.linkAccount 
+          || campaign?.staffChannelId;
+
+      const staffChannel = interaction.guild.channels.cache.get(staffChannelId);
+
       if (!staffChannel) {
-        await interaction.reply({ content: '❌ Staff channel not found.', ephemeral: true });
-        return;
+          return interaction.reply({ content: '❌ Staff channel not found.', ephemeral: true });
       }
 
       const sent = await staffChannel.send({
@@ -6072,13 +6081,19 @@ client.on(Events.InteractionCreate, async interaction => {
         sourceChannelId: interaction.channelId
       };
 
-      const staffCh = interaction.guild.channels.cache.get(campaign.staffChannelId);
-      if (!staffCh) {
-        await interaction.reply({
-          content: '❌ Staff channel not found.',
-          ephemeral: true
-        });
-        return;
+      // 2. Fetch staff channel mapping for this campaign
+      const campaignStaffMap = data.campaignStaffChannels?.[campaignId];
+
+      // 3. Fallback check for linkAccount (supports both data.json and static campaign fallback)
+      const staffChannelId = campaignStaffMap?.linkAccount 
+          || campaignStaffMap?.accountLinking 
+          || campaign?.staffChannels?.linkAccount 
+          || campaign?.staffChannelId;
+
+      const staffChannel = interaction.guild.channels.cache.get(staffChannelId);
+
+      if (!staffChannel) {
+          return interaction.reply({ content: '❌ Staff channel not found.', ephemeral: true });
       }
 
       const msg = await staffCh.send({
