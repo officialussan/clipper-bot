@@ -106,7 +106,7 @@ const CAMPAIGNS = {
     cycleWeeks: "1",
     budgetCycle: "weekly",
     earningCycle: "monthly",
-    ViewCap: 8000000,
+    viewCap: 8000000,
     ratePerMillion: 300,
     panelChannelId:'1492239981308018698',
     panelMessageId:'1528713090651394209',
