@@ -1663,6 +1663,7 @@ function renderCampaignAccountStaffContent(request) {
 }
 
 function buildCampaignAccountStaffButtons(id, status) {
+  // 1. Initial State: Show "Send Code"
   if (status === 'pending') {
     return [
       new ActionRowBuilder().addComponents(
@@ -1674,29 +1675,57 @@ function buildCampaignAccountStaffButtons(id, status) {
     ];
   }
 
+  // 2. Waiting State: Staff sent code, waiting for user to update bio
   if (status === 'waiting_confirm') {
     return [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`campaign_wait:${id}`)
-          .setLabel('Waiting')
+          .setLabel('⏳ Waiting for User...')
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(true)
       )
     ];
   }
 
-  if (status === 'verifying') {
+  // 3. Review State: User confirmed bio code! Show "Accept" and "Reject"
+  if (status === 'verifying' || status === 'ready_for_review' || status === 'bio_updated') {
     return [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`campaign_staff_accept:${id}`)
-          .setLabel('Accept')
+          .setLabel('✅ Accept')
           .setStyle(ButtonStyle.Success),
         new ButtonBuilder()
           .setCustomId(`campaign_staff_reject:${id}`)
-          .setLabel('Reject')
+          .setLabel('❌ Reject')
           .setStyle(ButtonStyle.Danger)
+      )
+    ];
+  }
+
+  // 4. Approved Final State
+  if (status === 'approved') {
+    return [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`campaign_approved:${id}`)
+          .setLabel('✅ Account Approved')
+          .setStyle(ButtonStyle.Success)
+          .setDisabled(true)
+      )
+    ];
+  }
+
+  // 5. Rejected Final State
+  if (status === 'rejected') {
+    return [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`campaign_rejected:${id}`)
+          .setLabel('❌ Account Rejected')
+          .setStyle(ButtonStyle.Danger)
+          .setDisabled(true)
       )
     ];
   }
@@ -1705,18 +1734,37 @@ function buildCampaignAccountStaffButtons(id, status) {
 }
 
 async function updateCampaignAccountStaffMessage(guild, request) {
-  const campaign = CAMPAIGNS[request.campaignId];
-  if (!campaign) return;
+  if (!guild || !request) return;
 
-  const ch = guild.channels.cache.get(campaign.staffChannelId);
-  if (!ch || !request.staffMessageId) return;
+  const data = loadData();
+
+  // 1. Resolve channel ID dynamically from request or data.json
+  const campaignStaffMap = data.campaignStaffChannels?.[request.campaignId];
+  const channelId = request.staffChannelId 
+                 || campaignStaffMap?.linkAccount 
+                 || campaignStaffMap?.accountLinking 
+                 || CAMPAIGNS[request.campaignId]?.staffChannelId;
+
+  if (!channelId || !request.staffMessageId) {
+    console.log(`⚠️ Missing channelId (${channelId}) or staffMessageId (${request.staffMessageId}) for request ${request.id}`);
+    return;
+  }
+
+  const ch = guild.channels.cache.get(channelId);
+  if (!ch) {
+    console.log(`⚠️ Could not find channel with ID ${channelId} in guild cache.`);
+    return;
+  }
 
   try {
     const msg = await ch.messages.fetch(request.staffMessageId);
-    await msg.edit({
-      content: renderCampaignAccountStaffContent(request),
-      components: buildCampaignAccountStaffButtons(request.id, request.status)
-    });
+    if (msg) {
+      await msg.edit({
+        content: renderCampaignAccountStaffContent(request),
+        components: buildCampaignAccountStaffButtons(request.id, request.status)
+      });
+      console.log(`✅ Updated staff message for request ${request.id} (Status: ${request.status})`);
+    }
   } catch (error) {
     console.log('Could not update campaign account staff message:', error.message);
   }
@@ -4578,53 +4626,40 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
+    // ==========================================
+    // 📩 USER DM CONFIRMATION HANDLER
+    // ==========================================
     if (interaction.isButton() && interaction.customId.startsWith('campaign_user_confirm:')) {
       const requestId = interaction.customId.split(':')[1];
       const data = loadData();
       const request = data.campaignAccountRequests[requestId];
 
       if (!request) {
-        await interaction.reply({ content: '❌ Verification request not found or expired.', ephemeral: true });
+        await interaction.reply({ content: '❌ Account verification request not found or expired.', ephemeral: true });
         return;
       }
 
       await interaction.deferReply({ ephemeral: true });
 
+      // 1. Update status to trigger Accept/Reject buttons
       request.status = 'ready_for_review';
       data.campaignAccountRequests[requestId] = request;
       saveData(data);
 
-      // 🟢 FETCH THE MESSAGES IN THE STAFF CHANNEL AND UPDATE TO ACCEPT / REJECT
-      try {
-        const staffChannel = await interaction.client.channels.fetch(request.staffChannelId || request.sourceChannelId);
-        if (staffChannel && request.staffMessageId) {
-          const staffMsg = await staffChannel.messages.fetch(request.staffMessageId);
-          if (staffMsg) {
-            const reviewRow = new ActionRowBuilder().addComponents(
-              new ButtonBuilder()
-                .setCustomId(`campaign_staff_accept:${requestId}`)
-                .setLabel('✅ Accept Account')
-                .setStyle(ButtonStyle.Success),
-              new ButtonBuilder()
-                .setCustomId(`campaign_staff_reject:${requestId}`)
-                .setLabel('❌ Reject Account')
-                .setStyle(ButtonStyle.Danger)
-            );
+      // 2. Fetch target guild and update staff channel message in #link-accounts
+      const guild = interaction.client.guilds.cache.get(process.env.GUILD_ID);
 
-            // Update Embed Status to Ready
-            const updatedEmbed = EmbedBuilder.from(staffMsg.embeds[0])
-              .setColor('#F59E0B');
-
-            await staffMsg.edit({ embeds: [updatedEmbed], components: [reviewRow] });
-          }
-        }
-      } catch (err) {
-        console.error("Failed to update staff message components:", err.message);
+      if (guild) {
+        await updateCampaignAccountStaffMessage(guild, request);
+      } else {
+        console.error("⚠️ Could not locate main guild during DM user confirmation.");
       }
 
+      // 3. Confirm back to user in DM
       await interaction.editReply({
-        content: '✅ Thank you! Staff has been notified that your bio code is updated and ready for review.'
+        content: '✅ **Bio Code Confirmed!**\n\nStaff has been notified and will review your profile bio shortly. You will receive a DM once your account is approved.'
       });
+
       return;
     }
 
@@ -4663,10 +4698,6 @@ client.on(Events.InteractionCreate, async interaction => {
       );
 
       campaignAccount.verified = true;
-      console.log(
-          "AFTER APPROVAL:",
-          JSON.stringify(userRecord.campaignAccounts, null, 2)
-      );
       campaignAccount.bioCode = request.bioCode || null;
 
       ensureCampaignPlatformStats(
@@ -4700,21 +4731,12 @@ client.on(Events.InteractionCreate, async interaction => {
 
       saveData(data);
      
-      console.log(
-          "Approved user:",
-          app.userId
-      );
-
-      console.log(
-          JSON.stringify(
-              data.users[app.userId],
-              null,
-              2
-          )
-      );
+      // 🟢 Fixed app.userId reference error -> request.userId
+      console.log("Approved user:", request.userId);
+      console.log(JSON.stringify(data.users[request.userId], null, 2));
      
       await updateCampaignAccountStaffMessage(interaction.guild, request);
-      
+     
       await member.send(
         `✅ **Campaign Approved**\n\n` +
         `You have been approved for **${request.campaignName}**.\n\n` +
@@ -4722,7 +4744,6 @@ client.on(Events.InteractionCreate, async interaction => {
         `You can now access the campaign channels and start submitting clips.`
       ).catch(() => {});
 
-      
       await interaction.reply({
         content: `✅ Approved **${formatPlatform(request.platform)}** account **@${request.username}** for **${request.campaignName}**.`,
         ephemeral: true
