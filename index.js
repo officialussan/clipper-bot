@@ -165,7 +165,6 @@ Click the button below to start clipping and earning.`
     viewCap: 5000000,
     panelChannelId:'1526930673846452358',
     panelMessageId:'1527339469664157747',
-    staffChannelId: process.env.EARLY_STAFF_CHANNEL_ID,
     roleId: process.env.EARLY_ROLE_ID,
     entryChannelId: process.env.EARLY_ENTRY_CHANNEL_ID,
     source: 'monsterlab',
@@ -219,7 +218,6 @@ Click the button below to start clipping and earning.`
     viewCap: 7000000,
     panelChannelId:'1521565850505838672',
     panelMessageId:'1523670266213957763',
-    staffChannelId: process.env.CROWDER_STAFF_CHANNEL_ID,
     roleId: process.env.CROWDER_ROLE_ID,
     entryChannelId: process.env.CROWDER_ENTRY_CHANNEL_ID,
     source: 'monsterlab',
@@ -598,65 +596,45 @@ function renderClipStaffContent(clip) {
 }
 
 function buildClipStaffButtons(clip) {
-
     const row = new ActionRowBuilder();
 
     if (clip.status === "pending") {
-
         row.addComponents(
-
             new ButtonBuilder()
                 .setCustomId(`clip_approve:${clip.id}`)
                 .setLabel("Approve")
                 .setEmoji("✅")
                 .setStyle(ButtonStyle.Success),
-
             new ButtonBuilder()
                 .setCustomId(`clip_reject:${clip.id}`)
                 .setLabel("Reject")
                 .setEmoji("❌")
                 .setStyle(ButtonStyle.Danger)
-
         );
-
-    }
-
-    else if (clip.status === "approved") {
-
+    } else if (clip.status === "approved") {
         row.addComponents(
-
             new ButtonBuilder()
                 .setCustomId(`clip_reject:${clip.id}`)
                 .setLabel("Reject")
                 .setEmoji("❌")
                 .setStyle(ButtonStyle.Danger),
-
             new ButtonBuilder()
                 .setCustomId(`update_views:${clip.id}`)
                 .setLabel("Update Views")
                 .setEmoji("📈")
                 .setStyle(ButtonStyle.Primary)
-
         );
-
-    }
-
-    else if (clip.status === "rejected") {
-
+    } else if (clip.status === "rejected") {
         row.addComponents(
-
             new ButtonBuilder()
                 .setCustomId(`restore_clip:${clip.id}`)
                 .setLabel("Restore")
                 .setEmoji("♻️")
                 .setStyle(ButtonStyle.Success)
-
         );
-
     }
 
     return [row];
-
 }
 
 function renderClipStaffContent(clip) {
@@ -2797,21 +2775,38 @@ client.on(Events.MessageCreate, async message => {
 });
 
 async function updateClipStaffMessage(guild, clip) {
-  const campaign = CAMPAIGNS[clip.campaignId];
-  if (!campaign) return;
+    if (!guild || !clip) return;
 
-  const ch = guild.channels.cache.get(campaign.staffChannelId);
-  if (!ch || !clip.staffMessageId) return;
+    const data = loadData();
 
-  try {
-    const msg = await ch.messages.fetch(clip.staffMessageId);
-    await msg.edit({
-      content: renderClipStaffContent(clip),
-      components: buildClipStaffButtons(clip)
-    });
-  } catch (error) {
-    console.log('Could not update clip staff message:', error.message);
-  }
+    // 🟢 DYNAMIC PLATFORM CHANNEL LOOKUP FALLBACK
+    const platformKey = clip.platform.toLowerCase();
+    const channelKey = platformKey.includes('ig') || platformKey.includes('instagram') ? 'instagram'
+                     : platformKey.includes('tiktok') ? 'tiktok'
+                     : platformKey.includes('youtube') || platformKey.includes('yt') ? 'youtube'
+                     : platformKey;
+
+    const campaignStaffMap = data.campaignStaffChannels?.[clip.campaignId];
+    const channelId = clip.staffChannelId 
+                   || campaignStaffMap?.[channelKey] 
+                   || CAMPAIGNS[clip.campaignId]?.staffChannelId;
+
+    if (!channelId || !clip.staffMessageId) return;
+
+    const ch = guild.channels.cache.get(channelId);
+    if (!ch) return;
+
+    try {
+        const msg = await ch.messages.fetch(clip.staffMessageId);
+        if (msg) {
+            await msg.edit({
+                content: renderClipStaffContent(clip),
+                components: buildClipStaffButtons(clip)
+            });
+        }
+    } catch (error) {
+        console.log('Could not update clip staff message:', error.message);
+    }
 }
 
 client.on('guildMemberAdd', async (member) => {
@@ -5027,199 +5022,151 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 
     if (interaction.isModalSubmit() && interaction.customId.startsWith('submit_clip_modal:')) {
-      const [, campaignId, platform] = interaction.customId.split(':');
-      const campaign = CAMPAIGNS[campaignId];
+        const [, campaignId, platform] = interaction.customId.split(':');
+        const campaign = CAMPAIGNS[campaignId];
 
-      if (campaign.status === 'finished') {
-        await interaction.reply({ content: '❌ This campaign has already been closed.', ephemeral: true });
-        return;
-      }
+        if (!campaign) {
+            await interaction.reply({ content: '❌ Campaign not found.', ephemeral: true });
+            return;
+        }
 
-      if (!campaign) {
-        await interaction.reply({ content: '❌ Campaign not found.', ephemeral: true });
-        return;
-      }
+        if (campaign.status === 'finished') {
+            await interaction.reply({ content: '❌ This campaign has already been closed.', ephemeral: true });
+            return;
+        }
 
-      const rawLinks = interaction.fields.getTextInputValue('clip_links');
-      const links = extractLinksFromText(rawLinks);
+        const rawLinks = interaction.fields.getTextInputValue('clip_links');
+        const links = extractLinksFromText(rawLinks);
 
-      if (links.length === 0) {
-        await interaction.reply({ content: '❌ Please paste at least one link.', ephemeral: true });
-        return;
-      } 
+        if (links.length === 0) {
+            await interaction.reply({ content: '❌ Please paste at least one link.', ephemeral: true });
+            return;
+        } 
 
-      if (links.length > 20) {
-        await interaction.reply({ content: '❌ You can submit up to 20 links at once.', ephemeral: true });
-        return;
-      }
+        if (links.length > 20) {
+            await interaction.reply({ content: '❌ You can submit up to 20 links at once.', ephemeral: true });
+            return;
+        }
 
-      const invalidLinks = links.filter(link => !isValidUrl(link));
-      if (invalidLinks.length > 0) {
+        const invalidLinks = links.filter(link => !isValidUrl(link));
+        if (invalidLinks.length > 0) {
+            await interaction.reply({
+                content: `❌ Some links are invalid.\n\nFirst invalid link:\n${invalidLinks[0]}`,
+                ephemeral: true
+            });
+            return;
+        }
+
+        const data = loadData();
+        const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+
+        if (!member) {
+            await interaction.reply({ content: '❌ User not found.', ephemeral: true });
+            return;
+        }
+
+        const userRecord = ensureUser(data, member);
+        const campaignAccount = userRecord.campaignAccounts?.[campaignId]?.[platform];
+    
+        if (!campaignAccount || !campaignAccount.verified) {
+            await interaction.reply({
+                content: `❌ No verified ${formatPlatform(platform)} account found for this campaign.`,
+                ephemeral: true
+            });
+            return;
+        }
+
+        const username = campaignAccount.username;
+        const platformStats = ensureCampaignPlatformStats(userRecord, campaignId, platform, username);
+
+        // 🟢 RESOLVE PLATFORM DYNAMIC STAFF CHANNEL (#ig-clips, #tiktok-clips, #yt-clips)
+        const platformKey = platform.toLowerCase();
+        const channelKey = platformKey.includes('ig') || platformKey.includes('instagram') ? 'instagram'
+                         : platformKey.includes('tiktok') ? 'tiktok'
+                         : platformKey.includes('youtube') || platformKey.includes('yt') ? 'youtube'
+                         : platformKey;
+
+        const campaignStaffMap = data.campaignStaffChannels?.[campaignId];
+        const targetChannelId = campaignStaffMap?.[channelKey] || campaign.staffChannelId;
+        const staffChannel = interaction.guild.channels.cache.get(targetChannelId);
+
+        let submittedCount = 0;
+        let duplicateCount = 0;
+
+        for (const videoUrl of links) {
+            const urlValidation = validateClipSubmission(videoUrl);
+
+            if (!urlValidation.isValid) {
+                duplicateCount++;
+                continue;
+            }
+
+            const clipId = makeClipId();
+            const tempClip = { platform, url: videoUrl.trim() };
+            let initialViews = 0;
+
+            try {
+                initialViews = await fetchClipViews(tempClip);
+            } catch (err) {
+                console.error(`⚠️ Live view fetch failed: ${err.message}`);
+                initialViews = 0; 
+            }
+
+            const clip = {
+                id: clipId,
+                userId: interaction.user.id,
+                campaignId,
+                campaignName: campaign.name,
+                platform,
+                username: campaignAccount.username,
+                videoUrl,
+                status: "pending",             
+                views: 0,                      
+                startingViews: initialViews,   
+                currentViews: initialViews,    
+                submittedAt: new Date().toISOString(),
+                lastChecked: Date.now(),       
+                staffChannelId: staffChannel ? staffChannel.id : null,
+                staffMessageId: null
+            };
+
+            data.clips[clipId] = clip;
+            platformStats.videosPosted++;
+            userRecord.stats.videosPosted++;
+
+            if (staffChannel) {
+                const sent = await staffChannel.send({
+                    content: renderClipStaffContent(clip),
+                    components: buildClipStaffButtons(clip)
+                }).catch(() => null);
+
+                if (sent) {
+                    clip.staffMessageId = sent.id;
+                    data.clips[clipId] = clip;
+                }
+            }
+
+            submittedCount++;
+        }
+
+        saveData(data);
+
+        let responseMessage = `✅ Submitted **${submittedCount}** clip(s).\n\n🟡 Status: Pending Staff Review\n\nYour clip was successfully submitted.`;
+
+        if (duplicateCount > 0) {
+            responseMessage += `\n⚠️ **${duplicateCount}** link(s) were ignored because they were already submitted before.`;
+        }
+
+        if (submittedCount === 0 && duplicateCount > 0) {
+            responseMessage = `❌ Submission failed. All links you provided have already been submitted to the system!`;
+        }
+
         await interaction.reply({
-          content: `❌ Some links are invalid.\n\nFirst invalid link:\n${invalidLinks[0]}`,
-          ephemeral: true
+            content: responseMessage,
+            ephemeral: true
         });
+
         return;
-      }
-
-      const data = loadData();
-      const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
-
-      if (!member) {
-        await interaction.reply({ content: '❌ User not found.', ephemeral: true });
-        return;
-      }
-
-      console.log("Submit user:", interaction.user.id);
-      console.log("Submit username:", interaction.user.username);
-
-      const userRecord = ensureUser(data, member);
-
-      console.log(
-        "Loaded campaignAccounts:",
-        JSON.stringify(userRecord.campaignAccounts, null, 2)
-      );
-
-      console.log(
-          "User loaded:",
-         JSON.stringify(userRecord, null, 2)
-      );
-      
-      console.log("Campaign ID:", campaignId);
-      console.log("Platform:", platform);
-
-      console.log(
-          "Saved accounts:",
-          JSON.stringify(userRecord.campaignAccounts, null, 2)
-      );
-      const campaignAccount = userRecord.campaignAccounts?.[campaignId]?.[platform];
-      
-      if (!campaignAccount || !campaignAccount.verified) {
-        await interaction.reply({
-          content: `❌ No verified ${formatPlatform(platform)} account found for this campaign.`,
-          ephemeral: true
-        });
-        return;
-      }
-
-      const username = campaignAccount.username;
-      const platformStats = ensureCampaignPlatformStats(userRecord, campaignId, platform, username);
-
-      const staffChannel = interaction.guild.channels.cache.get(campaign.staffChannelId);
-      let submittedCount = 0;
-      let duplicateCount = 0; // Tracks if any links in the batch were duplicates
-
-      for (const videoUrl of links) {
-
-          // ----------------------------
-          // EXISTING SYSTEM
-          // ----------------------------
-
-          const urlValidation = validateClipSubmission(videoUrl);
-
-          if (!urlValidation.isValid) {
-
-              duplicateCount++;
-
-              continue;
-
-          }
-
-          const clipId = makeClipId();
-          const tempClip = { platform, url: videoUrl.trim() };
-          let initialViews = 0;
-
-          try {
-              initialViews = await fetchClipViews(tempClip);
-          } catch (err) {
-              console.error(`⚠️ Live view fetch failed: ${err.message}`);
-              initialViews = 0; 
-          }
-
-          const clip = {
-              id: clipId,
-              userId: interaction.user.id,
-              campaignId,
-              campaignName: campaign.name,
-              platform,
-              username: campaignAccount.username,
-              videoUrl,
-              status: "pending",             
-              views: 0,                      
-              startingViews: initialViews,   // 🟢 Fixed typo here
-              currentViews: initialViews,    // 🟢 Fixed typo here
-              submittedAt: new Date().toISOString(),
-              lastChecked: Date.now(),       
-              staffMessageId: null
-          };
-
-          data.clips[clipId] = clip;
-
-          platformStats.videosPosted++;
-
-          userRecord.stats.videosPosted++;
-
-          if (staffChannel) {
-
-              const sent = await staffChannel.send({
-
-                  content: renderClipStaffContent(clip),
-
-                  components: buildClipStaffButtons(clip)
-
-              }).catch(() => null);
-
-              if (sent) {
-
-                  clip.staffMessageId = sent.id;
-
-                  data.clips[clipId] = clip;
-
-              }
-
-          }
-
-          submittedCount++;
-
-      }
-
-      saveData(data);
-
-      // Construct response message
-      let responseMessage =
-        `✅ Submitted **${submittedCount}** clip(s).
-        
-        🟡 Status: Pending Staff Review
-
-        Your clip was successfully submitted.`;
-
-      if (duplicateCount > 0) {
-
-        responseMessage +=
-          `\n⚠️ **${duplicateCount}** link(s) were ignored because they were already submitted before.`;
-
-      }
-
-      // If all submitted links were duplicates
-      if (
-        submittedCount === 0 &&
-        duplicateCount > 0
-      ) {
-
-        responseMessage =
-          `❌ Submission failed. All links you provided have already been submitted to the system!`;
-
-      }
-
-      // Single Discord reply
-      await interaction.reply({
-
-        content: responseMessage,
-
-        ephemeral: true
-      });
-
-      return;
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('campaign_stats:')) {
