@@ -5604,23 +5604,45 @@ client.on(Events.InteractionCreate, async interaction => {
         return interaction.reply({ content: '❌ This clip is already approved.', ephemeral: true });
       }
 
-      // Transition the clip status to approved
+      // 🟢 1. Safely calculate campaign cycle with fallbacks
+      const campaign = CAMPAIGNS[clip.campaignId];
+      const startDate = campaign?.startDate || new Date().toISOString();
+      
+      try {
+        clip.cycle = typeof getCampaignCycle === 'function' ? getCampaignCycle(startDate) : 1;
+      } catch (err) {
+        console.error(`⚠️ Failed to calculate cycle for clip ${clipId}:`, err.message);
+        clip.cycle = 1; // Fallback cycle value
+      }
+
+      // 🟢 2. Retroactively backfill missing staffChannelId for legacy clips
+      if (!clip.staffChannelId) {
+        clip.staffChannelId = interaction.channelId;
+      }
+
+      // 🟢 3. Backfill staffMessageId if missing from button message
+      if (!clip.staffMessageId && interaction.message) {
+        clip.staffMessageId = interaction.message.id;
+      }
+
+      // Transition clip state
       clip.status = 'approved';
-      clip.cycle = getCampaignCycle(CAMPAIGNS[clip.campaignId].startDate);
       clip.approvedAt = Date.now();
 
       data.clips[clipId] = clip;
       saveData(data);
 
-      const guild = client.guilds.cache.get(process.env.GUILD_ID);
-      if (guild) {
-          updateServerStats(guild);
+      // Trigger background stats recalculation
+      const guild = client.guilds.cache.get(process.env.GUILD_ID) || interaction.guild;
+      if (guild && typeof updateServerStats === 'function') {
+          updateServerStats(guild).catch(err => console.error("⚠️ Server stats update error:", err.message));
       }
 
+      // Re-render the staff message in the channel (swaps buttons to Reject + Update Views)
       await updateClipStaffMessage(interaction.guild, clip);
 
       await interaction.reply({
-        content: `✅ Clip structural verification approved. Auto-tracking continue smoothly from its live background loop baseline.`,
+        content: `✅ Clip structural verification approved. Auto-tracking continuing smoothly from its live background loop baseline.`,
         ephemeral: true
       });
       return;
