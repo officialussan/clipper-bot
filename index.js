@@ -360,6 +360,9 @@ function makeApplicationId() {
 
 function getCampaignCycle(campaign, date = new Date()) {
 
+    // Always convert to a Date object
+    date = new Date(date);
+
     if (campaign.campaignMode === "monthly") {
 
         const start = new Date(campaign.startDate);
@@ -372,8 +375,7 @@ function getCampaignCycle(campaign, date = new Date()) {
 
     }
 
-    // Existing code ↓↓↓
-
+    // Weekly campaigns
     const start = new Date(campaign.startDate);
 
     const diffWeeks = Math.floor(
