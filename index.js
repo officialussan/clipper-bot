@@ -216,6 +216,7 @@ Click the button below to start clipping and earning.`
     earningCycle: "monthly",
     ratePerMillion: 300,
     viewCap: 7000000,
+    staffChannelId:CROEDER_STAFF_CHANNEL_ID,
     panelChannelId:'1521565850505838672',
     panelMessageId:'1523670266213957763',
     roleId: process.env.CROWDER_ROLE_ID,
