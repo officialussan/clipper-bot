@@ -6527,6 +6527,112 @@ client.once('ready', async () => {
 });
 
 client.on('messageCreate', async message => {
+    if (message.author.bot || !message.guild) return;
+
+    if (!message.content.startsWith('!deletecampaignaccount')) return;
+
+    // Check for staff / admin permission
+    if (!isAdmin(message.member)) {
+        return message.reply("❌ You are not allowed to use staff commands.");
+    }
+
+    const args = message.content.split(' ').filter(Boolean);
+
+    if (args.length < 4) {
+        return message.reply(
+            "❌ **Usage:** `!deletecampaignaccount <@user> <campaign_id> <platform>`\n" +
+            "**Example:** `!deletecampaignaccount @Ussan elephant youtube`"
+        );
+    }
+
+    // 1. Fetch Target Member
+    const targetMember = message.mentions.members.first() || 
+                         await message.guild.members.fetch(args[1].replace(/[<@!>]/g, '')).catch(() => null);
+
+    if (!targetMember) {
+        return message.reply("❌ User not found in this server.");
+    }
+
+    const userId = targetMember.id;
+    const campaignId = args[2].toLowerCase();
+    const platformRaw = args[3].toLowerCase();
+
+    // Standardize platform key
+    const platformKey = platformRaw.includes('ig') || platformRaw.includes('instagram') ? 'instagram'
+                     : platformRaw.includes('tiktok') ? 'tiktok'
+                     : platformRaw.includes('youtube') || platformRaw.includes('yt') ? 'youtube'
+                     : platformRaw;
+
+    const data = loadData();
+    let accountRemoved = false;
+    let pendingRequestRemoved = false;
+
+    // 2. 🗑️ DELETE VERIFIED SAVED ACCOUNT
+    const userRecord = data.users?.[userId];
+    if (userRecord?.campaignAccounts?.[campaignId]?.[platformKey]) {
+        delete userRecord.campaignAccounts[campaignId][platformKey];
+        accountRemoved = true;
+
+        if (Object.keys(userRecord.campaignAccounts[campaignId]).length === 0) {
+            delete userRecord.campaignAccounts[campaignId];
+        }
+    }
+
+    // 3. 🗑️ DELETE PENDING / ACTIVE REQUESTS + UPDATE/DELETE STAFF MESSAGES
+    if (data.campaignAccountRequests) {
+        for (const reqId in data.campaignAccountRequests) {
+            const req = data.campaignAccountRequests[reqId];
+            if (req.userId === userId && 
+                req.campaignId === campaignId && 
+                req.platform.toLowerCase() === platformKey) {
+
+                // Optional: Delete or clear staff message in link-accounts
+                if (req.staffChannelId && req.staffMessageId) {
+                    try {
+                        const channel = await message.guild.channels.fetch(req.staffChannelId).catch(() => null);
+                        if (channel) {
+                            const msg = await channel.messages.fetch(req.staffMessageId).catch(() => null);
+                            if (msg) await msg.delete().catch(() => {});
+                        }
+                    } catch (err) {
+                        console.error("⚠️ Error cleaning up staff message:", err.message);
+                    }
+                }
+
+                delete data.campaignAccountRequests[reqId];
+                pendingRequestRemoved = true;
+            }
+        }
+    }
+
+    // Check if anything was actually deleted
+    if (!accountRemoved && !pendingRequestRemoved) {
+        return message.reply(
+            `❌ No active account or pending verification request found for <@${userId}> under campaign \`${campaignId}\` on **${formatPlatform(platformKey)}**.`
+        );
+    }
+
+    // 4. Save Database Changes
+    saveData(data);
+
+    // 5. Send Confirmation Response
+    let statusText = [];
+    if (accountRemoved) statusText.push("• Verified Account Record Deleted");
+    if (pendingRequestRemoved) statusText.push("• Pending Verification Request Cleared & Message Removed");
+
+    return message.reply(
+        `✅ **Account Data Purged Successfully!**\n\n` +
+        `• **User:** <@${userId}>\n` +
+        `• **Campaign:** \`${campaignId}\`\n` +
+        `• **Platform:** ${formatPlatform(platformKey)}\n` +
+        `${statusText.join('\n')}\n\n` +
+        `*The user is now completely reset and can re-link from scratch.*`
+    );
+});
+
+
+
+client.on('messageCreate', async message => {
     if (message.author.bot || !message.content.startsWith('!fixlegacychannels')) return;
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return;
 
