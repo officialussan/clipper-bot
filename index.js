@@ -6526,36 +6526,104 @@ client.once('ready', async () => {
     }
 });
 
+// ==========================================
+// 1. SELECT & DELETE PENDING ACCOUNTS
+// Command: !pendingaccounts
+// ==========================================
 client.on('messageCreate', async message => {
     if (message.author.bot || !message.guild) return;
+    if (!message.content.startsWith('!pendingaccounts')) return;
 
-    if (!message.content.startsWith('!deletecampaignaccount')) return;
-
-    // Check for staff / admin permission
     if (!isAdmin(message.member)) {
-        return message.reply("❌ You are not allowed to use staff commands.");
+        return message.reply("❌ You do not have permission to use staff commands.");
+    }
+
+    const data = loadData();
+    const requests = Object.values(data.campaignAccountRequests || {});
+
+    // Filter only pending/waiting requests
+    const pendingList = requests.filter(r => r.status === 'pending' || r.status === 'waiting_confirm' || r.status === 'ready_for_review');
+
+    if (pendingList.length === 0) {
+        return message.reply("✅ There are currently no pending account verification requests.");
+    }
+
+    // Build select menu options (Limit max 25 options for Discord API limits)
+    const options = pendingList.slice(0, 25).map(req => ({
+        label: `@${req.username} (${formatPlatform(req.platform)})`,
+        value: req.id,
+        description: `User: <@${req.userId}> | Campaign: ${req.campaignName || req.campaignId}`,
+        emoji: '⏳'
+    }));
+
+    const selectMenu = new StringSelectMenuBuilder()
+        .setCustomId('staff_delete_pending_select')
+        .setPlaceholder('Select a pending request to delete...')
+        .addOptions(options);
+
+    const row = new ActionRowBuilder().addComponents(selectMenu);
+
+    return message.reply({
+        content: `📋 **Pending Account Requests (${pendingList.length})**\nSelect a request from the dropdown below to delete it:`,
+        components: [row]
+    });
+});
+
+// Handle pending request deletion selection
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isStringSelectMenu() || interaction.customId !== 'staff_delete_pending_select') return;
+
+    if (!isAdmin(interaction.member)) {
+        return interaction.reply({ content: '❌ You are not allowed to do this.', ephemeral: true });
+    }
+
+    const requestId = interaction.values[0];
+    const data = loadData();
+    const request = data.campaignAccountRequests?.[requestId];
+
+    if (!request) {
+        return interaction.reply({ content: '❌ Selected request was not found or already deleted.', ephemeral: true });
+    }
+
+    // Clean up staff review message if it exists
+    if (request.staffChannelId && request.staffMessageId) {
+        const channel = await interaction.guild.channels.fetch(request.staffChannelId).catch(() => null);
+        if (channel) {
+            const msg = await channel.messages.fetch(request.staffMessageId).catch(() => null);
+            if (msg) await msg.delete().catch(() => {});
+        }
+    }
+
+    // Remove from database
+    delete data.campaignAccountRequests[requestId];
+    saveData(data);
+
+    return interaction.reply({
+        content: `✅ Successfully deleted pending request for **@${request.username}** (<@${request.userId}>) on **${formatPlatform(request.platform)}**.`,
+        ephemeral: true
+    });
+});
+
+// ==========================================
+// 2. SELECT & DELETE LINKED ACCOUNTS BY CAMPAIGN + PLATFORM
+// Command: !listaccounts <campaignID> <platform>
+// Example: !listaccounts elephant youtube
+// ==========================================
+client.on('messageCreate', async message => {
+    if (message.author.bot || !message.guild) return;
+    if (!message.content.startsWith('!listaccounts')) return;
+
+    if (!isAdmin(message.member)) {
+        return message.reply("❌ You do not have permission to use staff commands.");
     }
 
     const args = message.content.split(' ').filter(Boolean);
-
-    if (args.length < 4) {
-        return message.reply(
-            "❌ **Usage:** `!deletecampaignaccount <@user> <campaign_id> <platform>`\n" +
-            "**Example:** `!deletecampaignaccount @Ussan elephant youtube`"
-        );
+    if (args.length < 3) {
+        return message.reply("❌ **Usage:** `!listaccounts <campaignID> <platform>`\n**Example:** `!listaccounts elephant youtube`");
     }
 
-    // 1. Fetch Target Member
-    const targetMember = message.mentions.members.first() || 
-                         await message.guild.members.fetch(args[1].replace(/[<@!>]/g, '')).catch(() => null);
-
-    if (!targetMember) {
-        return message.reply("❌ User not found in this server.");
-    }
-
-    const userId = targetMember.id;
-    const campaignId = args[2].toLowerCase();
-    const platformRaw = args[3].toLowerCase();
+    const campaignId = args[1].toLowerCase();
+    const platformRaw = args[2].toLowerCase();
 
     // Standardize platform key
     const platformKey = platformRaw.includes('ig') || platformRaw.includes('instagram') ? 'instagram'
@@ -6564,73 +6632,79 @@ client.on('messageCreate', async message => {
                      : platformRaw;
 
     const data = loadData();
-    let accountRemoved = false;
-    let pendingRequestRemoved = false;
+    const matches = [];
 
-    // 2. 🗑️ DELETE VERIFIED SAVED ACCOUNT
-    const userRecord = data.users?.[userId];
-    if (userRecord?.campaignAccounts?.[campaignId]?.[platformKey]) {
-        delete userRecord.campaignAccounts[campaignId][platformKey];
-        accountRemoved = true;
+    // Search users for matching linked accounts
+    for (const userId in data.users) {
+        const userObj = data.users[userId];
+        const account = userObj.campaignAccounts?.[campaignId]?.[platformKey];
 
-        if (Object.keys(userRecord.campaignAccounts[campaignId]).length === 0) {
-            delete userRecord.campaignAccounts[campaignId];
+        if (account) {
+            matches.push({
+                userId,
+                username: account.username,
+                campaignId,
+                platform: platformKey
+            });
         }
     }
 
-    // 3. 🗑️ DELETE PENDING / ACTIVE REQUESTS + UPDATE/DELETE STAFF MESSAGES
-    if (data.campaignAccountRequests) {
-        for (const reqId in data.campaignAccountRequests) {
-            const req = data.campaignAccountRequests[reqId];
-            if (req.userId === userId && 
-                req.campaignId === campaignId && 
-                req.platform.toLowerCase() === platformKey) {
-
-                // Optional: Delete or clear staff message in link-accounts
-                if (req.staffChannelId && req.staffMessageId) {
-                    try {
-                        const channel = await message.guild.channels.fetch(req.staffChannelId).catch(() => null);
-                        if (channel) {
-                            const msg = await channel.messages.fetch(req.staffMessageId).catch(() => null);
-                            if (msg) await msg.delete().catch(() => {});
-                        }
-                    } catch (err) {
-                        console.error("⚠️ Error cleaning up staff message:", err.message);
-                    }
-                }
-
-                delete data.campaignAccountRequests[reqId];
-                pendingRequestRemoved = true;
-            }
-        }
+    if (matches.length === 0) {
+        return message.reply(`❌ No verified accounts found for campaign \`${campaignId}\` on **${formatPlatform(platformKey)}**.`);
     }
 
-    // Check if anything was actually deleted
-    if (!accountRemoved && !pendingRequestRemoved) {
-        return message.reply(
-            `❌ No active account or pending verification request found for <@${userId}> under campaign \`${campaignId}\` on **${formatPlatform(platformKey)}**.`
-        );
-    }
+    // Build select menu options (Max 25 items)
+    const options = matches.slice(0, 25).map(item => ({
+        label: `@${item.username}`,
+        value: `${item.userId}:${item.campaignId}:${item.platform}`,
+        description: `User ID: ${item.userId}`,
+        emoji: '👤'
+    }));
 
-    // 4. Save Database Changes
-    saveData(data);
+    const selectMenu = new StringSelectMenuBuilder()
+        .setCustomId('staff_delete_account_select')
+        .setPlaceholder(`Select a ${formatPlatform(platformKey)} account to remove...`)
+        .addOptions(options);
 
-    // 5. Send Confirmation Response
-    let statusText = [];
-    if (accountRemoved) statusText.push("• Verified Account Record Deleted");
-    if (pendingRequestRemoved) statusText.push("• Pending Verification Request Cleared & Message Removed");
+    const row = new ActionRowBuilder().addComponents(selectMenu);
 
-    return message.reply(
-        `✅ **Account Data Purged Successfully!**\n\n` +
-        `• **User:** <@${userId}>\n` +
-        `• **Campaign:** \`${campaignId}\`\n` +
-        `• **Platform:** ${formatPlatform(platformKey)}\n` +
-        `${statusText.join('\n')}\n\n` +
-        `*The user is now completely reset and can re-link from scratch.*`
-    );
+    return message.reply({
+        content: `🔍 **Verified Accounts for \`${campaignId}\` (${formatPlatform(platformKey)})** — Found ${matches.length}:\nSelect an account from the dropdown below to delete it:`,
+        components: [row]
+    });
 });
 
+// Handle account deletion selection
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isStringSelectMenu() || interaction.customId !== 'staff_delete_account_select') return;
 
+    if (!isAdmin(interaction.member)) {
+        return interaction.reply({ content: '❌ You are not allowed to do this.', ephemeral: true });
+    }
+
+    const [userId, campaignId, platform] = interaction.values[0].split(':');
+    const data = loadData();
+    const userRecord = data.users?.[userId];
+
+    if (!userRecord || !userRecord.campaignAccounts?.[campaignId]?.[platform]) {
+        return interaction.reply({ content: '❌ Selected account was not found in database.', ephemeral: true });
+    }
+
+    const username = userRecord.campaignAccounts[campaignId][platform].username;
+
+    // Remove entry
+    delete userRecord.campaignAccounts[campaignId][platform];
+    if (Object.keys(userRecord.campaignAccounts[campaignId]).length === 0) {
+        delete userRecord.campaignAccounts[campaignId];
+    }
+
+    saveData(data);
+
+    return interaction.reply({
+        content: `✅ Successfully removed **@${username}** (<@${userId}>) from campaign \`${campaignId}\` on **${formatPlatform(platform)}**.`,
+        ephemeral: true
+    });
+});
 
 client.on('messageCreate', async message => {
     if (message.author.bot || !message.content.startsWith('!fixlegacychannels')) return;
