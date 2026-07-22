@@ -1718,7 +1718,7 @@ async function updateCampaignAccountStaffMessage(guild, request) {
 
   const data = loadData();
 
-  // 1. Resolve channel ID dynamically from request or data.json
+  // 🟢 4-TIER FALLBACK CHANNEL RESOLUTION
   const campaignStaffMap = data.campaignStaffChannels?.[request.campaignId];
   const channelId = request.staffChannelId 
                  || campaignStaffMap?.linkAccount 
@@ -1729,6 +1729,9 @@ async function updateCampaignAccountStaffMessage(guild, request) {
     console.log(`⚠️ Missing channelId (${channelId}) or staffMessageId (${request.staffMessageId}) for request ${request.id}`);
     return;
   }
+
+  // Backfill missing staffChannelId into request so future checks find it instantly
+  request.staffChannelId = channelId;
 
   const ch = guild.channels.cache.get(channelId);
   if (!ch) {
@@ -1743,7 +1746,7 @@ async function updateCampaignAccountStaffMessage(guild, request) {
         content: renderCampaignAccountStaffContent(request),
         components: buildCampaignAccountStaffButtons(request.id, request.status)
       });
-      console.log(`✅ Updated staff message for request ${request.id} (Status: ${request.status})`);
+      console.log(`✅ Successfully updated staff message for request ${request.id}`);
     }
   } catch (error) {
     console.log('Could not update campaign account staff message:', error.message);
@@ -2781,22 +2784,34 @@ async function updateClipStaffMessage(guild, clip) {
 
     const data = loadData();
 
-    // 🟢 DYNAMIC PLATFORM CHANNEL LOOKUP FALLBACK
-    const platformKey = clip.platform.toLowerCase();
+    // Determine platform key for lookup
+    const platformKey = (clip.platform || '').toLowerCase();
     const channelKey = platformKey.includes('ig') || platformKey.includes('instagram') ? 'instagram'
                      : platformKey.includes('tiktok') ? 'tiktok'
                      : platformKey.includes('youtube') || platformKey.includes('yt') ? 'youtube'
                      : platformKey;
 
     const campaignStaffMap = data.campaignStaffChannels?.[clip.campaignId];
+
+    // 🟢 4-TIER FALLBACK CHANNEL RESOLUTION
     const channelId = clip.staffChannelId 
                    || campaignStaffMap?.[channelKey] 
+                   || CAMPAIGNS[clip.campaignId]?.staffChannels?.[channelKey]
                    || CAMPAIGNS[clip.campaignId]?.staffChannelId;
 
-    if (!channelId || !clip.staffMessageId) return;
+    if (!channelId || !clip.staffMessageId) {
+        console.log(`⚠️ Missing channelId (${channelId}) or staffMessageId (${clip.staffMessageId}) for clip ${clip.id}`);
+        return;
+    }
+
+    // Backfill missing staffChannelId into clip record
+    clip.staffChannelId = channelId;
 
     const ch = guild.channels.cache.get(channelId);
-    if (!ch) return;
+    if (!ch) {
+        console.log(`⚠️ Could not locate staff channel ID ${channelId} in guild cache for clip ${clip.id}`);
+        return;
+    }
 
     try {
         const msg = await ch.messages.fetch(clip.staffMessageId);
@@ -2805,6 +2820,7 @@ async function updateClipStaffMessage(guild, clip) {
                 content: renderClipStaffContent(clip),
                 components: buildClipStaffButtons(clip)
             });
+            console.log(`✅ Updated staff message for clip ${clip.id}`);
         }
     } catch (error) {
         console.log('Could not update clip staff message:', error.message);
@@ -5122,10 +5138,11 @@ client.on(Events.InteractionCreate, async interaction => {
                 platform,
                 username: campaignAccount.username,
                 videoUrl,
-                status: "pending",             
-                views: 0,                      
+                status: "pending",                                  
                 startingViews: initialViews,   
-                currentViews: initialViews,    
+                currentViews: initialViews, 
+                weeklyViews: 0,
+                monthlyViews:0,   
                 submittedAt: new Date().toISOString(),
                 lastChecked: Date.now(),       
                 staffChannelId: staffChannel ? staffChannel.id : null,
@@ -6507,6 +6524,44 @@ client.once('ready', async () => {
     } else {
         console.error(`❌ Bot could not locate or access server with matching ID: ${targetGuildId}`);
     }
+});
+
+client.on('messageCreate', async message => {
+    if (message.author.bot || !message.content.startsWith('!fixlegacychannels')) return;
+    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return;
+
+    const data = loadData();
+    let updatedAccounts = 0;
+    let updatedClips = 0;
+
+    // Fix legacy Account Requests
+    for (const reqId in data.campaignAccountRequests) {
+        const req = data.campaignAccountRequests[reqId];
+        if (!req.staffChannelId) {
+            const campaignStaffMap = data.campaignStaffChannels?.[req.campaignId];
+            req.staffChannelId = campaignStaffMap?.linkAccount || CAMPAIGNS[req.campaignId]?.staffChannelId || null;
+            updatedAccounts++;
+        }
+    }
+
+    // Fix legacy Clips
+    for (const clipId in data.clips) {
+        const clip = data.clips[clipId];
+        if (!clip.staffChannelId) {
+            const platformKey = (clip.platform || '').toLowerCase();
+            const channelKey = platformKey.includes('ig') || platformKey.includes('instagram') ? 'instagram'
+                             : platformKey.includes('tiktok') ? 'tiktok'
+                             : platformKey.includes('youtube') || platformKey.includes('yt') ? 'youtube'
+                             : platformKey;
+
+            const campaignStaffMap = data.campaignStaffChannels?.[clip.campaignId];
+            clip.staffChannelId = campaignStaffMap?.[channelKey] || CAMPAIGNS[clip.campaignId]?.staffChannelId || null;
+            updatedClips++;
+        }
+    }
+
+    saveData(data);
+    await message.reply(`✅ Migration complete! Backfilled channel IDs for **${updatedAccounts}** account requests and **${updatedClips}** clips.`);
 });
 
 client.on('messageCreate', async message => {
