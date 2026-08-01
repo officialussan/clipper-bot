@@ -455,9 +455,32 @@ async function sendPayoutCard(guild, campaignId, userId) {
 
     if(unpaidViews <= 0) return;
 
+    const payoutId = `${campaignId}_${userId}`;
+
+    if (
+        data.payoutRequests?.[payoutId] &&
+        data.payoutRequests[payoutId].status === "pending"
+    ) {
+        return;
+    }
+
     const unpaidMoney =
         unpaidViews / 1000000 *
         campaign.ratePerMillion;
+
+    if (!data.payoutRequests) data.payoutRequests = {};
+
+    data.payoutRequests[payoutId] = {
+        id: payoutId,
+        campaignId,
+        userId,
+        unpaidViews,
+        unpaidMoney,
+        status: "pending",
+        createdAt: Date.now()
+    };
+
+    saveData(data);
 
     const embed = new EmbedBuilder()
 
@@ -486,7 +509,7 @@ Amount
 
             new ButtonBuilder()
 
-                .setCustomId(`pay:${campaignId}:${userId}`)
+                .setCustomId(`pay:${payoutId}`)
 
                 .setLabel("Mark Paid")
 
@@ -494,7 +517,7 @@ Amount
 
             new ButtonBuilder()
 
-                .setCustomId(`issue:${campaignId}:${userId}`)
+                .setCustomId(`issue:${payoutId}`)
 
                 .setLabel("Issue")
 
@@ -506,6 +529,11 @@ Amount
         embeds:[embed],
         components:[row]
     });
+
+    data.payoutRequests[payoutId].messageId = msg.id;
+    data.payoutRequests[payoutId].channelId = channel.id;
+
+    saveData(data);
 
 }
 
@@ -2252,22 +2280,12 @@ if (guild) {
 
                 },0);
 
-            if(unpaidViews>=campaign.payoutThreshold){
-
-                data.payoutRequests[payoutId] = {
-                    campaignId,
-                    userId,
-                    status: "pending"
-                };
+            if (unpaidViews >= campaign.payoutThreshold) {
 
                 await sendPayoutCard(
-
                     guild,
-
                     campaignId,
-
                     userId
-
                 );
 
             }
