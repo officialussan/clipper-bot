@@ -921,6 +921,68 @@ async function sendStaffPayoutDashboard(guild, userId) {
   }
 }
 
+async function backfillPayoutCards() {
+
+    const data = loadData();
+    const guild = client.guilds.cache.first();
+
+    if (!guild) return;
+
+    for (const campaignId of Object.keys(CAMPAIGNS)) {
+
+        const campaign = CAMPAIGNS[campaignId];
+
+        const users = [
+            ...new Set(
+                Object.values(data.clips)
+                    .filter(c =>
+                        c.campaignId === campaignId &&
+                        c.status === "approved"
+                    )
+                    .map(c => c.userId)
+            )
+        ];
+
+        for (const userId of users) {
+
+            const clips = Object.values(data.clips).filter(c =>
+                c.campaignId === campaignId &&
+                c.userId === userId &&
+                c.status === "approved"
+            );
+
+            const unpaidViews = clips.reduce((sum, clip) => {
+
+                const paidViews = clip.payout?.paidViews || 0;
+
+                return sum + Math.max(clip.views - paidViews, 0);
+
+            }, 0);
+
+            if (unpaidViews < campaign.payoutThreshold)
+                continue;
+
+            // Don't create duplicates
+            const alreadyExists = Object.values(data.payoutRequests || {}).some(r =>
+                r.userId === userId &&
+                r.campaignId === campaignId &&
+                r.status === "pending"
+            );
+
+            if (alreadyExists)
+                continue;
+
+            await sendPayoutCard(
+                guild,
+                campaignId,
+                userId
+            );
+        }
+    }
+
+    console.log("✅ Existing payout cards generated.");
+}
+
 async function updateStaffMessage(guild, app) {
   const ch = guild.channels.cache.get(app.staffChannelId);
   if (!ch) return;
@@ -2342,6 +2404,8 @@ client.once(Events.ClientReady, async () => {
     console.log(`Online as ${client.user.tag}`);
 
     await migratePayoutSystem();
+
+    await backfillPayoutCards();
 
     autoTrackClipViews();
     setInterval(autoTrackClipViews, 30 * 60 * 1000);

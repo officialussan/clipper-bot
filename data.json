@@ -88,6 +88,34 @@
       },
       "campaignAccounts": {},
       "campaignStats": {}
+    },
+    "1516030505710129312": {
+      "discordId": "1516030505710129312",
+      "username": "skipper701166",
+      "discordUsername": "skipper701166",
+      "displayName": "Skipper",
+      "tag": "skipper701166",
+      "avatar": "https://cdn.discordapp.com/avatars/1516030505710129312/f7f2e9361e8a54ce6e72580ac7b967af.webp",
+      "stats": {
+        "totalViews": 0,
+        "moneyMade": 0
+      },
+      "campaigns": [],
+      "campaignAccounts": {}
+    },
+    "1522218555356086313": {
+      "discordId": "1522218555356086313",
+      "username": "spioler_001",
+      "discordUsername": "spioler_001",
+      "displayName": "Spoiler_001",
+      "tag": "spioler_001",
+      "avatar": "https://cdn.discordapp.com/embed/avatars/4.png",
+      "stats": {
+        "totalViews": 0,
+        "moneyMade": 0
+      },
+      "campaigns": [],
+      "campaignAccounts": {}
     }
   },
   "applications": {
