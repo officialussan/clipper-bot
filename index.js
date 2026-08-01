@@ -21,6 +21,8 @@ const {
 
 const { MongoClient } = require('mongodb');
 
+const cron = require("node-cron");
+
 const express = require('express');
 const axios = require('axios');
 
@@ -283,6 +285,21 @@ function loadData() {
   if (!raw.clips) raw.clips = {};
   if (!raw.campaignStatus) raw.campaignStatus = {};
 
+  for (const clip of Object.values(raw.clips || {})) {
+
+      if (!clip.payout) {
+
+          clip.payout = {
+              totalPaidViews: 0,
+              totalPaidAmount: 0,
+              lastPaidAt: null,
+              history: []
+          };
+
+      }
+
+  }
+
   return raw;
 }
 
@@ -358,10 +375,147 @@ function makeApplicationId() {
   return `app_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 }
 
+function getUserPayoutSummary(data, userId, campaignId) {
+
+    const clips = Object.values(data.clips || {})
+        .filter(c =>
+            c.userId === userId &&
+            c.campaignId === campaignId &&
+            c.status === "approved"
+        );
+
+    const totalViews =
+        clips.reduce(
+            (s,c)=>s+(c.views||0),
+            0
+        );
+
+    const unpaidViews =
+        clips.reduce(
+            (s,c)=>s+(c.unpaidViews||0),
+            0
+        );
+
+    const totalMoney =
+        clips.reduce(
+            (s,c)=>s+(c.totalMoneyMade||0),
+            0
+        );
+
+    const unpaidMoney =
+        clips.reduce(
+            (s,c)=>s+(c.unpaidMoney||0),
+            0
+        );
+
+    return {
+
+        totalViews,
+
+        unpaidViews,
+
+        totalMoney,
+
+        unpaidMoney,
+
+        clips
+
+    };
+
+}
+
+async function sendPayoutCard(guild, campaignId, userId) {
+
+    const data = loadData();
+
+    const campaign = CAMPAIGNS[campaignId];
+    if (!campaign) return;
+
+    const payoutChannelId =
+        data.campaignStaffChannels?.[campaignId]?.payouts;
+
+    if (!payoutChannelId) return;
+
+    const channel = guild.channels.cache.get(payoutChannelId);
+    if (!channel) return;
+
+    const approvedClips = Object.values(data.clips || {}).filter(c =>
+        c.userId === userId &&
+        c.campaignId === campaignId &&
+        c.status === "approved"
+    );
+
+    const unpaidViews = approvedClips.reduce((sum, clip) => {
+
+        const paidViews = clip.payout?.paidViews || 0;
+
+        return sum + Math.max((clip.views || 0) - paidViews,0);
+
+    },0);
+
+    if(unpaidViews <= 0) return;
+
+    const unpaidMoney =
+        unpaidViews / 1000000 *
+        campaign.ratePerMillion;
+
+    const embed = new EmbedBuilder()
+
+        .setColor(0x00AE86)
+
+        .setTitle("💰 Creator Ready For Payment")
+
+        .setDescription(
+
+`👤 <@${userId}>
+
+Campaign
+**${campaign.name}**
+
+Unpaid Views
+**${formatNumber(unpaidViews)}**
+
+Amount
+**$${unpaidMoney.toFixed(2)}**`
+
+);
+
+    const row = new ActionRowBuilder()
+
+        .addComponents(
+
+            new ButtonBuilder()
+
+                .setCustomId(`pay:${campaignId}:${userId}`)
+
+                .setLabel("Mark Paid")
+
+                .setStyle(ButtonStyle.Success),
+
+            new ButtonBuilder()
+
+                .setCustomId(`issue:${campaignId}:${userId}`)
+
+                .setLabel("Issue")
+
+                .setStyle(ButtonStyle.Danger)
+
+        );
+
+    await channel.send({
+        embeds:[embed],
+        components:[row]
+    });
+
+}
+
 function getCampaignCycle(campaign, date = new Date()) {
 
-    // Always convert to a Date object
     date = new Date(date);
+
+    if (isNaN(date.getTime())) {
+        date = new Date();
+    }
 
     if (campaign.campaignMode === "monthly") {
 
@@ -375,7 +529,6 @@ function getCampaignCycle(campaign, date = new Date()) {
 
     }
 
-    // Weekly campaigns
     const start = new Date(campaign.startDate);
 
     const diffWeeks = Math.floor(
@@ -400,6 +553,20 @@ function getStatusLabel(status) {
     approved: 'Approved',
     rejected: 'Rejected'
   }[status] || status;
+}
+
+function resetWeeklyCampaignStats() {
+    const data = loadData();
+
+    for (const clip of Object.values(data.clips || {})) {
+        clip.weeklyBaselineViews = clip.currentViews || clip.views || 0;
+        clip.weeklyViews = 0;
+        clip.weeklyMoneyMade = 0;
+    }
+
+    saveData(data);
+
+    console.log("✅ Weekly campaign stats reset.");
 }
 
 async function sendAccountForStaffReview(guild, campaignId, accountData) {
@@ -593,7 +760,7 @@ function renderClipStaffContent(clip) {
     `**Link:** ${clip.videoUrl || clip.url}\n` +
     `**Status:** ${clip.status}\n` +
     `${clip.views ? `**Views:** ${formatNumber(clip.views)}\n` : ''}` +
-    `${clip.moneyMade ? `**Payout:** $${formatNumber(clip.moneyMade)}\n` : ''}`
+    `${clip.totalMoneyMade ? `**Payout:** $${formatNumber(clip.totalMoneyMade)}\n` : ''}`
   );
 }
 
@@ -648,7 +815,7 @@ function renderClipStaffContent(clip) {
 **Username:** @${clip.username}
 **Link:** ${clip.videoUrl}
 **Status:** ${clip.status}
-${clip.views ? `**Views:** ${formatNumber(clip.views)}\n` : ''}${clip.moneyMade ? `**Payout:** $${clip.moneyMade}\n` : ''}`;
+${clip.views ? `**Views:** ${formatNumber(clip.views)}\n` : ''}${clip.totalMoneyMade ? `**Payout:** $${clip.totalMoneyMade}\n` : ''}`;
 }
 
 function buildStaffButtons(id, status) {
@@ -711,7 +878,7 @@ async function sendStaffPayoutDashboard(guild, userId) {
     clip => clip.userId === userId && clip.status === 'approved'
   );
   
-  const liveTotalEarned = approvedClips.reduce((sum, clip) => sum + (Number(clip.moneyMade) || 0), 0);
+  const liveTotalEarned = approvedClips.reduce((sum, clip) => sum + (Number(clip.totalMoneyMade) || 0), 0);
   if (liveTotalEarned <= 0) return; // Skip if they haven't earned anything yet
 
   let paymentLabel = 'No ID Provided';
@@ -793,7 +960,7 @@ function getLeaderboardUsers(data) {
       );
 
       const moneyMade = userClips.reduce(
-        (sum, clip) => sum + (Number(clip.moneyMade) || 0),
+        (sum, clip) => sum + (Number(clip.totalMoneyMade) || 0),
         0
       );
 
@@ -981,8 +1148,8 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
   const pendingClips = userClips.filter(c => String(c.status).toLowerCase() === "pending");
   const rejectedClips = userClips.filter(c => String(c.status).toLowerCase() === "rejected");
 
-  const totalViews = approvedClips.reduce((sum, c) => sum + (Number(c.views) || 0), 0);
-  const moneyMade = approvedClips.reduce((sum, c) => sum + (Number(c.moneyMade) || 0), 0);
+  const totalViews = approvedClips.reduce((sum, c) => sum + (Number(c.weeklyViews) || 0), 0);
+  const moneyMade = approvedClips.reduce((sum, c) => sum + (Number(c.weeklyMoneyMade) || 0), 0);
 
   const viewsNeeded = Math.max(payoutThreshold - totalViews, 0);
 
@@ -1182,13 +1349,13 @@ function getCampaignTotals(data, campaignId) {
   const videos = clips.length;
 
   const views = clips.reduce(
-    (sum, clip) => sum + (Number(clip.views) || 0),
-    0
+      (sum, clip) => sum + (Number(clip.weeklyViews) || 0),
+      0
   );
 
   const payout = clips.reduce(
-    (sum, clip) => sum + (Number(clip.moneyMade) || 0),
-    0
+      (sum, clip) => sum + (Number(clip.weeklyMoneyMade) || 0),
+      0
   );
 
   return { users, videos, views, payout };
@@ -1350,6 +1517,30 @@ async function sendTicketLog(guild, {
     );
 
   await logChannel.send({ embeds: [embed] }).catch(() => {});
+}
+
+async function migratePayoutSystem() {
+
+    const data = loadData();
+
+    for (const clip of Object.values(data.clips || {})) {
+
+        if (!clip.payout) {
+
+            clip.payout = {
+                paidViews: 0,
+                paidMoney: 0,
+                lastPaidAt: null
+            };
+
+        }
+
+    }
+
+    saveData(data);
+
+    console.log("✅ Payout migration complete.");
+
 }
 
 function ensureCampaignPlatformStats(userRecord, campaignId, platform, username = '') {
@@ -1855,18 +2046,48 @@ async function autoTrackClipViews() {
       if (Date.now() - lastChecked >= 30 * 60 * 1000) {
         try {
           const currentViews = await fetchClipViews(clip);
+
           const startingViews = clip.startingViews || 0;
-          const earnedViews = Math.max(currentViews - startingViews, 0);
+          const weeklyBaseline = clip.weeklyBaselineViews || startingViews;
+
+          // Monthly views
+          const earnedViews = Math.max(
+              currentViews - startingViews,
+              0
+          );
+
+          // Weekly views
+          const weeklyViews = Math.max(
+              currentViews - weeklyBaseline,
+              0
+          );
 
           clip.currentViews = currentViews;
+
+          // Monthly total
           clip.views = earnedViews;
+
+          // Current week's gain
+          clip.weeklyViews = weeklyViews;
+
           clip.lastChecked = Date.now();
           clip.trackingError = null;
 
           const campaign = CAMPAIGNS[clip.campaignId];
           const rate = campaign?.ratePerMillion || 0;
 
-          clip.moneyMade = (earnedViews / 1000000) * rate;
+          clip.totalMoneyMade =
+              (earnedViews / 1000000) * rate;
+
+          clip.unpaidViews =
+              Math.max(
+                  earnedViews - (clip.totalViewsPaid || 0),
+                  0
+              );
+
+          clip.unpaidMoney =
+              (clip.unpaidViews / 1000000) * rate;
+          clip.weeklyMoneyMade = (weeklyViews / 1000000) * rate;
 
           data.clips[clipId] = clip;
         } catch (err) {
@@ -1888,30 +2109,115 @@ async function autoTrackClipViews() {
           
           // Add to global profile metrics
           userRecord.stats.totalViews += Number(clip.views) || 0;
-          userRecord.stats.moneyMade += Number(clip.moneyMade) || 0;
+          userRecord.stats.moneyMade += Number(clip.totalMoneyMade) || 0;
 
-          // Add to specific campaign platform metrics
-          const platformStats = ensureCampaignPlatformStats(userRecord, clip.campaignId, clip.platform, clip.username);
-          platformStats.totalViews += Number(clip.views) || 0;
-          platformStats.moneyMade += Number(clip.moneyMade) || 0;
+          // Campaign stats should ONLY count this week's gain
+          platformStats.totalViews += Number(clip.weeklyViews) || 0;
+          platformStats.moneyMade +=
+              ((Number(clip.weeklyViews) || 0) / 1000000) *
+          (CAMPAIGNS[clip.campaignId]?.ratePerMillion || 0);
         }
       }
     }
   
     saveData(data);
-    
-    const guild = client.guilds.cache.first();
-    if (guild) {
-      // Direct update to your global leaderboard message every 30 mins
-      await updateLeaderboardMessage(guild);
 
-      // Still update platform specific campaign panels if needed
-      for (const campaignId of Object.keys(CAMPAIGNS)) {
+const guild = client.guilds.cache.first();
+
+if (guild) {
+
+    await updateLeaderboardMessage(guild);
+
+    for (const campaignId of Object.keys(CAMPAIGNS)) {
         await updateCampaignPanelMessage(guild, campaignId);
-      }
     }
 
-    console.log('✅ Auto tracking completed & Leaderboards updated!');
+    for(const campaignId of Object.keys(CAMPAIGNS)){
+
+        const campaign=CAMPAIGNS[campaignId];
+
+        const users=[
+
+            ...new Set(
+
+                Object.values(data.clips)
+
+                .filter(c=>
+ 
+                    c.campaignId===campaignId &&
+
+                    c.status==="approved"
+
+                )
+
+                .map(c=>c.userId)
+
+            )
+
+        ];
+
+        for(const userId of users){
+
+            const clips=
+
+                Object.values(data.clips).filter(c=>
+
+                    c.userId===userId &&
+
+                    c.campaignId===campaignId &&
+
+                    c.status==="approved"
+
+                );
+
+            const unpaidViews=
+   
+                clips.reduce((sum,clip)=>{
+
+                    const paid=
+
+                        clip.payout?.paidViews||0;
+
+                    return sum+
+
+                    Math.max(
+
+                        clip.views-paid,
+
+                        0
+
+                    );
+
+                },0);
+
+            if(unpaidViews>=campaign.payoutThreshold){
+
+                data.payoutRequests[payoutId] = {
+                    campaignId,
+                    userId,
+                    status: "pending"
+                };
+
+                await sendPayoutCard(
+
+                    guild,
+
+                    campaignId,
+
+                    userId
+
+                );
+
+            }
+
+        }    
+
+    }
+
+    saveData(data);
+}
+
+console.log('✅ Auto tracking completed & Leaderboards updated!');
   } catch (err) {
     console.error('❌ Auto tracking failed:', err);
   } finally {
@@ -2032,14 +2338,16 @@ async function updateSocialStaffMessage(guild, request) {
   }
 }
 
-client.once(Events.ClientReady, () => {
-  console.log(`Online as ${client.user.tag}`);
+client.once(Events.ClientReady, async () => {
+    console.log(`Online as ${client.user.tag}`);
 
-  autoTrackClipViews();
-  setInterval(autoTrackClipViews, 30 * 60 * 1000);
+    await migratePayoutSystem();
 
-  archiveFinishedCampaigns();
-  setInterval(archiveFinishedCampaigns, 5 * 60 * 1000);
+    autoTrackClipViews();
+    setInterval(autoTrackClipViews, 30 * 60 * 1000);
+
+    archiveFinishedCampaigns();
+    setInterval(archiveFinishedCampaigns, 5 * 60 * 1000);
 });
 
 // ==========================================
@@ -2109,6 +2417,13 @@ client.on('messageCreate', async message => {
             topic: `YouTube Shorts review queue for ${campaign.name}`
         });
 
+        const payChan = await message.guild.channels.create({
+            name: '💵・payout-queue',
+            type: ChannelType.GuildText,
+            parent: category.id,
+            topic: `Payout review queue for ${campaign.name}`
+        });
+
         // 3. Save directly into data.json runtime structure
         const data = loadData();
         if (!data.campaignStaffChannels) data.campaignStaffChannels = {};
@@ -2118,7 +2433,8 @@ client.on('messageCreate', async message => {
             linkAccount: linkChan.id,
             instagram: igChan.id,
             tiktok: ttChan.id,
-            youtube: ytChan.id
+            youtube: ytChan.id,
+            payout: payChan.id,
         };
         saveData(data);
 
@@ -2129,7 +2445,7 @@ client.on('messageCreate', async message => {
                      `• **Account Linking:** <#${linkChan.id}> (\`${linkChan.id}\`)\n` +
                      `• **Instagram Clips:** <#${igChan.id}> (\`${igChan.id}\`)\n` +
                      `• **TikTok Clips:** <#${ttChan.id}> (\`${ttChan.id}\`)\n` +
-                     `• **YouTube Clips:** <#${ytChan.id}> (\`${ytChan.id}\`)\n\n` +
+                     `• **Payout Queue:** <#${payChan.id}> (\`${payChan.id}\`)\n\n` +
                      `*Channel IDs have been registered automatically to your database!*`
         });
 
@@ -3112,6 +3428,162 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
+    if(interaction.customId.startsWith("pay:")){
+
+       const [,campaignId,userId]=interaction.customId.split(":");
+
+       const data=loadData();
+
+       const campaign=CAMPAIGNS[campaignId];
+
+       const approvedClips=Object.values(data.clips).filter(c=>
+
+           c.userId===userId &&
+           c.campaignId===campaignId &&
+           c.status==="approved"
+
+       );
+
+       let paidViews=0;
+
+       approvedClips.forEach(clip=>{
+
+           if(!clip.payout){
+
+               clip.payout={
+
+                   paidViews:0,
+                   paidMoney:0,
+                   history:[]
+
+               };
+
+           }
+
+           const newViews=Math.max(
+
+               clip.views-clip.payout.paidViews,
+
+               0
+
+           );
+
+           if(newViews<=0)return;
+
+           const money=
+
+               newViews/1000000*
+
+               campaign.ratePerMillion;
+
+           clip.payout.history.push({
+
+               date:new Date().toISOString(),
+
+               views:newViews,
+
+               amount:money
+
+           });
+
+           clip.payout.paidViews+=newViews;
+
+           clip.payout.paidMoney+=money;
+
+           paidViews+=newViews;
+
+       });
+
+       saveData(data);
+
+       const member=await interaction.guild.members.fetch(userId);
+
+       const paidMoney=
+
+           paidViews/1000000*
+
+           campaign.ratePerMillion;
+
+       const row=new ActionRowBuilder()
+
+       .addComponents(
+
+       new ButtonBuilder()
+
+       .setStyle(ButtonStyle.Link)
+
+       .setLabel("Share Payment Result")
+
+       .setURL("YOUR_PAYMENT_RESULTS_CHANNEL_LINK")
+
+       );
+
+       await member.send({
+
+       embeds:[
+
+       new EmbedBuilder()
+
+       .setColor(0x57F287)
+
+       .setTitle("✅ Payment Sent")
+
+       .setDescription(
+
+       `Campaign
+
+       ${campaign.name}
+
+       Views Paid
+
+       ${formatNumber(paidViews)}
+
+       Amount
+
+       $${paidMoney.toFixed(2)}`)
+
+       ],
+
+       components:[row]
+
+       }).catch(()=>{});
+
+   }
+
+   if(interaction.customId.startsWith("issue:")){
+
+   const [,campaignId,userId]=interaction.customId.split(":");
+
+   await interaction.showModal(
+
+   new ModalBuilder()
+
+   .setCustomId(`issue_modal:${campaignId}:${userId}`)
+
+   .setTitle("Payment Issue")
+
+   .addComponents(
+
+   new ActionRowBuilder().addComponents(
+
+   new TextInputBuilder()
+
+   .setCustomId("reason")
+
+   .setStyle(TextInputStyle.Paragraph)
+
+   .setLabel("Reason")
+
+   .setRequired(true)
+
+   )
+
+   )
+
+   );
+
+   }
+
    if (interaction.isButton() && interaction.customId === 'account_analytics') {
       const data = loadData();
       const member = interaction.member;
@@ -3139,7 +3611,7 @@ client.on(Events.InteractionCreate, async interaction => {
       );
 
       const liveTotalEarned = approvedClips.reduce(
-        (sum, clip) => sum + (Number(clip.moneyMade) || 0), 
+        (sum, clip) => sum + (Number(clip.totalMoneyMade) || 0), 
         0
       );
 
@@ -3236,7 +3708,7 @@ client.on(Events.InteractionCreate, async interaction => {
         const timeAgoText = clip.updatedAt ? 'Updated recently' : 'No recent updates';
 
         descriptionText += `${statusEmoji} **${globalIndex}. @${clip.username || 'user'}: [${platformName} Link](${clip.link || '#'})**\n`;
-        descriptionText += `↳ **${formatNumber(clip.views || 0)}** paid views · **${clip.likes || 0}** likes · **$${formatNumber(clip.moneyMade || 0)}** earned\n`;
+        descriptionText += `↳ **${formatNumber(clip.views || 0)}** paid views · **${clip.likes || 0}** likes · **$${formatNumber(clip.totalMoneyMade || 0)}** earned\n`;
         descriptionText += `*${timeAgoText}*\n\n`;
       });
 
@@ -3299,7 +3771,7 @@ client.on(Events.InteractionCreate, async interaction => {
         clip => clip.userId === interaction.user.id && clip.status === 'approved'
       );
       const liveTotalEarned = approvedClips.reduce(
-        (sum, clip) => sum + (Number(clip.moneyMade) || 0), 
+        (sum, clip) => sum + (Number(clip.totalMoneyMade) || 0), 
         0
       );
 
@@ -4213,7 +4685,7 @@ client.on(Events.InteractionCreate, async interaction => {
           };
         }
         campaignBreakdown[cId].views += Number(clip.views) || 0;
-        campaignBreakdown[cId].earned += Number(clip.moneyMade) || 0;
+        campaignBreakdown[cId].earned += Number(clip.totalMoneyMade) || 0;
       });
 
       let overviewText = '';
@@ -5140,13 +5612,22 @@ client.on(Events.InteractionCreate, async interaction => {
                 videoUrl,
                 status: "pending",                                  
                 startingViews: initialViews,   
-                currentViews: initialViews, 
+                currentViews: initialViews,
+                weeklyBaselineViews:initialViews,
+                views: 0, 
                 weeklyViews: 0,
                 monthlyViews:0,   
                 submittedAt: new Date().toISOString(),
                 lastChecked: Date.now(),       
                 staffChannelId: staffChannel ? staffChannel.id : null,
-                staffMessageId: null
+                staffMessageId: null,
+
+                payout: {
+                    totalPaidViews: 0,
+                    totalPaidAmount: 0,
+                    lastPaidAt: null,
+                    history: []
+                }
             };
 
             data.clips[clipId] = clip;
@@ -5467,11 +5948,11 @@ client.on(Events.InteractionCreate, async interaction => {
         if (clip.status === 'approved') {
           platformStats.videosApproved = Math.max(0, (platformStats.videosApproved || 0) - 1);
           platformStats.totalViews = Math.max(0, (platformStats.totalViews || 0) - (clip.views || 0));
-          platformStats.moneyMade = Math.max(0, (platformStats.moneyMade || 0) - (clip.moneyMade || 0));
+          platformStats.moneyMade = Math.max(0, (platformStats.moneyMade || 0) - (clip.totalMoneyMade || 0));
 
           userRecord.stats.videosApproved = Math.max(0, (userRecord.stats.videosApproved || 0) - 1);
           userRecord.stats.totalViews = Math.max(0, (userRecord.stats.totalViews || 0) - (clip.views || 0));
-          userRecord.stats.moneyMade = Math.max(0, (userRecord.stats.moneyMade || 0) - (clip.moneyMade || 0));
+          userRecord.stats.moneyMade = Math.max(0, (userRecord.stats.moneyMade || 0) - (clip.totalMoneyMade || 0));
         }
 
         if (clip.status === 'rejected') {
@@ -5724,7 +6205,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         clip.views = newViews;
 
-        clip.moneyMade =
+        clip.totalMoneyMade =
             (newViews / 1000000) *
             (campaign.ratePerMillion || 0);
 
@@ -5852,7 +6333,7 @@ client.on(Events.InteractionCreate, async interaction => {
       clip.rejectedBy = interaction.user.id;
 
       clip.views = 0;
-      clip.moneyMade = 0;
+      clip.totalMoneyMade = 0;
       clip.trackingError = null;
 
       data.clips[clipId] = clip;
