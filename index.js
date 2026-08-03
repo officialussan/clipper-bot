@@ -1613,6 +1613,14 @@ async function migratePayoutSystem() {
 
     const data = loadData();
 
+    const guild = client.guilds.cache.first();
+
+    if (!guild) {
+        console.log("❌ Guild not found.");
+        return;
+    }
+
+    // Create payout object on old clips
     for (const clip of Object.values(data.clips || {})) {
 
         if (!clip.payout) {
@@ -1629,7 +1637,59 @@ async function migratePayoutSystem() {
 
     saveData(data);
 
-    console.log("✅ Payout migration complete.");
+    let cardsCreated = 0;
+
+    for (const campaignId of Object.keys(CAMPAIGNS)) {
+
+        const campaign = CAMPAIGNS[campaignId];
+
+        const users = [
+            ...new Set(
+                Object.values(data.clips || {})
+                    .filter(c =>
+                        c.campaignId === campaignId &&
+                        String(c.status).toLowerCase() === "approved"
+                    )
+                    .map(c => c.userId)
+            )
+        ];
+
+        for (const userId of users) {
+
+            const clips = Object.values(data.clips || {}).filter(c =>
+                c.userId === userId &&
+                c.campaignId === campaignId &&
+                String(c.status).toLowerCase() === "approved"
+            );
+
+            const unpaidViews = clips.reduce((sum, clip) => {
+
+                const paidViews = clip.payout?.paidViews || 0;
+
+                return sum + Math.max(
+                    (clip.views || 0) - paidViews,
+                    0
+                );
+
+            }, 0);
+
+            if (unpaidViews < campaign.payoutThreshold)
+                continue;
+
+            await sendPayoutCard(
+                guild,
+                campaignId,
+                userId
+            );
+
+            cardsCreated++;
+
+        }
+
+    }
+
+    console.log(`✅ Payout migration complete.`);
+    console.log(`💰 ${cardsCreated} payout cards created.`);
 
 }
 
@@ -2419,11 +2479,10 @@ async function updateSocialStaffMessage(guild, request) {
 }
 
 client.once(Events.ClientReady, async () => {
+    
     console.log(`Online as ${client.user.tag}`);
 
     await migratePayoutSystem();
-
-    await backfillPayoutCards();
 
     autoTrackClipViews();
     setInterval(autoTrackClipViews, 30 * 60 * 1000);
