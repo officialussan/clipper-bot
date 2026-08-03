@@ -431,10 +431,6 @@ async function sendPayoutCard(guild, campaignId, userId) {
     const campaign = CAMPAIGNS[campaignId];
     if (!campaign) return;
 
-    console.log("========== SEND PAYOUT ==========");
-    console.log("Campaign:", campaignId);
-    console.log("User:", userId);
-
     const payoutChannelId =
         data.campaignStaffChannels?.[campaignId]?.payouts;
 
@@ -458,8 +454,6 @@ async function sendPayoutCard(guild, campaignId, userId) {
         c.status === "approved"
     );
 
-    console.log("Approved clips:", approvedClips.length);
-
     const unpaidViews = approvedClips.reduce((sum, clip) => {
 
         const paidViews = clip.payout?.paidViews || 0;
@@ -467,9 +461,6 @@ async function sendPayoutCard(guild, campaignId, userId) {
         return sum + Math.max((clip.views || 0) - paidViews, 0);
 
     }, 0);
-
-    console.log("Unpaid views:", unpaidViews);
-    console.log("Threshold:", campaign.payoutThreshold);
 
     if (unpaidViews <= 0) return;
 
