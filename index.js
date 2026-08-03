@@ -438,6 +438,10 @@ async function sendPayoutCard(guild, campaignId, userId) {
     const payoutChannelId =
         data.campaignStaffChannels?.[campaignId]?.payouts;
 
+    console.log("Campaign ID:", campaignId);
+    console.log("campaignStaffChannels:");
+    console.dir(data.campaignStaffChannels, { depth: null });
+
     console.log("Payout channel:", payoutChannelId);
 
     if (!payoutChannelId) return;
