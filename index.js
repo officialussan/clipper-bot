@@ -153,59 +153,6 @@ Click the button below to start clipping and earning.`
 
   },
 
-  early: {
-    id: 'early',
-    name: 'Early Clipping Campaign',
-    allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
-    payoutThreshold: 15000,
-    campaignBudget: 3500,
-    startDate: '2026-07-11',
-    campaignMode: "monthly",
-    budgetCycle: "monthly",
-    earningCycle: "monthly",
-    ratePerMillion: 700,
-    viewCap: 5000000,
-    panelChannelId:'1526930673846452358',
-    panelMessageId:'1527339469664157747',
-    roleId: process.env.EARLY_ROLE_ID,
-    entryChannelId: process.env.EARLY_ENTRY_CHANNEL_ID,
-    source: 'monsterlab',
-    monsterCampaignId: "AfqIWZ70LgPcXcawvOhX",
-    status: 'active',
-    
-    panelText: `# <a:fire1:1504871649491554487> **Earn Money Posting Clips – Early Clipping Campaign**
-
-Earn money by posting high-retention clips and edits from Early content across short-form platforms. Your goal is simple: create engaging clips, generate views, and grow your pages while earning from performance.
-
-All you have to do is **register for the campaign below** and follow the guidelines to start earning.
-
-## <a:chart1:1504773558415523931> Campaign Overview
-
-• **Content:** Clip anything from his vlogs - highlights, funny moments, reactions.
-
-• **Platforms:** <:tiktok1:1504871476485029979> TikTok, <:ig1:1504871708664922162> Instagram Reels & <:ytshort:1504774704123220099> YouTube Shorts
-
-• **Requirement:** All uploaded videos must follow the campaign rules → <#1526930713998266459>
-
-• **Editing Style:** Strong hooks, high retention, clear context.
-
-• **Strict Rule:** Must tag the correct @ on each platform. @ on IG: @early @ on TikTok: @early.
-
-## <a:Cash1:1504871843419521115> Payment Details
-
-> **Campaign Budget:** $3,500  
-> **Rate:** $700 per 1M eligible views  
-> **Eligible Views:** Tier 1 countries only  
-> **Payout Schedule:** Monthly  
-> **Payment Method:** Crypto
-> **Minimum Payout:** $10
-
-## <a:arrow1:1504776324051374130> Join the Campaign
-
-Click the button below to start clipping and earning.`
-
-  },
-
   crowder: {
     id: 'crowder',
     name: '<:SC:1505154364229156954> Steven Crowder Clipping Campaign',
