@@ -789,6 +789,37 @@ async function archiveFinishedCampaigns(client) {
 
 }
 
+async function addMissingPayoutChannels() {
+
+    const data = loadData();
+    const guild = client.guilds.cache.first();
+
+    for (const campaignId of Object.keys(data.campaignStaffChannels)) {
+
+        if (data.campaignStaffChannels[campaignId].payouts)
+            continue;
+
+        const category = guild.channels.cache.get(
+            data.campaignStaffChannels[campaignId].category
+        );
+
+        if (!category) continue;
+
+        const payoutChannel = await guild.channels.create({
+            name: "💰┃payout-queue",
+            type: ChannelType.GuildText,
+            parent: category.id
+        });
+
+        data.campaignStaffChannels[campaignId].payouts =
+            payoutChannel.id;
+
+        console.log(`Created payout channel for ${campaignId}`);
+    }
+
+    saveData(data);
+}
+
 function renderClipStaffContent(clip) {
   return (
     `📥 **New Clip Submission**\n\n` +
@@ -2599,7 +2630,7 @@ client.on('messageCreate', async message => {
             instagram: igChan.id,
             tiktok: ttChan.id,
             youtube: ytChan.id,
-            payout: payChan.id,
+            payouts: payChan.id,
         };
         saveData(data);
 
