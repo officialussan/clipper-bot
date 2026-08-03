@@ -2514,8 +2514,6 @@ client.once(Events.ClientReady, async () => {
     
     console.log(`Online as ${client.user.tag}`);
 
-    await migratePayoutSystem();
-
     autoTrackClipViews();
     setInterval(autoTrackClipViews, 30 * 60 * 1000);
 
@@ -3690,26 +3688,49 @@ client.on(Events.InteractionCreate, async interaction => {
                     .setURL("YOUR_PAYMENT_RESULTS_CHANNEL_LINKhttps://discordapp.com/channels/1413113505565118524/1533850271292199143")
             );
 
-            await member.send({
-                embeds: [
-                    new EmbedBuilder()
-                        .setColor(0x57F287)
-                        .setTitle("✅ Payment Sent")
-                        .setDescription(
-    `**Campaign**
-    ${campaign.name}
+            const dmEmbed = new EmbedBuilder()
 
-    **Views Paid**
-    ${formatNumber(paidViews)}
+                .setColor(0x57F287)
 
-    **Amount Paid**
-    $${paidMoney.toFixed(2)}
+                .setTitle("✅ Payment Sent")
 
-    Thank you for participating!`
-                        )
-                ],
-                components: [row]
-            }).catch(() => {});
+                .setDescription(
+
+            `Campaign
+
+            ${campaign.name}
+
+            Views Paid
+
+            ${formatNumber(paidViews)}
+
+            Amount
+
+            $${paidMoney.toFixed(2)}`
+
+            );
+
+            try {
+
+                 console.log("Sending DM to", member.user.tag);
+
+                 await member.send({
+
+                     embeds: [dmEmbed],
+
+                     components: [row]
+
+                 });
+
+                 console.log("✅ DM sent");
+
+            } catch (err) {
+ 
+                console.error("❌ Failed to send DM");
+
+                console.error(err);
+
+            }
 
         } catch {}
 
