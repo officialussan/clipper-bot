@@ -1459,20 +1459,9 @@ function getCampaignTotals(data, campaignId) {
       0
   );
 
-  console.log("Campaign:", campaign.id);
-  console.log("Current cycle:", currentCycle);
-
   for (const clip of Object.values(data.clips || {})) {
 
       if (clip.campaignId !== campaignId) continue;
-
-      console.log({
-          id: clip.id,
-          status: clip.status,
-          cycle: clip.cycle,
-          views: clip.views,
-          money: clip.moneyMade
-      });
 
   }
 
