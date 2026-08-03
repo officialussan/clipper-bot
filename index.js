@@ -3601,6 +3601,10 @@ client.on(Events.InteractionCreate, async interaction => {
 
     if (interaction.customId.startsWith("pay:")) {
 
+        console.log("🔥 PAY BUTTON CLICKED");
+
+        console.log(interaction.customId);
+
         const payoutId = interaction.customId.split(":")[1];
 
         const data = loadData();
