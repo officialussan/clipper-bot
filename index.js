@@ -431,12 +431,21 @@ async function sendPayoutCard(guild, campaignId, userId) {
     const campaign = CAMPAIGNS[campaignId];
     if (!campaign) return;
 
+    console.log("========== SEND PAYOUT ==========");
+    console.log("Campaign:", campaignId);
+    console.log("User:", userId);
+
     const payoutChannelId =
         data.campaignStaffChannels?.[campaignId]?.payouts;
+
+    console.log("Payout channel:", payoutChannelId);
 
     if (!payoutChannelId) return;
 
     const channel = guild.channels.cache.get(payoutChannelId);
+
+    console.log("Channel exists:", !!channel);
+
     if (!channel) return;
 
     const approvedClips = Object.values(data.clips || {}).filter(c =>
@@ -445,15 +454,20 @@ async function sendPayoutCard(guild, campaignId, userId) {
         c.status === "approved"
     );
 
+    console.log("Approved clips:", approvedClips.length);
+
     const unpaidViews = approvedClips.reduce((sum, clip) => {
 
         const paidViews = clip.payout?.paidViews || 0;
 
-        return sum + Math.max((clip.views || 0) - paidViews,0);
+        return sum + Math.max((clip.views || 0) - paidViews, 0);
 
-    },0);
+    }, 0);
 
-    if(unpaidViews <= 0) return;
+    console.log("Unpaid views:", unpaidViews);
+    console.log("Threshold:", campaign.payoutThreshold);
+
+    if (unpaidViews <= 0) return;
 
     const payoutId = `${campaignId}_${userId}`;
 
@@ -525,10 +539,12 @@ Amount
 
         );
 
-    await channel.send({
-        embeds:[embed],
-        components:[row]
+    const msg = await channel.send({
+        embeds: [embed],
+        components: [row]
     });
+
+    console.log("✅ Payout card sent");
 
     data.payoutRequests[payoutId].messageId = msg.id;
     data.payoutRequests[payoutId].channelId = channel.id;
@@ -1448,6 +1464,23 @@ function getCampaignTotals(data, campaignId) {
       0
   );
 
+  console.log("Campaign:", campaign.id);
+  console.log("Current cycle:", currentCycle);
+
+  for (const clip of Object.values(data.clips || {})) {
+
+      if (clip.campaignId !== campaignId) continue;
+
+      console.log({
+          id: clip.id,
+          status: clip.status,
+          cycle: clip.cycle,
+          views: clip.views,
+          money: clip.moneyMade
+      });
+
+  }
+
   return { users, videos, views, payout };
 }
 
@@ -2341,6 +2374,13 @@ if (guild) {
                 },0);
 
             if (unpaidViews >= campaign.payoutThreshold) {
+
+                console.log({
+                    campaignId,
+                    userId,
+                    unpaidViews,
+                    threshold: campaign.payoutThreshold
+                });
 
                 await sendPayoutCard(
                     guild,
