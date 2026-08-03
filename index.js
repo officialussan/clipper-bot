@@ -102,7 +102,7 @@ const CAMPAIGNS = {
     id: 'elephant',
     name: 'Elephant Clipping Campaign',
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
-    payoutThreshold: 25000,
+    payoutThreshold: 17500,
     campaignBudget: 2400,
     startDate: '2026-07-20',
     cycleWeeks: "1",
@@ -157,7 +157,7 @@ Click the button below to start clipping and earning.`
     id: 'crowder',
     name: '<:SC:1505154364229156954> Steven Crowder Clipping Campaign',
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
-    payoutThreshold: 35000,
+    payoutThreshold: 17500,
     campaignBudget: 2100,
     startDate: '2026-06-29',
     cycleWeeks: "4",
@@ -377,6 +377,24 @@ async function sendPayoutCard(guild, campaignId, userId) {
 
     const campaign = CAMPAIGNS[campaignId];
     if (!campaign) return;
+    
+    const user = data.users?.[userId];
+
+    let paymentLabel = "Payment ID";
+    let paymentValue = "Not Set";
+
+    if (user?.paymentDetails?.exchange) {
+
+        const exchange =
+            user.paymentDetails.exchange;
+
+        paymentLabel =
+            `${exchange.charAt(0).toUpperCase()}${exchange.slice(1)} ID`;
+
+        paymentValue =
+            user.paymentDetails.paymentId;
+
+    }
 
     const payoutChannelId =
         data.campaignStaffChannels?.[campaignId]?.payouts;
@@ -448,14 +466,17 @@ async function sendPayoutCard(guild, campaignId, userId) {
 
 `👤 <@${userId}>
 
-Campaign
-**${campaign.name}**
+**Campaign**
+${campaign.name}
 
-Unpaid Views
-**${formatNumber(unpaidViews)}**
+**Unpaid Views**
+${formatNumber(unpaidViews)}
 
-Amount
-**$${unpaidMoney.toFixed(2)}**`
+**Amount**
+$${unpaidMoney.toFixed(2)}
+
+**${paymentLabel}**
+\`${paymentValue}\``
 
 );
 
@@ -3580,159 +3601,265 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
-    if(interaction.customId.startsWith("pay:")){
+    if (interaction.customId.startsWith("pay:")) {
 
-       const [,campaignId,userId]=interaction.customId.split(":");
+        const payoutId = interaction.customId.split(":")[1];
 
-       const data=loadData();
+        const data = loadData();
 
-       const campaign=CAMPAIGNS[campaignId];
+        const payout = data.payoutRequests?.[payoutId];
 
-       const approvedClips=Object.values(data.clips).filter(c=>
+        if (!payout) {
+            return interaction.reply({
+                content: "❌ Payout request not found.",
+                ephemeral: true
+            });
+        }
 
-           c.userId===userId &&
-           c.campaignId===campaignId &&
-           c.status==="approved"
+        const campaignId = payout.campaignId;
+        const userId = payout.userId;
 
-       );
+        const campaign = CAMPAIGNS[campaignId];
 
-       let paidViews=0;
+        if (!campaign) {
+            return interaction.reply({
+                content: "❌ Campaign not found.",
+                ephemeral: true
+            });
+        }
 
-       approvedClips.forEach(clip=>{
+        const approvedClips = Object.values(data.clips).filter(c =>
+            c.userId === userId &&
+            c.campaignId === campaignId &&
+            c.status === "approved"
+        );
 
-           if(!clip.payout){
+        let paidViews = 0;
+        let paidMoney = 0;
 
-               clip.payout={
+        approvedClips.forEach(clip => {
 
-                   paidViews:0,
-                   paidMoney:0,
-                   history:[]
+            if (!clip.payout) {
+                clip.payout = {
+                    paidViews: 0,
+                    paidMoney: 0,
+                    history: []
+                };
+            }
 
-               };
+            const newViews = Math.max(
+                (clip.views || 0) - (clip.payout.paidViews || 0),
+                0
+            );
 
-           }
+            if (newViews <= 0) return;
 
-           const newViews=Math.max(
+            const money =
+                newViews / 1000000 *
+                campaign.ratePerMillion;
 
-               clip.views-clip.payout.paidViews,
+            clip.payout.history.push({
+                date: new Date().toISOString(),
+                views: newViews,
+                amount: money
+            });
 
-               0
+            clip.payout.paidViews += newViews;
+            clip.payout.paidMoney += money;
 
-           );
+            paidViews += newViews;
+            paidMoney += money;
 
-           if(newViews<=0)return;
+        });
 
-           const money=
+        payout.status = "paid";
+        payout.paidAt = Date.now();
+        payout.paidViews = paidViews;
+        payout.paidMoney = paidMoney;
+ 
+        saveData(data);
 
-               newViews/1000000*
+        try {
 
-               campaign.ratePerMillion;
+            const member = await interaction.guild.members.fetch(userId);
 
-           clip.payout.history.push({
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setStyle(ButtonStyle.Link)
+                    .setLabel("💸 Share Payment Result")
+                    .setURL("YOUR_PAYMENT_RESULTS_CHANNEL_LINKhttps://discordapp.com/channels/1413113505565118524/1533850271292199143")
+            );
 
-               date:new Date().toISOString(),
+            await member.send({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor(0x57F287)
+                        .setTitle("✅ Payment Sent")
+                        .setDescription(
+    `**Campaign**
+    ${campaign.name}
 
-               views:newViews,
+    **Views Paid**
+    ${formatNumber(paidViews)}
 
-               amount:money
+    **Amount Paid**
+    $${paidMoney.toFixed(2)}
 
-           });
+    Thank you for participating!`
+                        )
+                ],
+                components: [row]
+            }).catch(() => {});
 
-           clip.payout.paidViews+=newViews;
+        } catch {}
 
-           clip.payout.paidMoney+=money;
+        await interaction.update({
+            embeds: [
+                new EmbedBuilder()
+                    .setColor(0x57F287)
+                    .setTitle("✅ Payment Completed")
+                    .setDescription(
+    `👤 <@${userId}>
 
-           paidViews+=newViews;
+    **Campaign**
+    ${campaign.name}
 
-       });
+    **Views Paid**
+    ${formatNumber(paidViews)}
 
-       saveData(data);
+    **Amount Paid**
+    $${paidMoney.toFixed(2)}
 
-       const member=await interaction.guild.members.fetch(userId);
-
-       const paidMoney=
-
-           paidViews/1000000*
-
-           campaign.ratePerMillion;
-
-       const row=new ActionRowBuilder()
-
-       .addComponents(
-
-       new ButtonBuilder()
-
-       .setStyle(ButtonStyle.Link)
-
-       .setLabel("Share Payment Result")
-
-       .setURL("YOUR_PAYMENT_RESULTS_CHANNEL_LINK")
-
-       );
-
-       await member.send({
-
-       embeds:[
-
-       new EmbedBuilder()
-
-       .setColor(0x57F287)
-
-       .setTitle("✅ Payment Sent")
-
-       .setDescription(
-
-       `Campaign
-
-       ${campaign.name}
-
-       Views Paid
-
-       ${formatNumber(paidViews)}
-
-       Amount
-
-       $${paidMoney.toFixed(2)}`)
-
-       ],
-
-       components:[row]
-
-       }).catch(()=>{});
+    Status: **PAID**`
+                    )
+            ],
+            components: []
+        });
 
    }
 
-   if(interaction.customId.startsWith("issue:")){
+   if (interaction.customId.startsWith("issue:")) {
 
-   const [,campaignId,userId]=interaction.customId.split(":");
+       const payoutId = interaction.customId.split(":")[1];
 
-   await interaction.showModal(
+       const data = loadData();
 
-   new ModalBuilder()
+       const payout = data.payoutRequests?.[payoutId];
 
-   .setCustomId(`issue_modal:${campaignId}:${userId}`)
+       if (!payout) {
+           return interaction.reply({
+               content: "❌ Payout request not found.",
+               ephemeral: true
+           });
+       }
 
-   .setTitle("Payment Issue")
+       await interaction.showModal(
 
-   .addComponents(
+           new ModalBuilder()
+               .setCustomId(`issue_modal:${payoutId}`)
+               .setTitle("Payment Issue")
+               .addComponents(
 
-   new ActionRowBuilder().addComponents(
+                   new ActionRowBuilder().addComponents(
 
-   new TextInputBuilder()
+                       new TextInputBuilder()
+                           .setCustomId("reason")
+                           .setLabel("Reason")
+                           .setStyle(TextInputStyle.Paragraph)
+                           .setRequired(true)
 
-   .setCustomId("reason")
+                   )
 
-   .setStyle(TextInputStyle.Paragraph)
+               )
 
-   .setLabel("Reason")
+       );
 
-   .setRequired(true)
+   }
 
-   )
+   if (
+       interaction.isModalSubmit() &&
+       interaction.customId.startsWith("issue_modal:")
+   ) {
 
-   )
+       const payoutId = interaction.customId.split(":")[1];
 
-   );
+       const data = loadData();
+
+       const payout = data.payoutRequests?.[payoutId];
+
+       if (!payout) {
+           return interaction.reply({
+               content: "❌ Payout request not found.",
+               ephemeral: true
+           });
+       }
+
+       const campaignId = payout.campaignId;
+       const userId = payout.userId;
+
+       const campaign = CAMPAIGNS[campaignId];
+
+       const reason = interaction.fields.getTextInputValue("reason");
+
+       payout.status = "issue";
+       payout.issueReason = reason;
+       payout.issueAt = Date.now();
+
+       saveData(data);
+
+       // DM creator
+       try {
+
+           const member = await interaction.guild.members.fetch(userId);
+
+           await member.send({
+               embeds: [
+                   new EmbedBuilder()
+                       .setColor(0xED4245)
+                       .setTitle("⚠ Payment Delayed")
+                       .setDescription(
+   `Your payout for **${campaign.name}** cannot be processed yet.
+
+   **Reason**
+   ${reason}
+
+   Please contact the staff once the issue has been resolved.`
+                       )
+               ]
+           });
+
+       } catch (err) {
+           console.log("Couldn't DM user.");
+       }
+
+       // Update payout card
+       await interaction.update({
+
+           embeds: [
+
+               new EmbedBuilder()
+
+                   .setColor(0xED4245)
+
+                   .setTitle("⚠ Payment On Hold")
+
+                   .setDescription(
+   `👤 <@${userId}>
+
+   **Campaign**
+   ${campaign.name}
+
+   **Reason**
+   ${reason}
+
+   Status: **ON HOLD**`
+                )
+
+           ],
+
+           components: []
+
+       });
 
    }
 
@@ -3914,66 +4041,119 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
-    if (interaction.isButton() && interaction.customId === 'account_payouts') {
-      const data = loadData();
-      const userRecord = ensureUser(data, interaction.member);
+    if (interaction.isButton() && interaction.customId === "account_payouts") {
 
-      // 1. DYNAMICALLY RE-CALCULATE LIVE TOTAL EARNED FROM APPROVED CLIPS
-      const approvedClips = Object.values(data.clips || {}).filter(
-        clip => clip.userId === interaction.user.id && clip.status === 'approved'
-      );
-      const liveTotalEarned = approvedClips.reduce(
-        (sum, clip) => sum + (Number(clip.totalMoneyMade) || 0), 
-        0
-      );
+        const data = loadData();
+        const userRecord = ensureUser(data, interaction.member);
 
-      // 2. DYNAMICALLY RENDER EXCHANGE LABEL AND SUBMITTED ID
-      let paymentLabel = 'USDT ID';
-      let paymentValue = 'Not set';
+        const approvedClips = Object.values(data.clips || {}).filter(
+            c =>
+                c.userId === interaction.user.id &&
+                c.status === "approved"
+        );
 
-      if (userRecord.paymentDetails && userRecord.paymentDetails.exchange) {
-        // Capitalizes the first letter (e.g., "Binance" or "Bybit")
-        const exchangeName = userRecord.paymentDetails.exchange.charAt(0).toUpperCase() + userRecord.paymentDetails.exchange.slice(1);
-        paymentLabel = `${exchangeName} ID`;
-        paymentValue = `\`${userRecord.paymentDetails.paymentId}\``;
-      }
+        let totalEarned = 0;
+        let totalPaid = 0;
+        let totalPending = 0;
 
-      const embed = new EmbedBuilder()
-        .setColor(0x7ED957)
-        .setAuthor({
-          name: interaction.user.username,
-          iconURL: interaction.user.displayAvatarURL()
-        })
-        .setDescription(
-          `View Your Payouts\n\n` +
-          `<a:flyin:1506234392920723546> **Total Earned**\n$${formatNumber(liveTotalEarned)}\n` + // Fixed: Live dynamic math
-          `<a:fire1:1504871649491554487> **Campaigns Joined**\n${userRecord.campaigns?.length || 0}\n` +
-          `<:usdt1:1504872188317012098> **${paymentLabel}**\n${paymentValue}\n\n` + // Fixed: Dynamic platform labels
-          `<a:warning:1504774411280973864> **Notes**\nNetwork fees may apply depending on the payout network.\n\n` +
-          `<:whiteCE:1504904179905200148> Powered by Creators Elite`
-      );
+        approvedClips.forEach(clip => {
 
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('payout_detailed_overview')
-          .setLabel('Detailed Overview')
-          .setEmoji('📄')
-          .setStyle(ButtonStyle.Secondary),
+            totalEarned += Number(clip.totalMoneyMade || 0);
 
-        new ButtonBuilder()
-          .setCustomId('edit_usdt_address')
-          .setLabel('Edit ID')
-          .setEmoji('<:usdt1:1504872188317012098>')
-          .setStyle(ButtonStyle.Secondary)
-      );
+            totalPaid += clip.payout?.paidMoney || 0;
 
-      await interaction.reply({
-        embeds: [embed],
-        components: [row],
-        ephemeral: true
-      });
+        });
 
-      return;
+        totalPending = Math.max(
+            totalEarned - totalPaid,
+            0
+        );
+
+        let paymentLabel = "USDT ID";
+        let paymentValue = "Not set";
+
+        if (userRecord.paymentDetails?.exchange) {
+
+            const exchange =
+                userRecord.paymentDetails.exchange;
+
+            paymentLabel =
+                `${exchange.charAt(0).toUpperCase()}${exchange.slice(1)} ID`;
+
+            paymentValue =
+                `\`${userRecord.paymentDetails.paymentId}\``;
+
+        }
+
+        const embed = new EmbedBuilder()
+
+            .setColor(0x7ED957)
+
+            .setAuthor({
+
+                name: interaction.user.username,
+
+                iconURL: interaction.user.displayAvatarURL()
+
+            })
+
+            .setDescription(
+
+    `## 💰 Your Payments
+
+    **Total Earned**
+    $${formatNumber(totalEarned)}
+
+    **Already Paid**
+    $${formatNumber(totalPaid)}
+
+    **Pending**
+    $${formatNumber(totalPending)}
+
+    **Campaigns Joined**
+    ${userRecord.campaigns?.length || 0}
+
+    **${paymentLabel}**
+    ${paymentValue}
+
+    ⚠ Network fees may apply depending on the payout network.`
+
+            );
+
+        const row = new ActionRowBuilder()
+
+            .addComponents(
+
+                new ButtonBuilder()
+
+                    .setCustomId("payout_detailed_overview")
+
+                    .setLabel("Detailed Overview")
+
+                    .setEmoji("📄")
+
+                    .setStyle(ButtonStyle.Secondary),
+
+                new ButtonBuilder()
+
+                    .setCustomId("edit_usdt_address")
+
+                    .setLabel("Edit ID")
+
+                    .setStyle(ButtonStyle.Secondary)
+
+            );
+
+        await interaction.reply({
+
+            embeds: [embed],
+
+            components: [row],
+
+            ephemeral: true
+
+        });
+
     }
 
     if (interaction.isButton() && interaction.customId === 'demographics_start') {
@@ -4798,73 +4978,180 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
-    if (interaction.isButton() && interaction.customId === 'payout_detailed_overview') {
-      const data = loadData();
-      
-      const approvedClips = Object.values(data.clips || {}).filter(
-        clip => clip.userId === interaction.user.id && clip.status === 'approved'
-      );
+    if (
+        interaction.isButton() &&
+        interaction.customId === "payout_detailed_overview"
+    ) {
 
-      if (approvedClips.length === 0) {
-        await interaction.reply({
-          content: '❌ You don\'t have any approved clip history datasets available to summarize yet.',
-          ephemeral: true
+        const data = loadData();
+
+        const approvedClips = Object.values(data.clips || {}).filter(
+
+            c =>
+
+                c.userId === interaction.user.id &&
+
+                c.status === "approved"
+
+        );
+
+        if (!approvedClips.length) {
+
+            return interaction.reply({
+
+                content: "You don't have any approved clips yet.",
+
+                ephemeral: true
+
+            });
+
+        }
+
+        let text = "";
+
+        const campaigns = {};
+
+        approvedClips.forEach(clip => {
+
+            if (!campaigns[clip.campaignId]) {
+
+                campaigns[clip.campaignId] = {
+
+                    totalViews: 0,
+
+                    paidViews: 0,
+
+                    earned: 0,
+
+                    paidMoney: 0
+
+                };
+
+            }
+
+            campaigns[clip.campaignId].totalViews += clip.views || 0;
+
+            campaigns[clip.campaignId].paidViews +=
+
+                clip.payout?.paidViews || 0;
+
+            campaigns[clip.campaignId].earned +=
+
+                clip.totalMoneyMade || 0;
+
+            campaigns[clip.campaignId].paidMoney +=
+
+                clip.payout?.paidMoney || 0;
+
         });
-        return;
-      }
 
-      // Fetch the global payout status set by staff for this user
-      const userPayoutState = data.payoutStatuses?.[interaction.user.id];
-      let displayStatus = '`⏳ Pending Sync`';
+        for (const campaignId in campaigns) {
 
-      if (userPayoutState) {
-        if (userPayoutState.status === 'paid') {
-          displayStatus = '`✅ Paid`';
-        } else if (userPayoutState.status === 'error') {
-          displayStatus = `\`❌ Payment Error:\` ${userPayoutState.errorReason}`;
+            const stats = campaigns[campaignId];
+
+            const campaign = CAMPAIGNS[campaignId];
+
+            const unpaidViews =
+
+                stats.totalViews -
+
+                stats.paidViews;
+
+            const pendingMoney =
+
+                stats.earned -
+
+                stats.paidMoney;
+
+            const payout = Object.values(
+
+                data.payoutRequests || {}
+
+            ).find(
+
+                p =>
+
+                    p.userId === interaction.user.id &&
+
+                    p.campaignId === campaignId &&
+
+                    p.status === "pending"
+
+            );
+
+            let status = "✅ Paid";
+
+            if (payout)
+
+                status = "⏳ Pending";
+
+            const issue = Object.values(
+
+                data.payoutRequests || {}
+
+            ).find(
+
+                p =>
+
+                    p.userId === interaction.user.id &&
+
+                    p.campaignId === campaignId &&
+
+                    p.status === "issue"
+
+            );
+
+            if (issue)
+
+                status = "⚠ On Hold";
+
+            text +=
+
+    `## ${campaign.name}
+
+    **Total Views**
+    ${formatNumber(stats.totalViews)}
+
+    **Paid Views**
+    ${formatNumber(stats.paidViews)}
+
+    **Unpaid Views**
+    ${formatNumber(unpaidViews)}
+
+    **Total Earned**
+    $${formatNumber(stats.earned)}
+
+    **Already Paid**
+    $${formatNumber(stats.paidMoney)}
+
+    **Pending**
+    $${formatNumber(pendingMoney)}
+
+    **Status**
+    ${status}
+
+    `;
+
         }
-      }
 
-      const campaignBreakdown = {};
-      approvedClips.forEach(clip => {
-        const cId = clip.campaignId;
-        if (!campaignBreakdown[cId]) {
-          const campaignConfig = CAMPAIGNS[cId];
-          campaignBreakdown[cId] = {
-            name: campaignConfig ? campaignConfig.name : `Campaign (${cId})`,
-            views: 0,
-            earned: 0
-          };
-        }
-        campaignBreakdown[cId].views += Number(clip.views) || 0;
-        campaignBreakdown[cId].earned += Number(clip.totalMoneyMade) || 0;
-      });
+        const embed = new EmbedBuilder()
 
-      let overviewText = '';
-      Object.values(campaignBreakdown).forEach(camp => {
-        overviewText += `🟥 **${camp.name}**\n`;
-        overviewText += `**Accumulated Views:** ${formatNumber(camp.views)} views\n`;
-        overviewText += `**Expected Payout:** $${formatNumber(camp.earned)}\n`;
-        overviewText += `**Status:** ${displayStatus}\n\n`; // Dynamically links to staff updates
-      });
+            .setColor(0x7ED957)
 
-      const embed = new EmbedBuilder()
-        .setColor(userPayoutState?.status === 'error' ? 0xE74C3C : 0x7ED957)
-        .setAuthor({
-          name: interaction.user.username,
-          iconURL: interaction.user.displayAvatarURL()
-        })
-        .setTitle('Detailed Overview of Your Payments')
-        .setDescription(overviewText.trim())
-        .setFooter({ text: 'Creators Elite Analytics Tracking Engine' })
-        .setTimestamp();
+            .setTitle("Payment Breakdown")
 
-      await interaction.reply({
-        embeds: [embed],
-        ephemeral: true
-      });
+            .setDescription(text)
 
-      return;
+            .setTimestamp();
+
+        await interaction.reply({
+
+            embeds: [embed],
+
+            ephemeral: true
+
+        });
+
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_view:')) {
