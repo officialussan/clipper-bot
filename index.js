@@ -2548,8 +2548,6 @@ client.once(Events.ClientReady, async () => {
 
     await migratePayoutSystem();
 
-    await addMissingPayoutChannels();
-
     autoTrackClipViews();
     setInterval(autoTrackClipViews, 30 * 60 * 1000);
 
