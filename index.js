@@ -16,7 +16,8 @@ const {
   PermissionsBitField,
   PermissionFlagsBits,
   EmbedBuilder,
-  Status
+  Status,
+  MessageFlags
 } = require('discord.js');
 
 const { MongoClient } = require('mongodb');
@@ -231,6 +232,17 @@ function loadData() {
   if (!raw.campaignAccountRequests) raw.campaignAccountRequests = {};
   if (!raw.clips) raw.clips = {};
   if (!raw.campaignStatus) raw.campaignStatus = {};
+  if (!raw.payoutTrackers) raw.payoutTrackers = {};
+
+  // One-time storage migration. Existing payout card metadata and payment state
+  // are preserved under the permanent tracker key.
+  for (const request of Object.values(raw.payoutRequests || {})) {
+    if (!request?.campaignId || !request?.userId) continue;
+
+    const id = request.id || `${request.campaignId}_${request.userId}`;
+    raw.payoutTrackers[id] ||= { ...request, id };
+  }
+  delete raw.payoutRequests;
 
   for (const clip of Object.values(raw.clips || {})) {
 
@@ -252,6 +264,54 @@ function loadData() {
 
 function saveData(data) {
   fs.writeFileSync(dataFilePath, JSON.stringify(data, null, 2));
+}
+
+function getPayoutTracker(campaignId, userId) {
+  const data = loadData();
+  const id = `${campaignId}_${userId}`;
+  return data.payoutTrackers?.[id] || null;
+}
+
+function ensurePayoutTracker(campaignId, userId) {
+  const data = loadData();
+  if (!data.payoutTrackers) data.payoutTrackers = {};
+
+  const id = `${campaignId}_${userId}`;
+  if (!data.payoutTrackers[id]) {
+    data.payoutTrackers[id] = {
+      id,
+      campaignId,
+      userId,
+      channelId: null,
+      messageId: null,
+      lifetimeViews: 0,
+      lifetimeEarned: 0,
+      lifetimePaid: 0,
+      currentUnpaidViews: 0,
+      currentUnpaidMoney: 0,
+      status: 'waiting',
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    saveData(data);
+  }
+
+  return data.payoutTrackers[id];
+}
+
+function savePayoutTracker(tracker) {
+  if (!tracker?.campaignId || !tracker?.userId) {
+    throw new Error('Payout tracker requires campaignId and userId.');
+  }
+
+  const data = loadData();
+  if (!data.payoutTrackers) data.payoutTrackers = {};
+
+  tracker.id ||= `${tracker.campaignId}_${tracker.userId}`;
+  tracker.updatedAt = Date.now();
+  data.payoutTrackers[tracker.id] = tracker;
+  saveData(data);
+  return tracker;
 }
 
 function ensureUser(data, member) {
@@ -371,7 +431,7 @@ function getUserPayoutSummary(data, userId, campaignId) {
 
 }
 
-async function sendPayoutCard(guild, campaignId, userId) {
+async function syncPayoutCard(guild, campaignId, userId) {
 
     const data = loadData();
 
@@ -427,32 +487,29 @@ async function sendPayoutCard(guild, campaignId, userId) {
 
     }, 0);
 
-    if (unpaidViews <= 0) return;
-
     const payoutId = `${campaignId}_${userId}`;
-
-    if (
-        data.payoutRequests?.[payoutId] &&
-        data.payoutRequests[payoutId].status === "pending"
-    ) {
-        return;
-    }
 
     const unpaidMoney =
         unpaidViews / 1000000 *
         campaign.ratePerMillion;
 
-    if (!data.payoutRequests) data.payoutRequests = {};
+    if (!data.payoutTrackers) data.payoutTrackers = {};
 
-    data.payoutRequests[payoutId] = {
+    const tracker = data.payoutTrackers[payoutId] || {
         id: payoutId,
         campaignId,
         userId,
         unpaidViews,
         unpaidMoney,
         status: "pending",
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        messageId: null,
+        channelId: null
     };
+    tracker.unpaidViews = unpaidViews;
+    tracker.unpaidMoney = unpaidMoney;
+    tracker.updatedAt = Date.now();
+    data.payoutTrackers[payoutId] = tracker;
 
     saveData(data);
 
@@ -502,15 +559,26 @@ $${unpaidMoney.toFixed(2)}
 
         );
 
-    const msg = await channel.send({
+    const payload = {
         embeds: [embed],
         components: [row]
-    });
+    };
+
+    let msg = null;
+    if (tracker.messageId) {
+        msg = await channel.messages.fetch(tracker.messageId).catch(() => null);
+    }
+
+    if (msg) {
+        await msg.edit(payload);
+    } else {
+        msg = await channel.send(payload);
+    }
 
     console.log("✅ Payout card sent");
 
-    data.payoutRequests[payoutId].messageId = msg.id;
-    data.payoutRequests[payoutId].channelId = channel.id;
+    data.payoutTrackers[payoutId].messageId = msg.id;
+    data.payoutTrackers[payoutId].channelId = channel.id;
 
     saveData(data);
 
@@ -970,7 +1038,7 @@ async function backfillPayoutCards() {
                 continue;
 
             // Don't create duplicates
-            const alreadyExists = Object.values(data.payoutRequests || {}).some(r =>
+            const alreadyExists = Object.values(data.payoutTrackers || {}).some(r =>
                 r.userId === userId &&
                 r.campaignId === campaignId &&
                 r.status === "pending"
@@ -979,7 +1047,7 @@ async function backfillPayoutCards() {
             if (alreadyExists)
                 continue;
 
-            await sendPayoutCard(
+            await syncPayoutCard(
                 guild,
                 campaignId,
                 userId
@@ -1117,7 +1185,7 @@ function buildLeaderboardEmbed(guild, data, page = 1, perPage = 10) {
     .setDescription(`### Top Clippers All Time <a:chart1:1504773558415523931>\n\n${leaderboardText}\n\n<:whiteCE:1504904179905200148> Powered by Creators Elite`)
     .setFooter({ text: `Page ${currentPage} / ${totalPages}` });
 
-  return { embed, totalPages };
+  return { embed, page: currentPage, totalPages };
 }
 
 function buildLeaderboardButtons(page, totalPages) {
@@ -1661,7 +1729,7 @@ async function migratePayoutSystem() {
             if (unpaidViews < campaign.payoutThreshold)
                 continue;
 
-            await sendPayoutCard(
+            await syncPayoutCard(
                 guild,
                 campaignId,
                 userId
@@ -1716,33 +1784,6 @@ async function addMissingPayoutChannels() {
     saveData(data);
 
     console.log("✅ Missing payout channels created.");
-}
-
-function ensureCampaignPlatformStats(userRecord, campaignId, platform, username = '') {
-  if (!userRecord.campaignStats) {
-    userRecord.campaignStats = {};
-  }
-
-  if (!userRecord.campaignStats[campaignId]) {
-    userRecord.campaignStats[campaignId] = {};
-  }
-
-  if (!userRecord.campaignStats[campaignId][platform]) {
-    userRecord.campaignStats[campaignId][platform] = {
-      username,
-      videosPosted: 0,
-      videosApproved: 0,
-      videosRejected: 0,
-      totalViews: 0,
-      moneyMade: 0
-    };
-  }
-
-  if (username && !userRecord.campaignStats[campaignId][platform].username) {
-    userRecord.campaignStats[campaignId][platform].username = username;
-  }
-
-  return userRecord.campaignStats[campaignId][platform];
 }
 
 function buildCampaignPanelButtons(campaign, data) {
@@ -2307,89 +2348,64 @@ if (guild) {
         await updateCampaignPanelMessage(guild, campaignId);
     }
 
-    for(const campaignId of Object.keys(CAMPAIGNS)){
+    const payoutPairs = new Set(
+        Object.values(data.clips || {})
+            .filter(clip => clip.status === 'approved')
+            .map(clip => clip.campaignId + ':' + clip.userId)
+    );
 
-        const campaign=CAMPAIGNS[campaignId];
+    for (const pair of payoutPairs) {
+        const [campaignId, userId] = pair.split(':');
+        const campaign = CAMPAIGNS[campaignId];
+        if (!campaign) continue;
 
-        const users=[
+        const clips = Object.values(data.clips || {}).filter(clip =>
+            clip.userId === userId &&
+            clip.campaignId === campaignId &&
+            clip.status === 'approved'
+        );
 
-            ...new Set(
+        const lifetimeViews = clips.reduce((sum, clip) => sum + (Number(clip.views) || 0), 0);
+        const lifetimePaid = clips.reduce((sum, clip) => sum + (Number(clip.payout?.paidMoney) || 0), 0);
+        const paidViews = clips.reduce((sum, clip) => sum + (Number(clip.payout?.paidViews) || 0), 0);
+        const lifetimeEarned = lifetimeViews / 1000000 * (campaign.ratePerMillion || 0);
+        const unpaidViews = Math.max(lifetimeViews - paidViews, 0);
+        const unpaidMoney = Math.max(lifetimeEarned - lifetimePaid, 0);
+        const trackerId = campaignId + '_' + userId;
 
-                Object.values(data.clips)
+        const tracker = data.payoutTrackers[trackerId] || {
+            id: trackerId,
+            campaignId,
+            userId,
+            channelId: null,
+            messageId: null,
+            createdAt: Date.now()
+        };
 
-                .filter(c=>
- 
-                    c.campaignId===campaignId &&
+        Object.assign(tracker, {
+            lifetimeViews,
+            lifetimeEarned,
+            lifetimePaid,
+            currentUnpaidViews: unpaidViews,
+            currentUnpaidMoney: unpaidMoney,
+            unpaidViews,
+            unpaidMoney,
+            status: unpaidViews >= campaign.payoutThreshold ? 'ready' : 'waiting',
+            updatedAt: Date.now()
+        });
 
-                    c.status==="approved"
-
-                )
-
-                .map(c=>c.userId)
-
-            )
-
-        ];
-
-        for(const userId of users){
-
-            const clips=
-
-                Object.values(data.clips).filter(c=>
-
-                    c.userId===userId &&
-
-                    c.campaignId===campaignId &&
-
-                    c.status==="approved"
-
-                );
-
-            const unpaidViews=
-   
-                clips.reduce((sum,clip)=>{
-
-                    const paid=
-
-                        clip.payout?.paidViews||0;
-
-                    return sum+
-
-                    Math.max(
-
-                        clip.views-paid,
-
-                        0
-
-                    );
-
-                },0);
-
-            if (unpaidViews >= campaign.payoutThreshold) {
-
-                console.log({
-                    campaignId,
-                    userId,
-                    unpaidViews,
-                    threshold: campaign.payoutThreshold
-                });
-
-                await sendPayoutCard(
-                    guild,
-                    campaignId,
-                    userId
-                );
-
-            }
-
-        }    
-
+        data.payoutTrackers[trackerId] = tracker;
     }
 
     saveData(data);
-}
 
-console.log('✅ Auto tracking completed & Leaderboards updated!');
+    for (const pair of payoutPairs) {
+        const [campaignId, userId] = pair.split(':');
+        await syncPayoutCard(guild, campaignId, userId);
+    }
+
+}
+console.log('Auto tracking completed & Leaderboards updated!');
   } catch (err) {
     console.error('❌ Auto tracking failed:', err);
   } finally {
@@ -2768,7 +2784,7 @@ client.on(Events.MessageCreate, async message => {
 
     if (message.content === '!leaderboard') {
       const data = loadData();
-      const leaderboard = buildLeaderboardEmbed(data, 1, 10);
+      const leaderboard = buildLeaderboardEmbed(message.guild, data, 1, 10);
 
       await message.channel.send({
         embeds: [leaderboard.embed],
@@ -3351,7 +3367,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const newPage = currentPage - 1;
 
       const data = loadData();
-      const leaderboard = buildLeaderboardEmbed(data, newPage, 10);
+      const leaderboard = buildLeaderboardEmbed(interaction.guild, data, newPage, 10);
 
       await interaction.update({
         embeds: [leaderboard.embed],
@@ -3366,7 +3382,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const newPage = currentPage + 1;
 
       const data = loadData();
-      const leaderboard = buildLeaderboardEmbed(data, newPage, 10);
+      const leaderboard = buildLeaderboardEmbed(interaction.guild, data, newPage, 10);
 
       await interaction.update({
         embeds: [leaderboard.embed],
@@ -3379,7 +3395,7 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.isButton() && interaction.customId === 'view_your_clips') {
       await interaction.reply({
         content: '📂 Clip history is not connected yet. This button will show all your submitted clips once clip tracking is added.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -3389,18 +3405,18 @@ client.on(Events.InteractionCreate, async interaction => {
         const userId = interaction.user.id;
 
         if (!STAFF_ROLE_ID) {
-          await interaction.reply({ content: '❌ STAFF_ROLE_ID is missing.', ephemeral: true });
+          await interaction.reply({ content: '❌ STAFF_ROLE_ID is missing.', flags: MessageFlags.Ephemeral });
           return;
         }
 
         if (!TICKET_CATEGORY_ID) {
-          await interaction.reply({ content: '❌ TICKET_CATEGORY_ID is missing.', ephemeral: true });
+          await interaction.reply({ content: '❌ TICKET_CATEGORY_ID is missing.',  flags: MessageFlags.Ephemeral });
           return;
         }
 
         const category = interaction.guild.channels.cache.get(TICKET_CATEGORY_ID);
         if (!category) {
-          await interaction.reply({ content: '❌ Ticket category not found. Check TICKET_CATEGORY_ID.', ephemeral: true });
+          await interaction.reply({ content: '❌ Ticket category not found. Check TICKET_CATEGORY_ID.', flags: MessageFlags.Ephemeral });
           return;
         }
 
@@ -3413,7 +3429,7 @@ client.on(Events.InteractionCreate, async interaction => {
         if (existingTicket) {
           await interaction.reply({
             content: `❌ You already have an open ticket: ${existingTicket}`,
-            ephemeral: true
+            flags: MessageFlags.Ephemeral
           });
           return;
         }
@@ -3484,7 +3500,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         await interaction.reply({
           content: `✅ Ticket created: ${channel}`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
 
         return;
@@ -3493,7 +3509,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         await interaction.reply({
           content: `❌ Ticket error: ${err.message}`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         }).catch(() => {});
         return;
       }
@@ -3609,12 +3625,12 @@ client.on(Events.InteractionCreate, async interaction => {
 
         const data = loadData();
 
-        const payout = data.payoutRequests?.[payoutId];
+        const payout = data.payoutTrackers?.[payoutId];
 
         if (!payout) {
             return interaction.reply({
                 content: "❌ Payout request not found.",
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
             });
         }
 
@@ -3626,7 +3642,7 @@ client.on(Events.InteractionCreate, async interaction => {
         if (!campaign) {
             return interaction.reply({
                 content: "❌ Campaign not found.",
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
             });
         }
 
@@ -3678,6 +3694,10 @@ client.on(Events.InteractionCreate, async interaction => {
         payout.paidAt = Date.now();
         payout.paidViews = paidViews;
         payout.paidMoney = paidMoney;
+        payout.lifetimePaid = (Number(payout.lifetimePaid) || 0) + paidMoney;
+        payout.currentUnpaidViews = 0;
+        payout.currentUnpaidMoney = 0;
+        payout.updatedAt = Date.now();
  
         saveData(data);
 
@@ -3693,26 +3713,41 @@ client.on(Events.InteractionCreate, async interaction => {
                 .addComponents(
                     new ButtonBuilder()
                         .setStyle(ButtonStyle.Link)
-                        .setLabel("💸 Share Payment Result")
+                        .setLabel("<a:flyin:1506234392920723546> Share Payment Result")
                         .setURL("https://discord.com/channels/1413113505565118524/1533850271292199143")
                 );
 
             const dmEmbed = new EmbedBuilder()
                 .setColor(0x57F287)
-                .setTitle("✅ Payment Sent")
+                .setAuthor({
+                    name: `${campaign.name}`,
+                    iconURL: guild.iconURL()
+                })
+                .setTitle("<a:flyin:1506234392920723546> You just got paid!")
                 .setDescription(
-        `Campaign
+            `Thanks for participating in **${campaign.name}**.
 
-        ${campaign.name}
+            Your payment has been successfully processed and sent to your **${paymentLabel.replace(" ID","")}** account.
 
-        Views Paid
+            <a:chart1:1504773558415523931> **Views Paid**
+            ${formatNumber(paidViews)}
 
-        ${formatNumber(paidViews)}
+            💰 **Amount Paid**
+            **$${paidMoney.toFixed(2)}**
 
-        Amount
+            🏦 **Destination**
+            \`${paymentValue}\`
 
-        $${paidMoney.toFixed(2)}`
-                );
+            🗓️ **Payment Date**
+            <t:${Math.floor(Date.now()/1000)}:F>
+
+            ### Notes
+            Network fees may apply depending on your exchange or wallet.`
+                )
+                .setFooter({
+                    text: "<:whiteCE:1504904179905200148> Creators Elite • Thank you for clipping ❤️"
+                })
+                .setTimestamp();
  
             console.log("Sending DM...");
 
@@ -3730,28 +3765,13 @@ client.on(Events.InteractionCreate, async interaction => {
 
         }
 
-        await interaction.update({
-            embeds: [
-                new EmbedBuilder()
-                    .setColor(0x57F287)
-                    .setTitle("✅ Payment Completed")
-                    .setDescription(
-    `👤 <@${userId}>
+        await syncPayoutCard(interaction.guild, campaignId, userId);
 
-    **Campaign**
-    ${campaign.name}
-
-    **Views Paid**
-    ${formatNumber(paidViews)}
-
-    **Amount Paid**
-    $${paidMoney.toFixed(2)}
-
-    Status: **PAID**`
-                    )
-            ],
-            components: []
+        await interaction.reply({
+            content: 'Payment recorded and payout tracker refreshed.',
+            flags: MessageFlags.Ephemeral
         });
+        return;
 
    }
 
@@ -3761,12 +3781,12 @@ client.on(Events.InteractionCreate, async interaction => {
 
        const data = loadData();
 
-       const payout = data.payoutRequests?.[payoutId];
+       const payout = data.payoutTrackers?.[payoutId];
 
        if (!payout) {
            return interaction.reply({
                content: "❌ Payout request not found.",
-               ephemeral: true
+               flags: MessageFlags.Ephemeral
            });
        }
 
@@ -3802,12 +3822,12 @@ client.on(Events.InteractionCreate, async interaction => {
 
        const data = loadData();
 
-       const payout = data.payoutRequests?.[payoutId];
+       const payout = data.payoutTrackers?.[payoutId];
 
        if (!payout) {
            return interaction.reply({
                content: "❌ Payout request not found.",
-               ephemeral: true
+               flags: MessageFlags.Ephemeral
            });
        }
 
@@ -3815,12 +3835,23 @@ client.on(Events.InteractionCreate, async interaction => {
        const userId = payout.userId;
 
        const campaign = CAMPAIGNS[campaignId];
+       const user = data.users?.[userId];
+       const exchange = user?.paymentDetails?.exchange;
+       const paymentLabel = exchange
+           ? `${exchange.charAt(0).toUpperCase()}${exchange.slice(1)} ID`
+           : 'Payment ID';
+       const paymentValue = user?.paymentDetails?.paymentId || 'Not Set';
+       const unpaidViews = Number(payout.unpaidViews) || 0;
+       const unpaidMoney = Number(payout.unpaidMoney) || 0;
 
        const reason = interaction.fields.getTextInputValue("reason");
 
        payout.status = "issue";
        payout.issueReason = reason;
        payout.issueAt = Date.now();
+       payout.currentUnpaidViews = Number(payout.currentUnpaidViews ?? payout.unpaidViews) || 0;
+       payout.currentUnpaidMoney = Number(payout.currentUnpaidMoney ?? payout.unpaidMoney) || 0;
+       payout.updatedAt = Date.now();
 
        saveData(data);
 
@@ -3829,54 +3860,52 @@ client.on(Events.InteractionCreate, async interaction => {
 
            const member = await interaction.guild.members.fetch(userId);
 
-           await member.send({
-               embeds: [
-                   new EmbedBuilder()
-                       .setColor(0xED4245)
-                       .setTitle("⚠ Payment Delayed")
-                       .setDescription(
-   `Your payout for **${campaign.name}** cannot be processed yet.
+           const issueEmbed = new EmbedBuilder()
+    .setColor(0xF39C12)
+    .setTitle(`⚠️ Payment Issue With Your ${paymentLabel.replace(" ID","")} Account`)
+    .setDescription(
+`Your payment for the **${campaign.name}** campaign could not be completed.
 
-   **Reason**
-   ${reason}
+This issue is related to your **${paymentLabel.replace(" ID","")}** account rather than the Creators Elite payment system.
 
-   Please contact the staff once the issue has been resolved.`
-                       )
-               ]
-           });
+📈 **Views Affected**
+${formatNumber(unpaidViews)}
+
+💰 **Expected Payout**
+**$${unpaidMoney.toFixed(2)}**
+
+🏦 **${paymentLabel}**
+\`${paymentValue}\`
+
+### Reason
+${reason}
+
+### What to do next
+
+1. Verify that your **${paymentLabel.replace(" ID","")}** account details are correct.
+2. Update your payment ID if necessary.
+3. Once resolved, open a ticket in <#${1492888887452762313}>
+
+> Your payout has **NOT** been lost. It will remain pending until the issue is resolved.`
+    )
+    .setFooter({
+        text: "<:whiteCE:1504904179905200148> Creators Elite • Payment Support"
+    })
+    .setTimestamp();
+
+           await member.send({ embeds: [issueEmbed] });
 
        } catch (err) {
            console.log("Couldn't DM user.");
        }
 
-       // Update payout card
-       await interaction.update({
+       await syncPayoutCard(interaction.guild, campaignId, userId);
 
-           embeds: [
-
-               new EmbedBuilder()
-
-                   .setColor(0xED4245)
-
-                   .setTitle("⚠ Payment On Hold")
-
-                   .setDescription(
-   `👤 <@${userId}>
-
-   **Campaign**
-   ${campaign.name}
-
-   **Reason**
-   ${reason}
-
-   Status: **ON HOLD**`
-                )
-
-           ],
-
-           components: []
-
+       await interaction.reply({
+           content: 'Payout issue recorded and tracker refreshed.',
+           flags: MessageFlags.Ephemeral
        });
+       return;
 
    }
 
@@ -3944,7 +3973,7 @@ client.on(Events.InteractionCreate, async interaction => {
       await interaction.reply({
         embeds: [embed],
         components: [row],
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
 
       return;
@@ -3965,7 +3994,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (userClips.length === 0) {
         await interaction.reply({
           content: '❌ You haven\'t submitted any video clips to track yet.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -4035,7 +4064,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (interaction.replied || interaction.deferred) {
         await interaction.editReply({ embeds: [embed], components: [row] });
       } else {
-        await interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
+        await interaction.reply({ embeds: [embed], components: [row], flags: MessageFlags.Ephemeral });
       }
       return;
     }
@@ -4052,7 +4081,7 @@ client.on(Events.InteractionCreate, async interaction => {
         content: userRecord.hideFromLeaderboard
           ? '✅ Your name will now show as **Hidden** on the leaderboard.'
           : '✅ Your name will now show normally on the leaderboard.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
 
       return;
@@ -4167,7 +4196,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
             components: [row],
 
-            ephemeral: true
+            flags: MessageFlags.Ephemeral
 
         });
 
@@ -4225,7 +4254,7 @@ client.on(Events.InteractionCreate, async interaction => {
         components: [
           new ActionRowBuilder().addComponents(countryMenu)
          ],
-         ephemeral: true
+         flags: MessageFlags.Ephemeral
        });
 
        return;
@@ -4236,7 +4265,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const session = data.demographicsSessions?.[interaction.user.id];
 
       if (!session) {
-        await interaction.reply({ content: '❌ Session expired.', ephemeral: true });
+        await interaction.reply({ content: '❌ Session expired.', flags: MessageFlags.Ephemeral });
         return;
       }
  
@@ -4282,7 +4311,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const session = data.demographicsSessions?.[interaction.user.id];
 
       if (!session) {
-        await interaction.reply({ content: '❌ Session expired.', ephemeral: true });
+        await interaction.reply({ content: '❌ Session expired.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -4321,7 +4350,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!session) {
         await interaction.reply({
           content: '❌ Session expired. Start again.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -4708,7 +4737,7 @@ client.on(Events.InteractionCreate, async interaction => {
     // ------------------------------------------
     if (interaction.isModalSubmit() && interaction.customId === 'proxy_purchase_modal') {
 
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       const country = interaction.fields.getTextInputValue('proxy_country').trim();
       const quantityStr = interaction.fields.getTextInputValue('proxy_quantity').trim();
@@ -4895,7 +4924,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!allowed.includes(exchange.toLowerCase())) {
         await interaction.reply({
           content: '❌ Exchange must be Binance or Bybit.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -4961,7 +4990,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await interaction.reply({
         content: '✅ Payment details submitted successfully.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
 
       return;
@@ -5018,7 +5047,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
                 content: "You don't have any approved clips yet.",
 
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
 
             });
 
@@ -5082,7 +5111,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
             const payout = Object.values(
 
-                data.payoutRequests || {}
+                data.payoutTrackers || {}
 
             ).find(
 
@@ -5104,7 +5133,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
             const issue = Object.values(
 
-                data.payoutRequests || {}
+                data.payoutTrackers || {}
 
             ).find(
 
@@ -5165,7 +5194,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
             embeds: [embed],
 
-            ephemeral: true
+            flags: MessageFlags.Ephemeral
 
         });
 
@@ -5176,7 +5205,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const campaign = CAMPAIGNS[campaignId];
 
       if (!campaign) {
-        await interaction.reply({ content: '❌ Campaign not found.', ephemeral: true });
+        await interaction.reply({ content: '❌ Campaign not found.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5184,7 +5213,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
 
       if (!member) {
-        await interaction.reply({ content: '❌ Could not load your account.', ephemeral: true });
+        await interaction.reply({ content: '❌ Could not load your account.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5193,7 +5222,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await interaction.reply({
         content: `🌐 **${campaign.name} - Accounts**\n\n${text}`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
 
       return;
@@ -5206,7 +5235,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!campaign) {
         await interaction.reply({
           content: '❌ Campaign not found.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -5216,7 +5245,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await interaction.reply({
         embeds: [embed],
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
 
       return;
@@ -5227,7 +5256,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const campaign = CAMPAIGNS[campaignId];
 
       if (!campaign) {
-        await interaction.reply({ content: '❌ Campaign not found.', ephemeral: true });
+        await interaction.reply({ content: '❌ Campaign not found.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5244,7 +5273,7 @@ client.on(Events.InteractionCreate, async interaction => {
       await interaction.reply({
         content: `Choose platform for **${campaign.name}**`,
         components: [new ActionRowBuilder().addComponents(select)],
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
 
       return;
@@ -5256,7 +5285,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const campaign = CAMPAIGNS[campaignId];
  
       if (!campaign) {
-        await interaction.reply({ content: '❌ Campaign not found.', ephemeral: true });
+        await interaction.reply({ content: '❌ Campaign not found.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5284,7 +5313,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const campaign = CAMPAIGNS[campaignId];
 
       if (!campaign) {
-        await interaction.reply({ content: '❌ Campaign not found.', ephemeral: true });
+        await interaction.reply({ content: '❌ Campaign not found.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5293,7 +5322,7 @@ client.on(Events.InteractionCreate, async interaction => {
       );
 
       if (!username) {
-        await interaction.reply({ content: '❌ Username cannot be empty.', ephemeral: true });
+        await interaction.reply({ content: '❌ Username cannot be empty.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5301,7 +5330,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
 
       if (!member) {
-        await interaction.reply({ content: '❌ User not found.', ephemeral: true });
+        await interaction.reply({ content: '❌ User not found.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5315,7 +5344,7 @@ client.on(Events.InteractionCreate, async interaction => {
       );
 
       if (!validation.isValid) {
-        return await interaction.reply({ content: validation.message, ephemeral: true });
+        return await interaction.reply({ content: validation.message, flags: MessageFlags.Ephemeral });
       }
 
       // --- FIX START: ALLOW MULTIPLE ACCOUNTS, ONLY BLOCK EXPLICIT DUPLICATES ---
@@ -5357,7 +5386,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (handleExistsGlobally && claimedBySomeoneElse) {
         await interaction.reply({
           content: `❌ The account **@${username}** has already been linked by another creator.`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -5366,7 +5395,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if ((handleExistsGlobally && !claimedBySomeoneElse) || duplicatePending) {
         await interaction.reply({
           content: `❌ You have already linked or submitted a pending request for **@${username}**!`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -5401,7 +5430,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const staffChannel = interaction.guild.channels.cache.get(staffChannelId);
 
       if (!staffChannel) {
-          return interaction.reply({ content: '❌ Staff channel not found.', ephemeral: true });
+          return interaction.reply({ content: '❌ Staff channel not found.', flags: MessageFlags.Ephemeral });
       }
 
       const sent = await staffChannel.send({
@@ -5417,7 +5446,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await interaction.reply({
         content: `✅ Campaign account request submitted for **${campaign.name}** using **@${username}**. Wait for staff code.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
 
       return;
@@ -5425,7 +5454,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
     if (interaction.isButton() && interaction.customId.startsWith('campaign_staff_send_code:')) {
       if (!interaction.guild || !isAdmin(interaction.member)) {
-        await interaction.reply({ content: '❌ You are not allowed to do this.', ephemeral: true });
+        await interaction.reply({ content: '❌ You are not allowed to do this.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5434,7 +5463,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const request = data.campaignAccountRequests[requestId];
 
       if (!request) {
-        await interaction.reply({ content: '❌ Request not found.', ephemeral: true });
+        await interaction.reply({ content: '❌ Request not found.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5459,7 +5488,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
     if (interaction.isModalSubmit() && interaction.customId.startsWith('campaign_staff_code_modal:')) {
       if (!interaction.guild || !isAdmin(interaction.member)) {
-        await interaction.reply({ content: '❌ You are not allowed to do this.', ephemeral: true });
+        await interaction.reply({ content: '❌ You are not allowed to do this.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5468,7 +5497,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const request = data.campaignAccountRequests[requestId];
 
       if (!request) {
-        await interaction.reply({ content: '❌ Request not found.', ephemeral: true });
+        await interaction.reply({ content: '❌ Request not found.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5524,10 +5553,10 @@ client.on(Events.InteractionCreate, async interaction => {
 
       if (interaction.message) {
         await interaction.update({ components: [waitingRow] });
-        await interaction.followUp({ content: `✅ Bio code sent to <@${request.userId}> via DM.`, ephemeral: true });
+        await interaction.followUp({ content: `✅ Bio code sent to <@${request.userId}> via DM.`, flags: MessageFlags.Ephemeral });
       } else {
         await updateCampaignAccountStaffMessage(interaction.guild, request);
-        await interaction.reply({ content: `✅ Bio code sent to <@${request.userId}> via DM.`, ephemeral: true });
+        await interaction.reply({ content: `✅ Bio code sent to <@${request.userId}> via DM.`, flags: MessageFlags.Ephemeral });
       }
 
       return;
@@ -5539,12 +5568,12 @@ client.on(Events.InteractionCreate, async interaction => {
       const request = data.campaignAccountRequests[requestId];
 
       if (!request) {
-        await interaction.reply({ content: '❌ Request not found.', ephemeral: true });
+        await interaction.reply({ content: '❌ Request not found.', flags: MessageFlags.Ephemeral });
         return;
       }
 
       if (interaction.user.id !== request.userId) {
-        await interaction.reply({ content: '❌ This code is not for you.', ephemeral: true });
+        await interaction.reply({ content: '❌ This code is not for you.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5561,7 +5590,7 @@ client.on(Events.InteractionCreate, async interaction => {
           `\`${request.bioCode}\`\n\n` +
           `Then click **Confirm Bio Updated** below.`,
         components: [row],
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
 
       return;
@@ -5576,11 +5605,11 @@ client.on(Events.InteractionCreate, async interaction => {
       const request = data.campaignAccountRequests[requestId];
 
       if (!request) {
-        await interaction.reply({ content: '❌ Account verification request not found or expired.', ephemeral: true });
+        await interaction.reply({ content: '❌ Account verification request not found or expired.', flags: MessageFlags.Ephemeral });
         return;
       }
 
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       // 1. Update status to trigger Accept/Reject buttons
       request.status = 'ready_for_review';
@@ -5606,7 +5635,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
     if (interaction.isButton() && interaction.customId.startsWith('campaign_staff_accept:')) {
       if (!interaction.guild || !isAdmin(interaction.member)) {
-        await interaction.reply({ content: '❌ You are not allowed to do this.', ephemeral: true });
+        await interaction.reply({ content: '❌ You are not allowed to do this.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5615,13 +5644,13 @@ client.on(Events.InteractionCreate, async interaction => {
       const request = data.campaignAccountRequests[requestId];
 
       if (!request) {
-        await interaction.reply({ content: '❌ Request not found.', ephemeral: true });
+        await interaction.reply({ content: '❌ Request not found.', flags: MessageFlags.Ephemeral });
         return;
       }
 
       const member = await interaction.guild.members.fetch(request.userId).catch(() => null);
       if (!member) {
-        await interaction.reply({ content: '❌ User not found in server.', ephemeral: true });
+        await interaction.reply({ content: '❌ User not found in server.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5687,7 +5716,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await interaction.reply({
         content: `✅ Approved **${formatPlatform(request.platform)}** account **@${request.username}** for **${request.campaignName}**.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
 
       return;
@@ -5695,7 +5724,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
     if (interaction.isButton() && interaction.customId.startsWith('campaign_staff_reject:')) {
         if (!interaction.guild || !isAdmin(interaction.member)) {
-            return interaction.reply({ content: '❌ You are not allowed to do this.', ephemeral: true });
+            return interaction.reply({ content: '❌ You are not allowed to do this.', flags: MessageFlags.Ephemeral });
         }
 
         const requestId = interaction.customId.split(':')[1];
@@ -5721,7 +5750,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
     if (interaction.isModalSubmit() && interaction.customId.startsWith('campaign_staff_reject_modal:')) {
         if (!interaction.guild || !isAdmin(interaction.member)) {
-            return interaction.reply({ content: '❌ You are not allowed to do this.', ephemeral: true });
+            return interaction.reply({ content: '❌ You are not allowed to do this.', flags: MessageFlags.Ephemeral });
         }
 
         const requestId = interaction.customId.split(':')[1];
@@ -5729,7 +5758,7 @@ client.on(Events.InteractionCreate, async interaction => {
         const request = data.campaignAccountRequests[requestId];
 
         if (!request) {
-            return interaction.reply({ content: '❌ Request not found.', ephemeral: true });
+            return interaction.reply({ content: '❌ Request not found.', flags: MessageFlags.Ephemeral });
         }
 
         const reason = interaction.fields.getTextInputValue('campaign_reject_reason_input').trim();
@@ -5755,7 +5784,7 @@ client.on(Events.InteractionCreate, async interaction => {
         if (interaction.message) {
             await interaction.update({ embeds: [updatedEmbed], components: [rejectedRow] });
         } else {
-        await interaction.reply({ content: `❌ Account request rejected with reason: "${reason}"`, ephemeral: true });
+        await interaction.reply({ content: `❌ Account request rejected with reason: "${reason}"`, flags: MessageFlags.Ephemeral });
         }
 
         // Send DM notification to user with the custom reason
@@ -5770,7 +5799,7 @@ client.on(Events.InteractionCreate, async interaction => {
             await targetMember.send({ embeds: [dmEmbed] }).catch(() => {});
         }
 
-        return interaction.followUp({ content: `❌ Rejected account request for <@${request.userId}>. Reason: "${reason}"`, ephemeral: true });
+        return interaction.followUp({ content: `❌ Rejected account request for <@${request.userId}>. Reason: "${reason}"`, flags: MessageFlags.Ephemeral });
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_remove:')) {
@@ -5778,7 +5807,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const campaign = CAMPAIGNS[campaignId];
 
       if (!campaign) {
-        return interaction.reply({ content: '❌ Campaign not found.', ephemeral: true });
+        return interaction.reply({ content: '❌ Campaign not found.', flags: MessageFlags.Ephemeral });
       }
 
       const data = loadData();
@@ -5790,7 +5819,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (platforms.length === 0) {
         return interaction.reply({
           content: '📭 You don\'t have any accounts linked to this campaign.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -5798,7 +5827,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (platforms.length === 1) {
         return interaction.reply({
           content: `⚠️ **Action Denied:** You only have one account linked to this campaign (\`${formatPlatform(platforms[0])}: @${accounts[platforms[0]].username}\`). To protect your stats, you must leave at least one active account. If you want to stop entirely, use the **Leave Campaign** option instead.`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -5817,7 +5846,7 @@ client.on(Events.InteractionCreate, async interaction => {
       await interaction.reply({
         content: '🗑️ **Select which account you want to remove from this campaign:**',
         components: [new ActionRowBuilder().addComponents(select)],
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -5830,7 +5859,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
 
       if (!member) {
-        await interaction.reply({ content: '❌ Could not load your account.', ephemeral: true });
+        await interaction.reply({ content: '❌ Could not load your account.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5838,7 +5867,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       const username = userRecord.campaignAccounts?.[campaignId]?.[platform]?.username;
       if (!username) {
-        await interaction.reply({ content: '❌ Campaign account not found.', ephemeral: true });
+        await interaction.reply({ content: '❌ Campaign account not found.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5864,7 +5893,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await interaction.reply({
         content: `✅ Removed **${formatPlatform(platform)}** account **@${username}** from this campaign.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
 
       return;
@@ -5875,7 +5904,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const campaign = CAMPAIGNS[campaignId];
 
       if (!campaign) {
-        await interaction.reply({ content: '❌ Campaign not found.', ephemeral: true });
+        await interaction.reply({ content: '❌ Campaign not found.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5883,7 +5912,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
 
       if (!member) {
-        await interaction.reply({ content: '❌ Could not load your account.', ephemeral: true });
+        await interaction.reply({ content: '❌ Could not load your account.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5896,7 +5925,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (availablePlatforms.length === 0) {
         await interaction.reply({
           content: '❌ You do not have any verified campaign account set for this campaign yet.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -5937,7 +5966,7 @@ client.on(Events.InteractionCreate, async interaction => {
       await interaction.reply({
         content: 'Choose which campaign account these clips belong to.',
         components: [new ActionRowBuilder().addComponents(select)],
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
 
       return;
@@ -5972,12 +6001,12 @@ client.on(Events.InteractionCreate, async interaction => {
         const campaign = CAMPAIGNS[campaignId];
 
         if (!campaign) {
-            await interaction.reply({ content: '❌ Campaign not found.', ephemeral: true });
+            await interaction.reply({ content: '❌ Campaign not found.', flags: MessageFlags.Ephemeral });
             return;
         }
 
         if (campaign.status === 'finished') {
-            await interaction.reply({ content: '❌ This campaign has already been closed.', ephemeral: true });
+            await interaction.reply({ content: '❌ This campaign has already been closed.', flags: MessageFlags.Ephemeral });
             return;
         }
 
@@ -5985,12 +6014,12 @@ client.on(Events.InteractionCreate, async interaction => {
         const links = extractLinksFromText(rawLinks);
 
         if (links.length === 0) {
-            await interaction.reply({ content: '❌ Please paste at least one link.', ephemeral: true });
+            await interaction.reply({ content: '❌ Please paste at least one link.', flags: MessageFlags.Ephemeral });
             return;
         } 
 
         if (links.length > 20) {
-            await interaction.reply({ content: '❌ You can submit up to 20 links at once.', ephemeral: true });
+            await interaction.reply({ content: '❌ You can submit up to 20 links at once.', flags: MessageFlags.Ephemeral });
             return;
         }
 
@@ -5998,7 +6027,7 @@ client.on(Events.InteractionCreate, async interaction => {
         if (invalidLinks.length > 0) {
             await interaction.reply({
                 content: `❌ Some links are invalid.\n\nFirst invalid link:\n${invalidLinks[0]}`,
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
             });
             return;
         }
@@ -6007,7 +6036,7 @@ client.on(Events.InteractionCreate, async interaction => {
         const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
 
         if (!member) {
-            await interaction.reply({ content: '❌ User not found.', ephemeral: true });
+            await interaction.reply({ content: '❌ User not found.', flags: MessageFlags.Ephemeral });
             return;
         }
 
@@ -6017,7 +6046,7 @@ client.on(Events.InteractionCreate, async interaction => {
         if (!campaignAccount || !campaignAccount.verified) {
             await interaction.reply({
                 content: `❌ No verified ${formatPlatform(platform)} account found for this campaign.`,
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
             });
             return;
         }
@@ -6119,7 +6148,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         await interaction.reply({
             content: responseMessage,
-            ephemeral: true
+            flags: MessageFlags.Ephemeral
         });
 
         return;
@@ -6130,7 +6159,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const campaign = CAMPAIGNS[campaignId];
 
       if (!campaign) {
-        await interaction.reply({ content: '❌ Campaign not found.', ephemeral: true });
+        await interaction.reply({ content: '❌ Campaign not found.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -6138,7 +6167,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
 
       if (!member) {
-        await interaction.reply({ content: '❌ Could not load your stats.', ephemeral: true });
+        await interaction.reply({ content: '❌ Could not load your stats.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -6149,7 +6178,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await interaction.reply({
         embeds: [embed],
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
 
       return;
@@ -6166,7 +6195,7 @@ client.on(Events.InteractionCreate, async interaction => {
        if (!isAdmin(interaction.member)) {
            return interaction.reply({
                content: "❌ Staff only.",
-               ephemeral: true
+               flags: MessageFlags.Ephemeral
            });
        }
 
@@ -6177,7 +6206,7 @@ client.on(Events.InteractionCreate, async interaction => {
        if (!campaign)
            return interaction.reply({
                content: "Campaign not found.",
-               ephemeral: true
+               flags: MessageFlags.Ephemeral
            });
 
        campaign.status = "finished";
@@ -6211,7 +6240,7 @@ client.on(Events.InteractionCreate, async interaction => {
        await interaction.reply({
            content:
                "🏁 Campaign finished.\nIt will automatically move in 24 hours.",
-           ephemeral: true
+           flags: MessageFlags.Ephemeral
        });
 
        setTimeout(async () => {
@@ -6291,7 +6320,7 @@ client.on(Events.InteractionCreate, async interaction => {
         if (!isAdmin(interaction.member)) {
             return interaction.reply({
                 content: "❌ Staff only.",
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
             });
         }
 
@@ -6304,7 +6333,7 @@ client.on(Events.InteractionCreate, async interaction => {
         if (!campaign)
             return interaction.reply({
                 content: "Campaign not found.",
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
            });
 
         campaign.status = "active";
@@ -6332,7 +6361,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         await interaction.reply({
             content: "✅ Campaign reopened.",
-            ephemeral: true
+            flags: MessageFlags.Ephemeral
         });
 
         return;
@@ -6347,7 +6376,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (clips.length === 0) {
         await interaction.reply({
           content: '📭 You have no submitted clips for this campaign.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -6366,7 +6395,7 @@ client.on(Events.InteractionCreate, async interaction => {
       await interaction.reply({
         content: 'Choose the clip you want to remove.',
         components: [new ActionRowBuilder().addComponents(select)],
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
 
       return;
@@ -6378,20 +6407,20 @@ client.on(Events.InteractionCreate, async interaction => {
       const data = loadData();
 
       if (!data.clips || !data.clips[clipId]) {
-        await interaction.reply({ content: '❌ Clip not found.', ephemeral: true });
+        await interaction.reply({ content: '❌ Clip not found.', flags: MessageFlags.Ephemeral });
         return;
       }
 
       const clip = data.clips[clipId];
 
       if (clip.userId !== interaction.user.id) {
-        await interaction.reply({ content: '❌ You can only remove your own clips.', ephemeral: true });
+        await interaction.reply({ content: '❌ You can only remove your own clips.', flags: MessageFlags.Ephemeral });
         return;
       }
 
       const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
       if (!member) {
-        await interaction.reply({ content: '❌ User not found.', ephemeral: true });
+        await interaction.reply({ content: '❌ User not found.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -6424,7 +6453,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await interaction.reply({
         content: `✅ Removed clip: ${clip.videoUrl}`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
 
       return;
@@ -6435,7 +6464,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const campaign = CAMPAIGNS[campaignId];
 
       if (!campaign) {
-        await interaction.reply({ content: '❌ Campaign not found.', ephemeral: true });
+        await interaction.reply({ content: '❌ Campaign not found.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -6453,7 +6482,7 @@ client.on(Events.InteractionCreate, async interaction => {
       await interaction.reply({
         content: `⚠️ Are you sure you want to leave **${campaign.name}**?`,
         components: [row],
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
 
       return;
@@ -6517,7 +6546,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const campaign = CAMPAIGNS[campaignId];
 
       if (!campaign) {
-        await interaction.reply({ content: '❌ Campaign not found.', ephemeral: true });
+        await interaction.reply({ content: '❌ Campaign not found.', flags: MessageFlags.Ephemeral });
         return;
       }
  
@@ -6525,7 +6554,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
 
       if (!member) {
-        await interaction.reply({ content: '❌ Could not load your account.', ephemeral: true });
+        await interaction.reply({ content: '❌ Could not load your account.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -6537,7 +6566,7 @@ client.on(Events.InteractionCreate, async interaction => {
           `⚙️ **Manage Campaign Account - ${campaign.name}**\n\n` +
           `**Current campaign accounts:**\n${accountText}\n\n` +
           `Use the campaign connect-accounts channel to add or remove accounts for this campaign.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
 
       return;
@@ -6545,7 +6574,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
     if (interaction.isButton() && interaction.customId.startsWith('clip_approve:')) {
       if (!interaction.guild || !isAdmin(interaction.member)) {
-        return interaction.reply({ content: '❌ You are not allowed to do this.', ephemeral: true });
+        return interaction.reply({ content: '❌ You are not allowed to do this.', flags: MessageFlags.Ephemeral });
       }
 
       const clipId = interaction.customId.split(':')[1];
@@ -6553,11 +6582,11 @@ client.on(Events.InteractionCreate, async interaction => {
       const clip = data.clips?.[clipId];
 
       if (!clip) {
-        return interaction.reply({ content: '❌ Clip not found.', ephemeral: true });
+        return interaction.reply({ content: '❌ Clip not found.', flags: MessageFlags.Ephemeral });
       }
 
       if (clip.status === 'approved') {
-        return interaction.reply({ content: '❌ This clip is already approved.', ephemeral: true });
+        return interaction.reply({ content: '❌ This clip is already approved.', flags: MessageFlags.Ephemeral });
       }
 
       // 🟢 1. Safely calculate campaign cycle with fallbacks
@@ -6599,7 +6628,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await interaction.reply({
         content: `✅ Clip structural verification approved. Auto-tracking continuing smoothly from its live background loop baseline.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -6639,7 +6668,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
             return interaction.reply({
                 content: "❌ Clip not found.",
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
             });
 
         }
@@ -6654,7 +6683,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
             return interaction.reply({
                 content: "❌ Invalid view count.",
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
             });
 
         }
@@ -6694,7 +6723,7 @@ client.on(Events.InteractionCreate, async interaction => {
             content:
                 `✅ Views updated to ${newViews.toLocaleString()}.`,
 
-            ephemeral: true
+            flags: MessageFlags.Ephemeral
 
         });
 
@@ -6705,7 +6734,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!interaction.guild || !isAdmin(interaction.member)) {
         await interaction.reply({
           content: '❌ You are not allowed to do this.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -6717,7 +6746,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!clip) {
         await interaction.reply({
           content: '❌ Clip not found.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -6725,7 +6754,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (clip.status === 'rejected') {
         await interaction.reply({
           content: '❌ This clip is already rejected.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -6754,7 +6783,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!interaction.guild || !isAdmin(interaction.member)) {
         await interaction.reply({
           content: '❌ You are not allowed to do this.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -6768,7 +6797,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!clip) {
         await interaction.reply({
           content: '❌ Clip not found.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -6776,7 +6805,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (clip.status === 'rejected') {
         await interaction.reply({
           content: '❌ This clip is already rejected.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -6821,7 +6850,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await interaction.reply({
         content: `✅ Clip rejected.\nReason: ${reason}`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
    
       return;
@@ -6838,7 +6867,7 @@ client.on(Events.InteractionCreate, async interaction => {
         if (!clip) {
             return interaction.reply({
                 content: "❌ Clip not found.",
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
             });
         }
 
@@ -6864,7 +6893,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         await interaction.reply({
             content: "✅ Clip restored successfully.",
-            ephemeral: true
+            flags: MessageFlags.Ephemeral
         });
 
         return;
@@ -6877,7 +6906,7 @@ client.on(Events.InteractionCreate, async interaction => {
        if (!campaign) {
          await interaction.reply({
            content: '❌ Campaign not found.',
-           ephemeral: true
+           flags: MessageFlags.Ephemeral
          });
          return;
        }
@@ -6889,7 +6918,7 @@ client.on(Events.InteractionCreate, async interaction => {
        if (!member) {
          await interaction.reply({
            content: '❌ Could not load your account.',
-           ephemeral: true
+           flags: MessageFlags.Ephemeral
          });
          return;
        }
@@ -6903,7 +6932,7 @@ client.on(Events.InteractionCreate, async interaction => {
        ) {
          await interaction.reply({
            content: `❌ You already assigned a ${formatPlatform(platform)} account to this campaign.`,
-           ephemeral: true
+           flags: MessageFlags.Ephemeral
          });
          return;
        }
@@ -6919,7 +6948,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
        await interaction.reply({
          content: `✅ Assigned **${formatPlatform(platform)}** account **@${username}** to **${campaign.name}**.`,
-         ephemeral: true
+         flags: MessageFlags.Ephemeral
        });
 
        return;
@@ -6929,7 +6958,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!interaction.guild) {
         await interaction.reply({
           content: '❌ This can only be used in the server.',
-          ephemeral: true
+         flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -6945,7 +6974,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!verifiedRole) {
         await interaction.reply({
           content: '❌ VERIFIED_ROLE_ID is missing or wrong.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -6953,7 +6982,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!clipperRole) {
         await interaction.reply({
           content: '❌ CLIPPER_ROLE_ID is missing or wrong.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -6969,7 +6998,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         await interaction.reply({
           content: '✅ Verification successful. You now have access and the clipper role.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       } catch (error) {
         console.error('Role add error:', error);
@@ -6978,7 +7007,7 @@ client.on(Events.InteractionCreate, async interaction => {
           content:
             '❌ Verification saved, but I could not add the role.\n\n' +
             'Check: bot has Manage Roles permission, bot role is above Clipper role, and role IDs are correct.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -6992,7 +7021,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!campaign) {
         await interaction.reply({
           content: '❌ Campaign not found.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -7010,7 +7039,7 @@ client.on(Events.InteractionCreate, async interaction => {
       await interaction.reply({
         content: `Choose platform for **${campaign.name}**`,
         components: [new ActionRowBuilder().addComponents(select)],
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
 
       return;
@@ -7024,7 +7053,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!campaign) {
         await interaction.reply({
           content: '❌ Campaign not found.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -7055,7 +7084,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!campaign) {
         await interaction.reply({
           content: '❌ Campaign not found.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -7067,7 +7096,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!username) {
         await interaction.reply({
           content: '❌ Username cannot be empty.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -7102,7 +7131,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const staffChannel = interaction.guild.channels.cache.get(staffChannelId);
 
       if (!staffChannel) {
-          return interaction.reply({ content: '❌ Staff channel not found.', ephemeral: true });
+          return interaction.reply({ content: '❌ Staff channel not found.', flags: MessageFlags.Ephemeral });
       }
 
       const msg = await staffCh.send({
@@ -7116,7 +7145,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       await interaction.reply({
         content: '✅ Submitted. Wait for code.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -7125,7 +7154,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!interaction.guild || !isAdmin(interaction.member)) {
         await interaction.reply({
           content: '❌ You are not allowed to do this.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -7137,7 +7166,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!app) {
         await interaction.reply({
           content: '❌ Application not found.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -7164,7 +7193,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!interaction.guild || !isAdmin(interaction.member)) {
         await interaction.reply({
           content: '❌ You are not allowed to do this.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -7176,7 +7205,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!app) {
         await interaction.reply({
           content: '❌ Application not found.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -7194,7 +7223,7 @@ client.on(Events.InteractionCreate, async interaction => {
       if (!sourceChannel) {
         await interaction.reply({
           content: '❌ Original campaign channel not found.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -7219,7 +7248,7 @@ When done, click the button below.`,
 
       await interaction.reply({
         content: `✅ Code sent to <@${app.userId}>.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -7232,7 +7261,7 @@ When done, click the button below.`,
       if (!app) {
         await interaction.reply({
           content: '❌ Application not found.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -7240,7 +7269,7 @@ When done, click the button below.`,
       if (interaction.user.id !== app.userId) {
         await interaction.reply({
           content: '❌ This confirmation is not for you.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -7253,7 +7282,7 @@ When done, click the button below.`,
 
       await interaction.reply({
         content: '✅ Submitted. Staff reviewing.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -7262,7 +7291,7 @@ When done, click the button below.`,
       if (!interaction.guild || !isAdmin(interaction.member)) {
         await interaction.reply({
           content: '❌ You are not allowed to do this.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -7274,7 +7303,7 @@ When done, click the button below.`,
       if (!app) {
         await interaction.reply({
           content: '❌ Application not found.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -7283,7 +7312,7 @@ When done, click the button below.`,
       if (!member) {
         await interaction.reply({
           content: '❌ User not found in server.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -7330,7 +7359,7 @@ When done, click the button below.`,
 
       await interaction.reply({
         content: `✅ <@${app.userId}> was approved for **${app.campaignName}**.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -7339,7 +7368,7 @@ When done, click the button below.`,
       if (!interaction.guild || !isAdmin(interaction.member)) {
         await interaction.reply({
           content: '❌ You are not allowed to do this.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -7351,7 +7380,7 @@ When done, click the button below.`,
       if (!app) {
         await interaction.reply({
           content: '❌ Application not found.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -7364,7 +7393,7 @@ When done, click the button below.`,
 
       await interaction.reply({
         content: `❌ <@${app.userId}> was rejected for **${app.campaignName}**.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -7375,12 +7404,12 @@ When done, click the button below.`,
       if (interaction.replied || interaction.deferred) {
         await interaction.followUp({
           content: `❌ Error: ${e.message}`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         }).catch(() => {});
       } else {
         await interaction.reply({
           content: `❌ Error: ${e.message}`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         }).catch(() => {});
       }
     }
@@ -7511,7 +7540,7 @@ client.on('interactionCreate', async interaction => {
     if (!interaction.isStringSelectMenu() || interaction.customId !== 'staff_delete_pending_select') return;
 
     if (!isAdmin(interaction.member)) {
-        return interaction.reply({ content: '❌ You are not allowed to do this.', ephemeral: true });
+        return interaction.reply({ content: '❌ You are not allowed to do this.', flags: MessageFlags.Ephemeral });
     }
 
     const requestId = interaction.values[0];
@@ -7519,7 +7548,7 @@ client.on('interactionCreate', async interaction => {
     const request = data.campaignAccountRequests?.[requestId];
 
     if (!request) {
-        return interaction.reply({ content: '❌ Selected request was not found or already deleted.', ephemeral: true });
+        return interaction.reply({ content: '❌ Selected request was not found or already deleted.', flags: MessageFlags.Ephemeral });
     }
 
     // Clean up staff review message if it exists
@@ -7537,7 +7566,7 @@ client.on('interactionCreate', async interaction => {
 
     return interaction.reply({
         content: `✅ Successfully deleted pending request for **@${request.username}** (<@${request.userId}>) on **${formatPlatform(request.platform)}**.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
     });
 });
 
@@ -7616,7 +7645,7 @@ client.on('interactionCreate', async interaction => {
     if (!interaction.isStringSelectMenu() || interaction.customId !== 'staff_delete_account_select') return;
 
     if (!isAdmin(interaction.member)) {
-        return interaction.reply({ content: '❌ You are not allowed to do this.', ephemeral: true });
+        return interaction.reply({ content: '❌ You are not allowed to do this.', flags: MessageFlags.Ephemeral });
     }
 
     const [userId, campaignId, platform] = interaction.values[0].split(':');
@@ -7624,7 +7653,7 @@ client.on('interactionCreate', async interaction => {
     const userRecord = data.users?.[userId];
 
     if (!userRecord || !userRecord.campaignAccounts?.[campaignId]?.[platform]) {
-        return interaction.reply({ content: '❌ Selected account was not found in database.', ephemeral: true });
+        return interaction.reply({ content: '❌ Selected account was not found in database.', flags: MessageFlags.Ephemeral });
     }
 
     const username = userRecord.campaignAccounts[campaignId][platform].username;
@@ -7639,7 +7668,7 @@ client.on('interactionCreate', async interaction => {
 
     return interaction.reply({
         content: `✅ Successfully removed **@${username}** (<@${userId}>) from campaign \`${campaignId}\` on **${formatPlatform(platform)}**.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
     });
 });
 
