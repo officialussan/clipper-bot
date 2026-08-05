@@ -3719,7 +3719,8 @@ client.on(Events.InteractionCreate, async interaction => {
                 .addComponents(
                     new ButtonBuilder()
                         .setStyle(ButtonStyle.Link)
-                        .setLabel("<a:flyin:1506234392920723546> Share Payment Result")
+                        .setLabel("Share Payment Result")
+                        .setEmoji('📸')
                         .setURL("https://discord.com/channels/1413113505565118524/1533850271292199143")
                 );
 
@@ -3747,12 +3748,14 @@ client.on(Events.InteractionCreate, async interaction => {
             🗓️ **Payment Date**
             <t:${Math.floor(Date.now()/1000)}:F>
 
-            ### Notes
+            <a:warning:1504774411280973864> Notes
             Network fees may apply depending on your exchange or wallet.`
                 )
-                .setFooter({
-                    text: "<:whiteCE:1504904179905200148> Creators Elite • Thank you for clipping ❤️"
-                })
+                .setDescription(
+                `<:whiteCE:1504904179905200148> **Creators Elite**
+
+                Thank you for clipping ❤️`
+                )
                 .setTimestamp();
  
             await member.send({
@@ -3871,7 +3874,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
 This issue is related to your **${paymentLabel.replace(" ID","")}** account rather than the Creators Elite payment system.
 
-📈 **Views Affected**
+<a:chart1:1504773558415523931> **Views Affected**
 ${formatNumber(unpaidViews)}
 
 💰 **Expected Payout**
@@ -3887,13 +3890,15 @@ ${reason}
 
 1. Verify that your **${paymentLabel.replace(" ID","")}** account details are correct.
 2. Update your payment ID if necessary.
-3. Once resolved, open a ticket in <#${1492888887452762313}>
+3. Once resolved, open a ticket in <#1492888887452762313>.
 
 > Your payout has **NOT** been lost. It will remain pending until the issue is resolved.`
     )
-    .setFooter({
-        text: "<:whiteCE:1504904179905200148> Creators Elite • Payment Support"
-    })
+    .setDescription(
+    `<:whiteCE:1504904179905200148> **Creators Elite**
+
+    Thank you for clipping ❤️`
+    )
     .setTimestamp();
 
            await member.send({ embeds: [issueEmbed] });
