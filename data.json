@@ -305,5 +305,6 @@
       "lastUpdated": 1782288673382
     }
   },
-  "campaignStatus": {}
+  "campaignStatus": {},
+  "payoutTrackers": {}
 }

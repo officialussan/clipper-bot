@@ -367,12 +367,220 @@ function normalizeSocialKey(platform, username) {
   return `${platform}:${normalizeUsername(username).toLowerCase()}`;
 }
 
+function isUnsafeSocialHost(hostname) {
+  const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (!host || host === 'localhost' || host.endsWith('.localhost') || host === '::1') return true;
+  if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^0\./.test(host)) return true;
+  const match = host.match(/^172\.(\d+)\./);
+  return Boolean(match && Number(match[1]) >= 16 && Number(match[1]) <= 31);
+}
+
+function getSupportedSocialPlatform(hostname) {
+  const host = String(hostname || '').toLowerCase();
+  if (host === 'tiktok.com' || host.endsWith('.tiktok.com')) return 'tiktok';
+  if (host === 'youtube.com' || host.endsWith('.youtube.com') || host === 'youtu.be') return 'youtube';
+  return null;
+}
+
+async function expandSocialUrl(inputUrl) {
+  let parsed;
+  try {
+    parsed = new URL(String(inputUrl).trim());
+  } catch {
+    throw new Error('Invalid social video URL.');
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol) || isUnsafeSocialHost(parsed.hostname)) {
+    throw new Error('Unsafe social video URL.');
+  }
+
+  const originalUrl = parsed.toString();
+  const isShortHost = ['vm.tiktok.com', 'vt.tiktok.com', 'youtu.be'].includes(parsed.hostname.toLowerCase());
+  let response;
+
+  try {
+    response = await axios.head(originalUrl, {
+      maxRedirects: 5,
+      timeout: 10000,
+      beforeRedirect: options => {
+        if (isUnsafeSocialHost(options.hostname)) throw new Error('Unsafe redirect target.');
+      },
+      validateStatus: status => status >= 200 && status < 400
+    });
+  } catch {
+    try {
+      response = await axios.get(originalUrl, {
+        maxRedirects: 5,
+        timeout: 10000,
+        beforeRedirect: options => {
+          if (isUnsafeSocialHost(options.hostname)) throw new Error('Unsafe redirect target.');
+        },
+        responseType: 'stream',
+        validateStatus: status => status >= 200 && status < 400
+      });
+    } catch {
+      throw new Error('Could not resolve this social video URL.');
+    }
+  }
+
+  try {
+    const resolvedUrl = response.request?.res?.responseUrl || response.request?.responseURL || originalUrl;
+    const finalUrl = new URL(resolvedUrl);
+    if (!['http:', 'https:'].includes(finalUrl.protocol) || isUnsafeSocialHost(finalUrl.hostname)) {
+      throw new Error('Unsafe redirect target.');
+    }
+    const platform = getSupportedSocialPlatform(finalUrl.hostname);
+    if (!platform || (isShortHost && finalUrl.hostname.toLowerCase() === parsed.hostname.toLowerCase())) {
+      throw new Error('Unsupported or unresolved social video URL.');
+    }
+    finalUrl.hash = '';
+    return { originalUrl, resolvedUrl: finalUrl.toString(), platform };
+  } finally {
+    response?.data?.destroy?.();
+  }
+}
+
 function ensureUserSocials(data, userId) {
   if (!data.users[userId]) return;
   if (!data.users[userId].socials) {
     data.users[userId].socials = [];
   }
 }
+
+function getApprovedCampaignAccounts(data, userId, campaignId, platform) {
+  const campaignAccounts = data.users?.[userId]?.campaignAccounts?.[campaignId];
+  if (!campaignAccounts) return [];
+
+  const candidates = Array.isArray(campaignAccounts)
+    ? campaignAccounts
+    : Array.isArray(campaignAccounts[platform])
+      ? campaignAccounts[platform]
+      : campaignAccounts[platform]
+        ? [campaignAccounts[platform]]
+        : Object.values(campaignAccounts).flatMap(value => Array.isArray(value) ? value : [value]);
+
+  return candidates
+    .filter(account => account?.verified === true && (!account.platform || account.platform === platform))
+    .map(account => ({
+      platform: account.platform || platform,
+      username: account.username || '',
+      externalAccountId: account.externalAccountId || null,
+      verified: true,
+      source: account
+    }));
+}
+
+function validateVideoOwnership(approvedAccounts, metadata) {
+  const accounts = approvedAccounts || [];
+  const platform = metadata?.platform || (metadata?.authorUsername ? 'tiktok' : 'youtube');
+  const authorUsername = normalizeUsername(metadata?.authorUsername || '').toLowerCase();
+  const authorDisplayName = normalizeUsername(metadata?.authorDisplayName || '').toLowerCase();
+
+  for (const account of accounts) {
+    const storedId = account.externalAccountId ? String(account.externalAccountId) : null;
+    const authorId = metadata?.authorId ? String(metadata.authorId) : null;
+
+    if (storedId && authorId) {
+      if (storedId === authorId) return { valid: true, matchedAccount: account, reason: null };
+      continue;
+    }
+
+    const storedUsername = normalizeUsername(account.username || '').toLowerCase();
+    if (!storedUsername) continue;
+
+    if (platform === 'youtube') {
+      if (storedUsername === authorDisplayName || storedUsername === authorUsername) {
+        return { valid: true, matchedAccount: account, reason: null };
+      }
+    } else if (storedUsername === authorUsername) {
+      return { valid: true, matchedAccount: account, reason: null };
+    }
+  }
+
+  return {
+    valid: false,
+    matchedAccount: null,
+    reason: 'The video author is not one of the approved campaign accounts.'
+  };
+}
+
+function validateSubmissionAge(publishedTimestamp, now = Date.now()) {
+  const timestamp = Number(publishedTimestamp);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return { valid: false, ageMs: null, reason: 'Missing or invalid publication timestamp.' };
+  }
+
+  const ageMs = Number(now) - timestamp;
+  const maxAgeMs = 24 * 60 * 60 * 1000;
+  if (ageMs < -(5 * 60 * 1000)) {
+    return { valid: false, ageMs, reason: 'Publication timestamp is too far in the future.' };
+  }
+  if (ageMs > maxAgeMs) {
+    return { valid: false, ageMs, reason: 'This clip is older than 24 hours and is not eligible for submission.' };
+  }
+
+  return { valid: true, ageMs, reason: null };
+}
+
+function parseCanonicalVideoUrl(resolvedUrl) {
+  const url = new URL(resolvedUrl);
+  const host = url.hostname.toLowerCase();
+
+  if (host === 'tiktok.com' || host.endsWith('.tiktok.com')) {
+    const match = url.pathname.match(/\/video\/(\d+)/);
+    if (!match) return null;
+    return { platform: 'tiktok', videoId: match[1], canonicalUrl: url.toString() };
+  }
+
+  if (host === 'youtube.com' || host.endsWith('.youtube.com') || host === 'youtu.be') {
+    const videoId = getYouTubeVideoId(url.toString());
+    if (!videoId || !/^[A-Za-z0-9_-]{11}$/.test(videoId)) return null;
+    return { platform: 'youtube', videoId, canonicalUrl: `https://www.youtube.com/watch?v=${videoId}` };
+  }
+
+  return null;
+}
+
+async function validateClipBeforeSubmission({ data, userId, campaignId, submittedUrl }) {
+  const campaign = CAMPAIGNS[campaignId];
+  if (!campaign) return { valid: false, message: '❌ Campaign not found.', metadata: null };
+
+  try {
+    const expanded = await expandSocialUrl(submittedUrl);
+    const parsed = parseCanonicalVideoUrl(expanded.resolvedUrl);
+    if (!parsed) return { valid: false, message: '❌ This link is not a supported public TikTok or YouTube video.', metadata: null };
+    if (!campaign.allowedPlatforms?.includes(parsed.platform)) {
+      return { valid: false, message: `❌ ${formatPlatform(parsed.platform)} is not enabled for this campaign.`, metadata: null };
+    }
+
+    const duplicate = Object.values(data.clips || {}).some(clip =>
+      (clip.platform === parsed.platform && clip.videoId === parsed.videoId) ||
+      String(clip.videoUrl || clip.url || '').split('?')[0] === parsed.canonicalUrl.split('?')[0]
+    );
+    if (duplicate) return { valid: false, message: '❌ This video has already been submitted.', metadata: null };
+
+    const metadata = await fetchSubmissionMetadata(parsed.platform, parsed.canonicalUrl, parsed.videoId);
+    metadata.platform = parsed.platform;
+    const age = validateSubmissionAge(metadata.publishedTimestamp);
+    if (!age.valid) return { valid: false, message: `❌ ${age.reason}`, metadata };
+
+    const accounts = getApprovedCampaignAccounts(data, userId, campaignId, parsed.platform);
+    if (!accounts.length) {
+      return { valid: false, message: `❌ You do not have a verified ${formatPlatform(parsed.platform)} account for this campaign.`, metadata };
+    }
+
+    const ownership = validateVideoOwnership(accounts, metadata);
+    if (!ownership.valid) {
+      const author = metadata.authorUsername || metadata.authorDisplayName || 'an unlinked account';
+      return { valid: false, message: `❌ This video was posted by **@${author}**, but that account is not linked and approved for this campaign.`, metadata };
+    }
+
+    return { valid: true, message: null, metadata, platform: parsed.platform, videoId: parsed.videoId, canonicalUrl: parsed.canonicalUrl, matchedAccount: ownership.matchedAccount };
+  } catch (err) {
+    return { valid: false, message: '❌ We could not validate this public video link. Please try the full public URL.', metadata: null };
+  }
+}
+
 function makeApplicationId() {
   return `app_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 }
@@ -864,18 +1072,46 @@ async function archiveFinishedCampaigns(client) {
 
 }
 
-function renderClipStaffContent(clip) {
-  return (
-    `📥 **New Clip Submission**\n\n` +
-    `**User:** <@${clip.userId}>\n` +
-    `**Campaign:** ${clip.campaignName}\n` +
-    `**Platform:** ${formatPlatform(clip.platform)}\n` +
-    `**Username:** @${clip.username}\n` +
-    `**Link:** ${clip.videoUrl || clip.url}\n` +
-    `**Status:** ${clip.status}\n` +
-    `${clip.views ? `**Views:** ${formatNumber(clip.views)}\n` : ''}` +
-    `${clip.totalMoneyMade ? `**Payout:** $${formatNumber(clip.totalMoneyMade)}\n` : ''}`
-  );
+function buildClipStaffEmbed(clip) {
+  const campaignName = clip.campaignName || CAMPAIGNS[clip.campaignId]?.name || clip.campaignId;
+  const clipUrl = clip.videoUrl || clip.url || '';
+  const title = clip.title || clip.caption || clipUrl || 'View clip';
+  const color = { pending: 0xF1C40F, approved: 0x57F287, rejected: 0xED4245 }[clip.status] || 0xF1C40F;
+  const embed = new EmbedBuilder()
+    .setColor(color)
+    .setTitle('Clip Review')
+    .setDescription(
+      '**Creator**\n<@' + clip.userId + '>\n' +
+      '**Campaign**\n' + campaignName + '\n' +
+      '**Platform**\n' + formatPlatform(clip.platform) + '\n' +
+      '**Account**\n@' + (clip.username || 'Unknown') + '\n' +
+      '**Video**\n[' + title + '](' + clipUrl + ')\n' +
+      '**Status**\n' + (clip.status || 'pending') + '\n' +
+      '**Current Views**\n' + formatNumber(Number(clip.views) || 0) + '\n' +
+      '**Current Earnings**\n$' + Number(clip.totalMoneyMade ?? clip.moneyMade ?? 0).toFixed(2) + '\n' +
+      '**Approval Views**\n' + formatNumber(Number(clip.approvalViews) || 0) + '\n' +
+      '**Last Updated**\n<t:' + Math.floor((clip.lastChecked || Date.now()) / 1000) + ':R>'
+    );
+  if (clip.thumbnailUrl) embed.setThumbnail(clip.thumbnailUrl);
+  return embed;
+}
+
+async function sendClipApprovedDM(guild, clip) {
+  try {
+    const member = await guild.members.fetch(clip.userId);
+    const clipUrl = clip.videoUrl || clip.url;
+    const title = clip.title || clip.caption || clipUrl || 'View approved clip';
+    const embed = new EmbedBuilder().setColor(0x00E676)
+      .setAuthor({ name: clip.campaignName || CAMPAIGNS[clip.campaignId]?.name || 'Creators Elite', iconURL: guild.iconURL() || undefined })
+      .setTitle('Your video has been approved ✅')
+      .setDescription('[' + title + '](' + clipUrl + ')\n\n📈 **Current Views**\n' + formatNumber(Number(clip.views) || 0) + '\n\n💰 **Current Earnings**\n$' + Number(clip.totalMoneyMade ?? clip.moneyMade ?? 0).toFixed(2) + '\n\n🌐 **Platform**\n' + formatPlatform(clip.platform))
+      .setFooter({ text: 'Creators Elite • Thank you for clipping ❤️', iconURL: 'https://cdn.discordapp.com/emojis/1504904179905200148.png' })
+      .setTimestamp();
+    if (clip.thumbnailUrl) embed.setThumbnail(clip.thumbnailUrl);
+    await member.send({ embeds: [embed] });
+  } catch (err) {
+    console.error(`Could not DM approved clip to ${clip.userId}:`, err.message);
+  }
 }
 
 function buildClipStaffButtons(clip) {
@@ -918,18 +1154,6 @@ function buildClipStaffButtons(clip) {
     }
 
     return [row];
-}
-
-function renderClipStaffContent(clip) {
-  return `📥 **New Clip Submission**
-
-**User:** <@${clip.userId}>
-**Campaign:** ${clip.campaignName}
-**Platform:** ${formatPlatform(clip.platform)}
-**Username:** @${clip.username}
-**Link:** ${clip.videoUrl}
-**Status:** ${clip.status}
-${clip.views ? `**Views:** ${formatNumber(clip.views)}\n` : ''}${clip.totalMoneyMade ? `**Payout:** $${clip.totalMoneyMade}\n` : ''}`;
 }
 
 function buildStaffButtons(id, status) {
@@ -2177,12 +2401,7 @@ function getUserCampaignClips(data, userId, campaignId) {
 }
 
 async function getTikTokViews(url) {
-  const res = await axios.get(
-    `https://www.tikwm.com/api/?url=${encodeURIComponent(url)}`,
-    { timeout: 15000 }
-  );
-
-  return Number(res.data?.data?.play_count || 0);
+  return (await fetchClipMetadata({ platform: 'tiktok', url })).views;
 }
 
 function getYouTubeVideoId(url) {
@@ -2191,24 +2410,85 @@ function getYouTubeVideoId(url) {
 }
 
 async function getYouTubeViews(url) {
-  const videoId = getYouTubeVideoId(url);
-  if (!videoId) return 0;
+  return (await fetchClipMetadata({ platform: 'youtube', url })).views;
+}
+
+async function fetchClipMetadata(clip) {
+  if (clip.platform === 'tiktok') {
+    const res = await axios.get(`https://www.tikwm.com/api/?url=${encodeURIComponent(clip.url)}`, { timeout: 15000 });
+    const item = res.data?.data || {};
+    return { views: Number(item.play_count) || 0, title: item.title || '', thumbnailUrl: item.cover || item.origin_cover || null, authorName: item.author?.nickname || item.author?.unique_id || null };
+  }
+
+  if (clip.platform !== 'youtube') return { views: Number(clip.currentViews) || 0, title: clip.title || '', thumbnailUrl: clip.thumbnailUrl || null, authorName: clip.platformAuthorName || null };
+  const videoId = getYouTubeVideoId(clip.url);
+  if (!videoId) return { views: 0, title: '', thumbnailUrl: null, authorName: null };
 
   const res = await axios.get('https://www.googleapis.com/youtube/v3/videos', {
     timeout: 15000,
     params: {
-      part: 'statistics',
+      part: 'statistics,snippet',
       id: videoId,
       key: process.env.YOUTUBE_API_KEY
     }
   });
 
-  return Number(res.data?.items?.[0]?.statistics?.viewCount || 0);
+  const item = res.data?.items?.[0] || {};
+  const thumbs = item.snippet?.thumbnails || {};
+  return { views: Number(item.statistics?.viewCount) || 0, title: item.snippet?.title || '', thumbnailUrl: thumbs.maxres?.url || thumbs.standard?.url || thumbs.high?.url || thumbs.medium?.url || thumbs.default?.url || null, authorName: item.snippet?.channelTitle || null };
+}
+
+async function fetchSubmissionMetadata(platform, canonicalUrl, videoId) {
+  if (platform === 'tiktok') {
+    const response = await axios.get(
+      `https://www.tikwm.com/api/?url=${encodeURIComponent(canonicalUrl)}`,
+      { timeout: 15000 }
+    );
+    const data = response.data?.data;
+    if (!data) throw new Error('TikTok video could not be found or is not publicly available.');
+
+    const createdAt = Number(data.create_time);
+    return {
+      authorUsername: data.author?.unique_id || null,
+      authorId: data.author?.id || data.author?.uid || null,
+      authorDisplayName: data.author?.nickname || null,
+      title: data.title || '',
+      views: Number(data.play_count) || 0,
+      thumbnailUrl: data.cover || data.origin_cover || null,
+      publishedTimestamp: Number.isFinite(createdAt) && createdAt > 0 ? createdAt * 1000 : null
+    };
+  }
+
+  if (platform === 'youtube') {
+    const id = videoId || getYouTubeVideoId(canonicalUrl);
+    if (!id) throw new Error('Invalid YouTube video ID.');
+
+    const response = await axios.get('https://www.googleapis.com/youtube/v3/videos', {
+      timeout: 15000,
+      params: { part: 'snippet,statistics', id, key: process.env.YOUTUBE_API_KEY }
+    });
+    const item = response.data?.items?.[0];
+    if (!item) throw new Error('This YouTube video could not be found or is not publicly available.');
+
+    const snippet = item.snippet || {};
+    const thumbnails = snippet.thumbnails || {};
+    const publishedTimestamp = Date.parse(snippet.publishedAt || '');
+    return {
+      authorUsername: null,
+      authorId: snippet.channelId || null,
+      authorDisplayName: snippet.channelTitle || null,
+      title: snippet.title || '',
+      views: Number(item.statistics?.viewCount) || 0,
+      thumbnailUrl: thumbnails.maxres?.url || thumbnails.standard?.url || thumbnails.high?.url || thumbnails.medium?.url || thumbnails.default?.url || null,
+      publishedTimestamp: Number.isFinite(publishedTimestamp) ? publishedTimestamp : null
+    };
+  }
+
+  throw new Error('Unsupported social platform.');
 }
 
 async function fetchClipViews(clip) {
-  if (clip.platform === 'tiktok') return await getTikTokViews(clip.url);
-  if (clip.platform === 'youtube') return await getYouTubeViews(clip.url);
+  if (clip.platform === 'tiktok' || clip.platform === 'youtube') return (await fetchClipMetadata(clip)).views;
   return clip.rawViews || 0;
 }
 
@@ -2220,6 +2500,7 @@ async function autoTrackClipViews() {
 
   try {
     const data = loadData();
+    const staffUpdateGuild = client.guilds.cache.first();
 
     // 1. Reset cumulative user counts before aggregating
     for (const user of Object.values(data.users || {})) {
@@ -2249,7 +2530,8 @@ async function autoTrackClipViews() {
       // Fetch live views if 30 minutes have passed since last check
       if (Date.now() - lastChecked >= 30 * 60 * 1000) {
         try {
-          const currentViews = await fetchClipViews(clip);
+          const metadata = await fetchClipMetadata(clip);
+          const currentViews = metadata.views;
 
           const startingViews = clip.startingViews || 0;
           const weeklyBaseline = clip.weeklyBaselineViews || startingViews;
@@ -2267,6 +2549,9 @@ async function autoTrackClipViews() {
           );
 
           clip.currentViews = currentViews;
+          if (metadata.title) clip.title = metadata.title;
+          if (metadata.thumbnailUrl) clip.thumbnailUrl = metadata.thumbnailUrl;
+          if (metadata.authorName) clip.platformAuthorName = metadata.authorName;
 
           // Monthly total
           clip.views = earnedViews;
@@ -2291,6 +2576,18 @@ async function autoTrackClipViews() {
           clip.weeklyMoneyMade = (weeklyViews / 1000000) * rate;
 
           data.clips[clipId] = clip;
+
+          if (
+            staffUpdateGuild &&
+            clip.status === 'approved' &&
+            (clip.platform === 'tiktok' || clip.platform === 'youtube')
+          ) {
+            try {
+              await updateClipStaffMessage(staffUpdateGuild, clip);
+            } catch (err) {
+              console.error(`Could not update staff clip message ${clip.id}:`, err.message);
+            }
+          }
         } catch (err) {
           clip.trackingError = err.message;
           clip.lastChecked = Date.now();
@@ -3289,7 +3586,7 @@ async function updateClipStaffMessage(guild, clip) {
         const msg = await ch.messages.fetch(clip.staffMessageId);
         if (msg) {
             await msg.edit({
-                content: renderClipStaffContent(clip),
+                embeds: [buildClipStaffEmbed(clip)],
                 components: buildClipStaffButtons(clip)
             });
             console.log(`✅ Updated staff message for clip ${clip.id}`);
@@ -6073,92 +6370,103 @@ ${reason}
 
         let submittedCount = 0;
         let duplicateCount = 0;
+        const rejectedResults = [];
+        const batchVideoKeys = new Set();
 
-        for (const videoUrl of links) {
-            const urlValidation = validateClipSubmission(videoUrl);
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-            if (!urlValidation.isValid) {
-                duplicateCount++;
+        for (const originalLink of links) {
+            const validation = await validateClipBeforeSubmission({
+                data,
+                userId: interaction.user.id,
+                campaignId,
+                submittedUrl: originalLink
+            });
+
+            if (!validation.valid) {
+                if ((validation.message || '').toLowerCase().includes('already been submitted')) duplicateCount++;
+                else rejectedResults.push({ link: originalLink, reason: validation.message || 'Validation failed.' });
                 continue;
             }
 
-            const clipId = makeClipId();
-            const tempClip = { platform, url: videoUrl.trim() };
-            let initialViews = 0;
-
-            try {
-                initialViews = await fetchClipViews(tempClip);
-            } catch (err) {
-                console.error(`⚠️ Live view fetch failed: ${err.message}`);
-                initialViews = 0; 
+            if (validation.platform !== platform) {
+                rejectedResults.push({
+                    link: originalLink,
+                    reason: '❌ This link is for ' + formatPlatform(validation.platform) + ', but you selected ' + formatPlatform(platform) + '.'
+                });
+                continue;
             }
 
+            const videoKey = validation.platform + ':' + validation.videoId;
+            if (batchVideoKeys.has(videoKey)) {
+                duplicateCount++;
+                continue;
+            }
+            batchVideoKeys.add(videoKey);
+
+            const metadata = validation.metadata;
+            const matchedAccount = validation.matchedAccount;
+            const clipId = makeClipId();
             const clip = {
                 id: clipId,
                 userId: interaction.user.id,
                 campaignId,
                 campaignName: campaign.name,
-                platform,
-                username: campaignAccount.username,
-                videoUrl,
-                status: "pending",                                  
-                startingViews: initialViews,   
-                currentViews: initialViews,
-                weeklyBaselineViews:initialViews,
-                views: 0, 
+                platform: validation.platform,
+                username: matchedAccount?.username || metadata.authorUsername || metadata.authorDisplayName || campaignAccount.username,
+                url: validation.canonicalUrl,
+                videoUrl: validation.canonicalUrl,
+                originalSubmittedUrl: originalLink,
+                videoId: validation.videoId,
+                platformAuthorId: metadata.authorId || null,
+                platformAuthorName: metadata.authorUsername || metadata.authorDisplayName || null,
+                publishedAt: metadata.publishedAt || null,
+                publishedTimestamp: metadata.publishedTimestamp || null,
+                title: metadata.title || validation.canonicalUrl,
+                thumbnailUrl: metadata.thumbnailUrl || null,
+                currentViews: Number(metadata.views) || 0,
+                submissionViews: Number(metadata.views) || 0,
+                startingViews: Number(metadata.views) || 0,
+                weeklyBaselineViews: Number(metadata.views) || 0,
+                views: 0,
                 weeklyViews: 0,
-                monthlyViews:0,   
+                monthlyViews: 0,
+                weeklyMoneyMade: 0,
+                totalMoneyMade: 0,
+                moneyMade: 0,
+                status: 'pending',
                 submittedAt: new Date().toISOString(),
-                lastChecked: Date.now(),       
+                lastChecked: Date.now(),
+                cycle: getCampaignCycle(campaign, new Date()),
                 staffChannelId: staffChannel ? staffChannel.id : null,
                 staffMessageId: null,
-
-                payout: {
-                    paidViews: 0,
-                    paidMoney: 0,
-                    lastPaidAt: null,
-                    history: []
-                }
+                payout: { paidViews: 0, paidMoney: 0, lastPaidAt: null, history: [] }
             };
+
+            if (staffChannel) {
+                const staffMessage = await staffChannel.send({
+                    embeds: [buildClipStaffEmbed(clip)],
+                    components: buildClipStaffButtons(clip)
+                }).catch(() => null);
+                if (staffMessage) clip.staffMessageId = staffMessage.id;
+            }
 
             data.clips[clipId] = clip;
             platformStats.videosPosted++;
             userRecord.stats.videosPosted++;
-
-            if (staffChannel) {
-                const sent = await staffChannel.send({
-                    content: renderClipStaffContent(clip),
-                    components: buildClipStaffButtons(clip)
-                }).catch(() => null);
-
-                if (sent) {
-                    clip.staffMessageId = sent.id;
-                    data.clips[clipId] = clip;
-                }
-            }
-
             submittedCount++;
         }
 
         saveData(data);
 
-        let responseMessage = `✅ Submitted **${submittedCount}** clip(s).\n\n🟡 Status: Pending Staff Review\n\nYour clip was successfully submitted.`;
-
-        if (duplicateCount > 0) {
-            responseMessage += `\n⚠️ **${duplicateCount}** link(s) were ignored because they were already submitted before.`;
+        let responseMessage = '✅ **Accepted:** ' + submittedCount + '\n⚠️ **Duplicates:** ' + duplicateCount + '\n❌ **Rejected:** ' + rejectedResults.length;
+        if (rejectedResults.length) {
+            responseMessage += '\n\n**Rejected links:**\n' + rejectedResults.slice(0, 5).map((item, index) => (index + 1) + '. ' + item.reason).join('\n');
         }
+        if (rejectedResults.length > 5) responseMessage += '\n…and ' + (rejectedResults.length - 5) + ' more.';
 
-        if (submittedCount === 0 && duplicateCount > 0) {
-            responseMessage = `❌ Submission failed. All links you provided have already been submitted to the system!`;
-        }
-
-        await interaction.reply({
-            content: responseMessage,
-            flags: MessageFlags.Ephemeral
-        });
-
-        return;
-    }
+        await interaction.editReply({ content: responseMessage });
+        return;    }
 
     if (interaction.isButton() && interaction.customId.startsWith('campaign_stats:')) {
       const campaignId = interaction.customId.split(':')[1];
@@ -6597,10 +6905,8 @@ ${reason}
 
       // 🟢 1. Safely calculate campaign cycle with fallbacks
       const campaign = CAMPAIGNS[clip.campaignId];
-      const startDate = campaign?.startDate || new Date().toISOString();
-      
       try {
-        clip.cycle = typeof getCampaignCycle === 'function' ? getCampaignCycle(startDate) : 1;
+        clip.cycle = getCampaignCycle(campaign, new Date());
       } catch (err) {
         console.error(`⚠️ Failed to calculate cycle for clip ${clipId}:`, err.message);
         clip.cycle = 1; // Fallback cycle value
@@ -6617,11 +6923,35 @@ ${reason}
       }
 
       // Transition clip state
+      try {
+        const metadata = await fetchClipMetadata(clip);
+        const rate = Number(campaign?.ratePerMillion) || 0;
+        Object.assign(clip, {
+          currentViews: metadata.views,
+          startingViews: 0,
+          views: metadata.views,
+          weeklyBaselineViews: 0,
+          weeklyViews: metadata.views,
+          monthlyViews: metadata.views,
+          title: metadata.title,
+          thumbnailUrl: metadata.thumbnailUrl,
+          platformAuthorName: metadata.authorName,
+          approvalViews: metadata.views,
+          lastChecked: Date.now()
+        });
+        clip.totalMoneyMade = clip.views / 1000000 * rate;
+        clip.moneyMade = clip.totalMoneyMade;
+        clip.weeklyMoneyMade = clip.weeklyViews / 1000000 * rate;
+      } catch (err) {
+        console.error(`Could not fetch approved clip metadata ${clipId}:`, err.message);
+      }
       clip.status = 'approved';
       clip.approvedAt = Date.now();
 
       data.clips[clipId] = clip;
       saveData(data);
+
+      await sendClipApprovedDM(interaction.guild, clip);
 
       await syncPayoutCard(interaction.guild, clip.campaignId, clip.userId);
 
