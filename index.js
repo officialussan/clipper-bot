@@ -245,18 +245,13 @@ function loadData() {
   delete raw.payoutRequests;
 
   for (const clip of Object.values(raw.clips || {})) {
-
-      if (!clip.payout) {
-
-          clip.payout = {
-              totalPaidViews: 0,
-              totalPaidAmount: 0,
-              lastPaidAt: null,
-              history: []
-          };
-
-      }
-
+    clip.payout ||= {};
+    clip.payout.paidViews = Number(clip.payout.paidViews ?? clip.payout.totalPaidViews ?? 0) || 0;
+    clip.payout.paidMoney = Number(clip.payout.paidMoney ?? clip.payout.totalPaidAmount ?? 0) || 0;
+    if (!Array.isArray(clip.payout.history)) clip.payout.history = [];
+    clip.payout.lastPaidAt ??= null;
+    delete clip.payout.totalPaidViews;
+    delete clip.payout.totalPaidAmount;
   }
 
   return raw;
@@ -431,6 +426,34 @@ function getUserPayoutSummary(data, userId, campaignId) {
 
 }
 
+function calculateTrackerStats(tracker) {
+    const data = loadData();
+    const campaign = CAMPAIGNS[tracker.campaignId];
+    if (!campaign) return tracker;
+
+    const clips = Object.values(data.clips || {}).filter(clip =>
+        clip.userId === tracker.userId &&
+        clip.campaignId === tracker.campaignId &&
+        clip.status === 'approved'
+    );
+    const lifetimeViews = clips.reduce((sum, clip) => sum + (Number(clip.views) || 0), 0);
+    const lifetimePaid = clips.reduce((sum, clip) => sum + (Number(clip.payout?.paidMoney) || 0), 0);
+    const paidViews = clips.reduce((sum, clip) => sum + (Number(clip.payout?.paidViews) || 0), 0);
+    const lifetimeEarned = lifetimeViews / 1000000 * (Number(campaign.ratePerMillion) || 0);
+
+    tracker.lifetimeViews = lifetimeViews;
+    tracker.lifetimeEarned = lifetimeEarned;
+    tracker.lifetimePaid = lifetimePaid;
+    tracker.currentUnpaidViews = Math.max(lifetimeViews - paidViews, 0);
+    tracker.currentUnpaidMoney = Math.max(lifetimeEarned - lifetimePaid, 0);
+    if (tracker.status !== 'issue') {
+        tracker.status = tracker.currentUnpaidViews === 0 ? 'paid' :
+            tracker.currentUnpaidViews >= (Number(campaign.payoutThreshold) || 0) ? 'ready' : 'waiting';
+    }
+    tracker.updatedAt = Date.now();
+    return tracker;
+}
+
 async function syncPayoutCard(guild, campaignId, userId) {
 
     const data = loadData();
@@ -459,39 +482,13 @@ async function syncPayoutCard(guild, campaignId, userId) {
     const payoutChannelId =
         data.campaignStaffChannels?.[campaignId]?.payouts;
 
-    console.log("Campaign ID:", campaignId);
-    console.log("campaignStaffChannels:");
-    console.dir(data.campaignStaffChannels, { depth: null });
-
-    console.log("Payout channel:", payoutChannelId);
-
     if (!payoutChannelId) return;
 
-    const channel = guild.channels.cache.get(payoutChannelId);
+    const currentChannel = guild.channels.cache.get(payoutChannelId);
 
-    console.log("Channel exists:", !!channel);
-
-    if (!channel) return;
-
-    const approvedClips = Object.values(data.clips || {}).filter(c =>
-        c.userId === userId &&
-        c.campaignId === campaignId &&
-        c.status === "approved"
-    );
-
-    const unpaidViews = approvedClips.reduce((sum, clip) => {
-
-        const paidViews = clip.payout?.paidViews || 0;
-
-        return sum + Math.max((clip.views || 0) - paidViews, 0);
-
-    }, 0);
+    if (!currentChannel) return;
 
     const payoutId = `${campaignId}_${userId}`;
-
-    const unpaidMoney =
-        unpaidViews / 1000000 *
-        campaign.ratePerMillion;
 
     if (!data.payoutTrackers) data.payoutTrackers = {};
 
@@ -499,15 +496,29 @@ async function syncPayoutCard(guild, campaignId, userId) {
         id: payoutId,
         campaignId,
         userId,
-        unpaidViews,
-        unpaidMoney,
-        status: "pending",
+        status: "waiting",
         createdAt: Date.now(),
         messageId: null,
-        channelId: null
+        channelId: null,
+        lifetimeViews: 0,
+        lifetimeEarned: 0,
+        lifetimePaid: 0,
+        currentUnpaidViews: 0,
+        currentUnpaidMoney: 0,
+        lastPaidAt: null,
+        lastIssueAt: null
     };
-    tracker.unpaidViews = unpaidViews;
-    tracker.unpaidMoney = unpaidMoney;
+    const messageChannel = tracker.channelId
+        ? await guild.channels.fetch(tracker.channelId).catch(() => null)
+        : null;
+    calculateTrackerStats(tracker);
+    const statusLabels = {
+        waiting: '🟡 Waiting for threshold',
+        ready: '🟢 Ready for payment',
+        paid: '✅ Paid — waiting for new views',
+        issue: '🔴 Payment issue'
+    };
+    const statusText = statusLabels[tracker.status] || statusLabels.waiting;
     tracker.updatedAt = Date.now();
     data.payoutTrackers[payoutId] = tracker;
 
@@ -527,15 +538,24 @@ async function syncPayoutCard(guild, campaignId, userId) {
 ${campaign.name}
 
 **Unpaid Views**
-${formatNumber(unpaidViews)}
+${formatNumber(tracker.currentUnpaidViews)}
 
 **Amount**
-$${unpaidMoney.toFixed(2)}
+$${tracker.currentUnpaidMoney.toFixed(2)}
 
 **${paymentLabel}**
 \`${paymentValue}\``
 
 );
+
+    embed.addFields(
+        { name: 'Lifetime Views', value: formatNumber(tracker.lifetimeViews), inline: true },
+        { name: 'Lifetime Earned', value: '$' + tracker.lifetimeEarned.toFixed(2), inline: true },
+        { name: 'Lifetime Paid', value: '$' + tracker.lifetimePaid.toFixed(2), inline: true },
+        { name: 'Current Unpaid Views', value: formatNumber(tracker.currentUnpaidViews), inline: true },
+        { name: 'Current Unpaid Amount', value: '$' + tracker.currentUnpaidMoney.toFixed(2), inline: true },
+        { name: 'Status', value: statusText, inline: true }
+    );
 
     const row = new ActionRowBuilder()
 
@@ -547,7 +567,9 @@ $${unpaidMoney.toFixed(2)}
 
                 .setLabel("Mark Paid")
 
-                .setStyle(ButtonStyle.Success),
+                .setStyle(ButtonStyle.Success)
+
+                .setDisabled(tracker.status !== "ready"),
 
             new ButtonBuilder()
 
@@ -555,7 +577,15 @@ $${unpaidMoney.toFixed(2)}
 
                 .setLabel("Issue")
 
-                .setStyle(ButtonStyle.Danger)
+                .setStyle(ButtonStyle.Danger),
+
+            new ButtonBuilder()
+
+                .setCustomId(`payout_refresh:${payoutId}`)
+
+                .setLabel("Refresh")
+
+                .setStyle(ButtonStyle.Secondary)
 
         );
 
@@ -564,21 +594,30 @@ $${unpaidMoney.toFixed(2)}
         components: [row]
     };
 
+    if (tracker.status === 'issue') {
+        row.addComponents(
+            new ButtonBuilder()
+                .setCustomId(`payout_resolve_issue:${payoutId}`)
+                .setLabel('Resolve Issue')
+                .setStyle(ButtonStyle.Success)
+        );
+    }
+
     let msg = null;
     if (tracker.messageId) {
-        msg = await channel.messages.fetch(tracker.messageId).catch(() => null);
+        msg = await messageChannel?.messages.fetch(tracker.messageId).catch(() => null);
     }
 
     if (msg) {
         await msg.edit(payload);
     } else {
-        msg = await channel.send(payload);
+        msg = await currentChannel.send(payload);
     }
 
     console.log("✅ Payout card sent");
 
     data.payoutTrackers[payoutId].messageId = msg.id;
-    data.payoutTrackers[payoutId].channelId = channel.id;
+    data.payoutTrackers[payoutId].channelId = msg.channel.id;
 
     saveData(data);
 
@@ -1005,8 +1044,6 @@ async function backfillPayoutCards() {
 
     for (const campaignId of Object.keys(CAMPAIGNS)) {
 
-        const campaign = CAMPAIGNS[campaignId];
-
         const users = [
             ...new Set(
                 Object.values(data.clips)
@@ -1019,33 +1056,6 @@ async function backfillPayoutCards() {
         ];
 
         for (const userId of users) {
-
-            const clips = Object.values(data.clips).filter(c =>
-                c.campaignId === campaignId &&
-                c.userId === userId &&
-                c.status === "approved"
-            );
-
-            const unpaidViews = clips.reduce((sum, clip) => {
-
-                const paidViews = clip.payout?.paidViews || 0;
-
-                return sum + Math.max(clip.views - paidViews, 0);
-
-            }, 0);
-
-            if (unpaidViews < campaign.payoutThreshold)
-                continue;
-
-            // Don't create duplicates
-            const alreadyExists = Object.values(data.payoutTrackers || {}).some(r =>
-                r.userId === userId &&
-                r.campaignId === campaignId &&
-                r.status === "pending"
-            );
-
-            if (alreadyExists)
-                continue;
 
             await syncPayoutCard(
                 guild,
@@ -1694,8 +1704,6 @@ async function migratePayoutSystem() {
 
     for (const campaignId of Object.keys(CAMPAIGNS)) {
 
-        const campaign = CAMPAIGNS[campaignId];
-
         const users = [
             ...new Set(
                 Object.values(data.clips || {})
@@ -1708,26 +1716,6 @@ async function migratePayoutSystem() {
         ];
 
         for (const userId of users) {
-
-            const clips = Object.values(data.clips || {}).filter(c =>
-                c.userId === userId &&
-                c.campaignId === campaignId &&
-                String(c.status).toLowerCase() === "approved"
-            );
-
-            const unpaidViews = clips.reduce((sum, clip) => {
-
-                const paidViews = clip.payout?.paidViews || 0;
-
-                return sum + Math.max(
-                    (clip.views || 0) - paidViews,
-                    0
-                );
-
-            }, 0);
-
-            if (unpaidViews < campaign.payoutThreshold)
-                continue;
 
             await syncPayoutCard(
                 guild,
@@ -2295,11 +2283,8 @@ async function autoTrackClipViews() {
           clip.totalMoneyMade =
               (earnedViews / 1000000) * rate;
 
-          clip.unpaidViews =
-              Math.max(
-                  earnedViews - (clip.totalViewsPaid || 0),
-                  0
-              );
+          const paidViews = Number(clip.payout?.paidViews) || 0;
+          clip.unpaidViews = Math.max(earnedViews - paidViews, 0);
 
           clip.unpaidMoney =
               (clip.unpaidViews / 1000000) * rate;
@@ -2328,6 +2313,12 @@ async function autoTrackClipViews() {
           userRecord.stats.moneyMade += Number(clip.totalMoneyMade) || 0;
 
           // Campaign stats should ONLY count this week's gain
+          const platformStats = ensureCampaignPlatformStats(
+            userRecord,
+            clip.campaignId,
+            clip.platform,
+            clip.username || ''
+          );
           platformStats.totalViews += Number(clip.weeklyViews) || 0;
           platformStats.moneyMade +=
               ((Number(clip.weeklyViews) || 0) / 1000000) *
@@ -2359,18 +2350,6 @@ if (guild) {
         const campaign = CAMPAIGNS[campaignId];
         if (!campaign) continue;
 
-        const clips = Object.values(data.clips || {}).filter(clip =>
-            clip.userId === userId &&
-            clip.campaignId === campaignId &&
-            clip.status === 'approved'
-        );
-
-        const lifetimeViews = clips.reduce((sum, clip) => sum + (Number(clip.views) || 0), 0);
-        const lifetimePaid = clips.reduce((sum, clip) => sum + (Number(clip.payout?.paidMoney) || 0), 0);
-        const paidViews = clips.reduce((sum, clip) => sum + (Number(clip.payout?.paidViews) || 0), 0);
-        const lifetimeEarned = lifetimeViews / 1000000 * (campaign.ratePerMillion || 0);
-        const unpaidViews = Math.max(lifetimeViews - paidViews, 0);
-        const unpaidMoney = Math.max(lifetimeEarned - lifetimePaid, 0);
         const trackerId = campaignId + '_' + userId;
 
         const tracker = data.payoutTrackers[trackerId] || {
@@ -2382,17 +2361,7 @@ if (guild) {
             createdAt: Date.now()
         };
 
-        Object.assign(tracker, {
-            lifetimeViews,
-            lifetimeEarned,
-            lifetimePaid,
-            currentUnpaidViews: unpaidViews,
-            currentUnpaidMoney: unpaidMoney,
-            unpaidViews,
-            unpaidMoney,
-            status: unpaidViews >= campaign.payoutThreshold ? 'ready' : 'waiting',
-            updatedAt: Date.now()
-        });
+        calculateTrackerStats(tracker);
 
         data.payoutTrackers[trackerId] = tracker;
     }
@@ -3615,11 +3584,36 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
 
+    if (interaction.isButton() && interaction.customId.startsWith("payout_resolve_issue:")) {
+        const trackerId = interaction.customId.split(':')[1];
+        const data = loadData();
+        const tracker = data.payoutTrackers?.[trackerId];
+        const campaign = CAMPAIGNS[tracker?.campaignId];
+        if (!tracker || !campaign) return interaction.reply({ content: 'Payout tracker not found.', flags: MessageFlags.Ephemeral });
+        tracker.issueReason = null;
+        tracker.issueAt = null;
+        tracker.status = tracker.currentUnpaidViews === 0 ? 'paid' : tracker.currentUnpaidViews >= campaign.payoutThreshold ? 'ready' : 'waiting';
+        tracker.updatedAt = Date.now();
+        savePayoutTracker(tracker);
+        await syncPayoutCard(interaction.guild, tracker.campaignId, tracker.userId);
+        return interaction.reply({ content: 'Payout issue resolved.', flags: MessageFlags.Ephemeral });
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith("payout_refresh:")) {
+        const trackerId = interaction.customId.split(':')[1];
+        const data = loadData();
+        const tracker = data.payoutTrackers?.[trackerId];
+
+        if (!tracker) {
+            return interaction.reply({ content: 'Payout tracker not found.', flags: MessageFlags.Ephemeral });
+        }
+
+        await syncPayoutCard(interaction.guild, tracker.campaignId, tracker.userId);
+        await interaction.reply({ content: 'Payout tracker refreshed.', flags: MessageFlags.Ephemeral });
+        return;
+    }
+
     if (interaction.customId.startsWith("pay:")) {
-
-        console.log("🔥 PAY BUTTON CLICKED");
-
-        console.log(interaction.customId);
 
         const payoutId = interaction.customId.split(":")[1];
 
@@ -3638,10 +3632,25 @@ client.on(Events.InteractionCreate, async interaction => {
         const userId = payout.userId;
 
         const campaign = CAMPAIGNS[campaignId];
+        const guild = interaction.guild;
+        const userRecord = data.users?.[userId];
+        const exchange = userRecord?.paymentDetails?.exchange;
+        const paymentLabel = exchange
+            ? `${exchange.charAt(0).toUpperCase()}${exchange.slice(1)} ID`
+            : "Payment ID";
+        const paymentValue = userRecord?.paymentDetails?.paymentId || "Not Set";
 
         if (!campaign) {
             return interaction.reply({
                 content: "❌ Campaign not found.",
+                flags: MessageFlags.Ephemeral
+            });
+        }
+
+        calculateTrackerStats(payout);
+        if (payout.status !== "ready") {
+            return interaction.reply({
+                content: "❌ This creator has not reached the payout threshold yet.",
                 flags: MessageFlags.Ephemeral
             });
         }
@@ -3697,17 +3706,14 @@ client.on(Events.InteractionCreate, async interaction => {
         payout.lifetimePaid = (Number(payout.lifetimePaid) || 0) + paidMoney;
         payout.currentUnpaidViews = 0;
         payout.currentUnpaidMoney = 0;
+        payout.lastPaidAt = Date.now();
         payout.updatedAt = Date.now();
  
         saveData(data);
 
         try {
 
-            console.log("Fetching member...");
-
             const member = await interaction.guild.members.fetch(userId);
-
-            console.log("Fetched:", member.user.tag);
 
             const row = new ActionRowBuilder()
                 .addComponents(
@@ -3749,14 +3755,10 @@ client.on(Events.InteractionCreate, async interaction => {
                 })
                 .setTimestamp();
  
-            console.log("Sending DM...");
-
             await member.send({
                 embeds: [dmEmbed],
                 components: [row]
             });
-
-            console.log("✅ DM sent");
 
         } catch (err) {
 
@@ -3841,16 +3843,17 @@ client.on(Events.InteractionCreate, async interaction => {
            ? `${exchange.charAt(0).toUpperCase()}${exchange.slice(1)} ID`
            : 'Payment ID';
        const paymentValue = user?.paymentDetails?.paymentId || 'Not Set';
-       const unpaidViews = Number(payout.unpaidViews) || 0;
-       const unpaidMoney = Number(payout.unpaidMoney) || 0;
+       const unpaidViews = Number(payout.currentUnpaidViews) || 0;
+       const unpaidMoney = Number(payout.currentUnpaidMoney) || 0;
 
        const reason = interaction.fields.getTextInputValue("reason");
 
        payout.status = "issue";
        payout.issueReason = reason;
        payout.issueAt = Date.now();
-       payout.currentUnpaidViews = Number(payout.currentUnpaidViews ?? payout.unpaidViews) || 0;
-       payout.currentUnpaidMoney = Number(payout.currentUnpaidMoney ?? payout.unpaidMoney) || 0;
+       payout.currentUnpaidViews = Number(payout.currentUnpaidViews) || 0;
+       payout.currentUnpaidMoney = Number(payout.currentUnpaidMoney) || 0;
+       payout.lastIssueAt = Date.now();
        payout.updatedAt = Date.now();
 
        saveData(data);
@@ -3862,7 +3865,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
            const issueEmbed = new EmbedBuilder()
     .setColor(0xF39C12)
-    .setTitle(`⚠️ Payment Issue With Your ${paymentLabel.replace(" ID","")} Account`)
+    .setTitle(`<a:warning:1504774411280973864> Payment Issue With Your ${paymentLabel.replace(" ID","")} Account`)
     .setDescription(
 `Your payment for the **${campaign.name}** campaign could not be completed.
 
@@ -6108,8 +6111,8 @@ ${reason}
                 staffMessageId: null,
 
                 payout: {
-                    totalPaidViews: 0,
-                    totalPaidAmount: 0,
+                    paidViews: 0,
+                    paidMoney: 0,
                     lastPaidAt: null,
                     history: []
                 }
@@ -6616,6 +6619,8 @@ ${reason}
 
       data.clips[clipId] = clip;
       saveData(data);
+
+      await syncPayoutCard(interaction.guild, clip.campaignId, clip.userId);
 
       // Trigger background stats recalculation
       const guild = client.guilds.cache.get(process.env.GUILD_ID) || interaction.guild;
