@@ -3751,11 +3751,10 @@ client.on(Events.InteractionCreate, async interaction => {
             <a:warning:1504774411280973864> Notes
             Network fees may apply depending on your exchange or wallet.`
                 )
-                .setDescription(
-                `<:whiteCE:1504904179905200148> **Creators Elite**
-
-                Thank you for clipping ❤️`
-                )
+                .setFooter({
+                    text: "Creators Elite • Thank you for clipping ❤️",
+                    iconURL: "https://cdn.discordapp.com/emojis/1504904179905200148.png"
+                })
                 .setTimestamp();
  
             await member.send({
@@ -3894,11 +3893,10 @@ ${reason}
 
 > Your payout has **NOT** been lost. It will remain pending until the issue is resolved.`
     )
-    .setDescription(
-    `<:whiteCE:1504904179905200148> **Creators Elite**
-
-    Thank you for clipping ❤️`
-    )
+    .setFooter({
+        text: "Creators Elite • Thank you for clipping ❤️",
+        iconURL: "https://cdn.discordapp.com/emojis/1504904179905200148.png"
+    })
     .setTimestamp();
 
            await member.send({ embeds: [issueEmbed] });
