@@ -3683,60 +3683,52 @@ client.on(Events.InteractionCreate, async interaction => {
 
         try {
 
+            console.log("Fetching member...");
+
             const member = await interaction.guild.members.fetch(userId);
 
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setStyle(ButtonStyle.Link)
-                    .setLabel("💸 Share Payment Result")
-                    .setURL("YOUR_PAYMENT_RESULTS_CHANNEL_LINKhttps://discordapp.com/channels/1413113505565118524/1533850271292199143")
-            );
+            console.log("Fetched:", member.user.tag);
+
+            const row = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setStyle(ButtonStyle.Link)
+                        .setLabel("💸 Share Payment Result")
+                        .setURL("https://discord.com/channels/1413113505565118524/1533850271292199143")
+                );
 
             const dmEmbed = new EmbedBuilder()
-
                 .setColor(0x57F287)
-
                 .setTitle("✅ Payment Sent")
-
                 .setDescription(
+        `Campaign
 
-            `Campaign
+        ${campaign.name}
 
-            ${campaign.name}
+        Views Paid
 
-            Views Paid
+        ${formatNumber(paidViews)}
 
-            ${formatNumber(paidViews)}
+        Amount
 
-            Amount
-
-            $${paidMoney.toFixed(2)}`
-
-            );
-
-            try {
-
-                 console.log("Sending DM to", member.user.tag);
-
-                 await member.send({
-
-                     embeds: [dmEmbed],
-
-                     components: [row]
-
-                 });
-
-                 console.log("✅ DM sent");
-
-            } catch (err) {
+        $${paidMoney.toFixed(2)}`
+                );
  
-                console.error("❌ Failed to send DM");
+            console.log("Sending DM...");
 
-                console.error(err);
+            await member.send({
+                embeds: [dmEmbed],
+                components: [row]
+            });
 
-            }
+            console.log("✅ DM sent");
 
-        } catch {}
+        } catch (err) {
+
+            console.error("❌ OUTER ERROR");
+            console.error(err);
+
+        }
 
         await interaction.update({
             embeds: [
