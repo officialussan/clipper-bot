@@ -156,7 +156,7 @@ Click the button below to start clipping and earning.`
 
   crowder: {
     id: 'crowder',
-    name: '<:SC:1505154364229156954> Steven Crowder Clipping Campaign',
+    name: 'Steven Crowder Clipping Campaign',
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
     payoutThreshold: 17500,
     campaignBudget: 2100,
