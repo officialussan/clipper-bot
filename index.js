@@ -117,6 +117,69 @@ function getInstagramApiErrorDetails(error) {
   };
 }
 
+async function instagramApiGet(path, params = {}) {
+  if (!INSTAGRAM_TEST_ACCESS_TOKEN) throw new Error('Instagram test access token is not configured.');
+  const cleanPath = String(path || '').replace(/^\/+/, '');
+  const url = `https://graph.instagram.com/${INSTAGRAM_API_VERSION}/${cleanPath}`;
+  try {
+    const response = await axios.get(url, { params: { ...params, access_token: INSTAGRAM_TEST_ACCESS_TOKEN }, timeout: 15000 });
+    return response.data;
+  } catch (error) {
+    const details = getInstagramApiErrorDetails(error);
+    const wrapped = new Error(details.message || 'Instagram API request failed.');
+    wrapped.instagramApiError = details;
+    throw wrapped;
+  }
+}
+
+async function fetchInstagramTestMedia(limit = 10) {
+  const identity = await fetchInstagramTestIdentity();
+  const data = await instagramApiGet(`${identity.instagramUserId}/media`, {
+    fields: 'id,caption,media_type,media_product_type,permalink,thumbnail_url,media_url,timestamp,username',
+    limit: Math.min(Math.max(Number(limit) || 10, 1), 25)
+  });
+  return { identity, media: Array.isArray(data?.data) ? data.data : [] };
+}
+
+function isInstagramReel(media) {
+  return Boolean(media && (String(media.media_product_type || '').toUpperCase() === 'REELS' || String(media.permalink || '').includes('/reel/')));
+}
+
+function extractInstagramInsightValue(metric) {
+  if (!metric) return null;
+  const values = Array.isArray(metric.values) ? metric.values : [];
+  const latestValue = values.length ? values[values.length - 1]?.value : null;
+  const directValue = metric.total_value?.value ?? metric.value ?? latestValue;
+  const numeric = Number(directValue);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+async function fetchInstagramTestMediaInsights(media) {
+  if (!media?.id) throw new Error('Instagram media ID is missing.');
+  const results = {}, errors = [];
+  for (const metricName of ['views', 'plays']) {
+    try {
+      const response = await instagramApiGet(`${media.id}/insights`, { metric: metricName });
+      const value = extractInstagramInsightValue(Array.isArray(response?.data) ? response.data[0] : null);
+      if (value !== null) results[metricName] = value;
+    } catch (error) {
+      const details = error.instagramApiError || {};
+      errors.push({ metric: metricName, status: details.status || null, code: details.code || null, message: details.message || error.message });
+    }
+  }
+  const views = Number.isFinite(Number(results.views)) ? Number(results.views) : Number.isFinite(Number(results.plays)) ? Number(results.plays) : null;
+  return { views, metrics: results, errors };
+}
+
+function getInstagramMediaTitle(media) {
+  const caption = String(media?.caption || '').trim();
+  if (!caption) return isInstagramReel(media) ? 'Instagram Reel' : 'Instagram Post';
+  const firstLine = caption.split(/\r?\n/)[0].trim();
+  return firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
+}
+
+const instagramMediaTestCooldowns = new Map();
+
 const clean = (str) =>
   str.replace(/[`*_|~]/g, '').trim();
 
@@ -3536,6 +3599,64 @@ client.on(Events.MessageCreate, async message => {
         await message.reply(
           `❌ Instagram API connection failed.\nHTTP Status: ${details.status ?? 'Not available'}\nMeta Error Code: ${details.code ?? 'Not available'}\nMessage: ${details.message}`
         );
+      }
+      return;
+    }
+
+    if (message.content.trim().toLowerCase() === '!testinstagrammedia') {
+      if (!isAdmin(message.member)) {
+        await message.reply('❌ You are not allowed to do this.');
+        return;
+      }
+      const now = Date.now();
+      const lastRun = instagramMediaTestCooldowns.get(message.author.id) || 0;
+      if (now - lastRun < 30_000) {
+        await message.reply('Please wait before running the Instagram media test again.');
+        return;
+      }
+      instagramMediaTestCooldowns.set(message.author.id, now);
+      const loadingMessage = await message.reply('⏳ Testing Instagram media access…');
+      try {
+        const { identity, media } = await fetchInstagramTestMedia(10);
+        const reels = media.filter(isInstagramReel).slice(0, 5);
+        if (!reels.length) {
+          await loadingMessage.edit('✅ Instagram media access works, but no recent Reels were found in the first 10 media items.');
+          return;
+        }
+
+        const tested = [];
+        for (const reel of reels) {
+          const insights = await fetchInstagramTestMediaInsights(reel);
+          tested.push({ reel, insights });
+          for (const insightError of insights.errors) {
+            console.warn('[Instagram Media Insight Test]', { mediaId: reel.id, metric: insightError.metric, status: insightError.status, code: insightError.code, message: insightError.message });
+          }
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        const insightSuccesses = tested.filter(item => item.insights.views !== null).length;
+        const insightFailures = tested.length - insightSuccesses;
+        console.log('[Instagram Media Test]', { username: identity.username, mediaFound: media.length, reelsFound: media.filter(isInstagramReel).length, reelsTested: tested.length, insightSuccesses, insightFailures });
+        if (!insightSuccesses) {
+          await loadingMessage.edit('⚠️ Instagram media access works, but the API did not return a supported views or plays metric for the tested Reels.');
+          return;
+        }
+
+        const embed = new EmbedBuilder()
+          .setColor(0x57F287)
+          .setTitle('Instagram Media API Test')
+          .setDescription(`**Status:** ✅ Media retrieved\n**Account:** @${identity.username || 'Unknown'}\n**Recent Media Found:** ${media.length}\n**Reels Found:** ${media.filter(isInstagramReel).length}\n**Reels Tested:** ${tested.length}\n**Successful insight checks:** ${insightSuccesses}\n**Unavailable or failed:** ${insightFailures}`);
+        for (const { reel, insights } of tested) {
+          const title = getInstagramMediaTitle(reel).replace(/[\[\]\\]/g, '\\$&');
+          const metric = insights.metrics.views !== undefined ? 'views' : insights.metrics.plays !== undefined ? 'plays' : 'none';
+          const published = reel.timestamp ? new Date(reel.timestamp).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : 'Not returned';
+          embed.addFields({ name: title, value: `${reel.permalink ? `[Open Reel](${reel.permalink})\n` : ''}Media ID: ${reel.id}\nPublished: ${published}\nViews: ${insights.views === null ? 'Not available' : insights.views.toLocaleString()}\nMetric: ${metric}`.slice(0, 1024) });
+        }
+        const thumbnail = tested.map(item => item.reel.thumbnail_url || item.reel.media_url).find(url => /^https:\/\//i.test(url || ''));
+        if (thumbnail) embed.setThumbnail(thumbnail);
+        await loadingMessage.edit({ content: null, embeds: [embed] });
+      } catch (error) {
+        const details = error.instagramApiError || getInstagramApiErrorDetails(error);
+        await loadingMessage.edit(`❌ Instagram media retrieval failed.\nHTTP Status: ${details.status ?? 'Not available'}\nMeta Error Code: ${details.code ?? 'Not available'}\nMessage: ${details.message || error.message}`);
       }
       return;
     }
