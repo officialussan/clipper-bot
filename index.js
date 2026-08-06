@@ -336,6 +336,25 @@ function loadData() {
     migrationChanged = true;
     console.log('✅ Rejection lifecycle migration complete.');
   }
+  if (!raw.storageMigrations.submissionBudgetCycleV1) {
+    for (const collection of [raw.clips, raw.clipReviews]) {
+      for (const [clipId, clip] of Object.entries(collection || {})) {
+        const campaign = CAMPAIGNS[clip.campaignId];
+        const submittedTimestamp = getClipSubmissionTimestamp(clip);
+        if (campaign && submittedTimestamp) {
+          clip.budgetCycleIndex = getCampaignBudgetCycleIndex(campaign, submittedTimestamp);
+          clip.budgetCycleSubmittedAt = submittedTimestamp;
+          delete clip.budgetCycleUnknown;
+        } else {
+          clip.budgetCycleIndex = null;
+          clip.budgetCycleUnknown = true;
+          console.warn(`Clip ${clipId} has no submission timestamp and was excluded from budget-cycle reporting.`);
+        }
+      }
+    }
+    raw.storageMigrations.submissionBudgetCycleV1 = true;
+    migrationChanged = true;
+  }
   if (migrationChanged) recovered = true;
   if (recovered) saveData(raw);
   return raw;
@@ -1787,6 +1806,47 @@ function getApprovedClipEarnings(clip, campaign) {
   return views / 1_000_000 * rate;
 }
 
+function getCampaignBudgetCycleWeeks(campaign) {
+  const configuredWeeks = Number(campaign?.cycleWeeks);
+  if (Number.isFinite(configuredWeeks) && configuredWeeks > 0) return configuredWeeks;
+  return String(campaign?.budgetCycle || 'weekly').toLowerCase() === 'monthly' ? 4 : 1;
+}
+
+function getCampaignBudgetCycleIndex(campaign, date = new Date()) {
+  const parsedDate = new Date(date);
+  const startDate = new Date(campaign?.startDate);
+  if (Number.isNaN(parsedDate.getTime()) || Number.isNaN(startDate.getTime())) return 0;
+  const lengthMs = getCampaignBudgetCycleWeeks(campaign) * 7 * 24 * 60 * 60 * 1000;
+  return Math.max(0, Math.floor((parsedDate.getTime() - startDate.getTime()) / lengthMs));
+}
+
+function getCampaignBudgetPeriod(campaign, date = new Date()) {
+  const cycleIndex = getCampaignBudgetCycleIndex(campaign, date);
+  const cycleWeeks = getCampaignBudgetCycleWeeks(campaign);
+  const periodStart = new Date(campaign.startDate);
+  periodStart.setUTCDate(periodStart.getUTCDate() + cycleIndex * cycleWeeks * 7);
+  const periodEnd = new Date(periodStart);
+  periodEnd.setUTCDate(periodEnd.getUTCDate() + cycleWeeks * 7);
+  return { cycleIndex, periodStart, periodEnd };
+}
+
+function getClipSubmissionTimestamp(clip) {
+  const direct = Number(clip?.submittedTimestamp);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const parsed = Date.parse(clip?.submittedAt || clip?.createdAt || '');
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getClipBudgetCycleIndex(clip, campaign) {
+  const submittedTimestamp = getClipSubmissionTimestamp(clip);
+  return submittedTimestamp ? getCampaignBudgetCycleIndex(campaign, submittedTimestamp) : null;
+}
+
+function isClipInCurrentBudgetCycle(clip, campaign, now = new Date()) {
+  const clipCycle = getClipBudgetCycleIndex(clip, campaign);
+  return clipCycle !== null && Number(clipCycle) === Number(getCampaignBudgetCycleIndex(campaign, now));
+}
+
 function getFiniteNonNegativeNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : 0;
@@ -1892,7 +1952,7 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
       .setDescription('❌ Campaign not found. Please rejoin the campaign or contact staff.');
   }
 
-  const currentCycle = getCampaignCycle(campaign);
+  const currentCycle = getCampaignBudgetCycleIndex(campaign);
   const payoutThreshold = campaign?.payoutThreshold || 100000;
 
   const targetUserId =
@@ -1912,20 +1972,20 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
     const matchCampaign = String(c.campaignId) === String(campaignId);
 
     // keep current-cycle filtering if that’s your intended stats window
-    const clipCycle = getClipStatsCycle(c, campaign);
+    const clipCycle = getClipBudgetCycleIndex(c, campaign);
     const matchCycle = Number(clipCycle) === Number(currentCycle);
 
     return matchUser && matchCampaign && matchCycle;
   });
 
   const approvedClips = userClips.filter(isPayoutEligibleClip);
-  const pendingClips = Object.values(data.clipReviews || {}).filter(c => String(c.userId) === String(targetUserId) && String(c.campaignId) === String(campaignId) && c.status === 'pending' && isClipInCurrentCampaignCycle(c, campaign));
-  const rejectedClips = getUniqueClipRecords([...Object.values(data.clipReviews || {}), ...Object.values(data.clips || {})]).filter(c => String(c.userId) === String(targetUserId) && String(c.campaignId) === String(campaignId) && c.status === 'rejected' && isClipInCurrentCampaignCycle(c, campaign));
+  const pendingClips = Object.values(data.clipReviews || {}).filter(c => String(c.userId) === String(targetUserId) && String(c.campaignId) === String(campaignId) && c.status === 'pending' && isClipInCurrentBudgetCycle(c, campaign));
+  const rejectedClips = getUniqueClipRecords([...Object.values(data.clipReviews || {}), ...Object.values(data.clips || {})]).filter(c => String(c.userId) === String(targetUserId) && String(c.campaignId) === String(campaignId) && c.status === 'rejected' && isClipInCurrentBudgetCycle(c, campaign));
 
   const userCampaignClips = Object.values(data.clips || {}).filter(clip =>
     String(clip.userId) === String(targetUserId) &&
     String(clip.campaignId) === String(campaignId) &&
-    isClipInCurrentCampaignCycle(clip, campaign)
+    isClipInCurrentBudgetCycle(clip, campaign)
   );
   const accounting = calculateClipCollectionAccounting(userCampaignClips, campaign, { scope: 'my_stats', campaignId, userId: targetUserId });
   const { totalViews, paidViews, unpaidViews, totalMoney, paidMoney, unpaidMoney } = accounting;
@@ -2184,7 +2244,7 @@ function getCampaignTotals(data, campaignId) {
 
   const campaignClips = Object.values(data.clips || {}).filter(clip =>
     String(clip.campaignId) === String(campaignId) &&
-    isClipInCurrentCampaignCycle(clip, campaign)
+    isClipInCurrentBudgetCycle(clip, campaign)
   );
   const accounting = calculateClipCollectionAccounting(campaignClips, campaign, { scope: 'campaign_status', campaignId });
   const configuredViewCap = Number(campaign.viewCap);
@@ -2216,7 +2276,7 @@ async function updateServerStats(guild) {
     let totalPaid = 0;
     let totalViews = 0;
     for (const campaign of Object.values(CAMPAIGNS)) {
-        const campaignClips = Object.values(data.clips || {}).filter(clip => String(clip.campaignId) === String(campaign.id) && isClipInCurrentCampaignCycle(clip, campaign));
+        const campaignClips = Object.values(data.clips || {}).filter(clip => String(clip.campaignId) === String(campaign.id));
         const accounting = calculateClipCollectionAccounting(campaignClips, campaign, { scope: 'server_stats', campaignId: campaign.id });
         totalViews += accounting.totalViews;
         totalPaid += accounting.paidMoney + accounting.unpaidMoney;
@@ -2262,7 +2322,7 @@ async function updateServerStats(guild) {
 }
 
 function buildCampaignStatusEmbed(campaign, data) {
-  const { periodStart, periodEnd } = getCampaignPeriod(campaign);
+  const { periodStart, periodEnd } = getCampaignBudgetPeriod(campaign);
   const totals = getCampaignTotals(data, campaign.id);
   console.log(`[Campaign Accounting] ${campaign.id}`, { users: totals.users, videos: totals.videos, paidViews: totals.paidViews, unpaidViews: totals.unpaidViews, totalViews: totals.views, payout: totals.payout });
 
@@ -6771,6 +6831,7 @@ ${reason}
             const matchedAccount = validation.matchedAccount;
             const clipId = makeClipId();
             const submittedTimestamp = Date.now();
+            const submissionBudgetCycle = getCampaignBudgetCycleIndex(campaign, new Date(submittedTimestamp));
             const currentViews = Math.max(Number(metadata.views) || 0, 0);
             const estimatedEarnings = currentViews / 1000000 * (Number(campaign.ratePerMillion) || 0);
             const clip = {
@@ -6798,6 +6859,8 @@ ${reason}
                 payoutEligible: false,
                 wasEverApproved: false,
                 submittedTimestamp,
+                budgetCycleIndex: submissionBudgetCycle,
+                budgetCycleSubmittedAt: submittedTimestamp,
                 submittedAt: new Date(submittedTimestamp).toISOString(),
                 createdAt: new Date(submittedTimestamp).toISOString(),
                 lastChecked: submittedTimestamp,
@@ -7333,7 +7396,10 @@ ${reason}
       clip.currentViews = latestViews;
       clip.views = latestViews;
       clip.approvalViews = latestViews;
-      clip.cycle = getCampaignCycle(campaign, new Date(approvedAt));
+      clip.budgetCycleIndex = Number.isFinite(Number(clip.budgetCycleIndex))
+        ? Number(clip.budgetCycleIndex)
+        : getClipBudgetCycleIndex(clip, campaign);
+      clip.approvalCycleIndex = getCampaignBudgetCycleIndex(campaign, new Date(approvedAt));
       clip.totalMoneyMade = latestViews / 1000000 * rate;
       clip.moneyMade = clip.totalMoneyMade;
       clip.weeklyViews = latestViews;
