@@ -1785,6 +1785,46 @@ function getApprovedClipEarnings(clip, campaign) {
   return views / 1_000_000 * rate;
 }
 
+function getClipAccounting(clip, campaign) {
+  const totalViews = Math.max(Number(clip?.views) || 0, Number(clip?.currentViews) || 0, Number(clip?.approvalViews) || 0);
+  const paidViews = Math.max(Number(clip?.payout?.paidViews) || 0, 0);
+  const paidMoney = Math.max(Number(clip?.payout?.paidMoney) || 0, 0);
+  const eligible = isPayoutEligibleClip(clip);
+  const unpaidViews = eligible ? Math.max(totalViews - paidViews, 0) : 0;
+  const unpaidMoney = unpaidViews / 1_000_000 * (Number(campaign?.ratePerMillion) || 0);
+  return { eligible, totalViews, paidViews, unpaidViews, paidMoney, unpaidMoney,
+    accountedViews: paidViews + unpaidViews, accountedMoney: paidMoney + unpaidMoney };
+}
+
+function getUniqueClipRecords(clips) {
+  const unique = new Map();
+  for (const clip of clips || []) {
+    if (!clip) continue;
+    const key = clip.id || (clip.platform && clip.videoId ? `${clip.platform}:${clip.videoId}` : null);
+    if (!key) continue;
+    const existing = unique.get(key);
+    if (!existing || Math.max(Number(clip.views) || 0, Number(clip.currentViews) || 0) > Math.max(Number(existing.views) || 0, Number(existing.currentViews) || 0)) unique.set(key, clip);
+  }
+  return [...unique.values()];
+}
+
+function calculateClipCollectionAccounting(clips, campaign) {
+  let paidViews = 0, unpaidViews = 0, paidMoney = 0, unpaidMoney = 0, accountedVideos = 0;
+  const userIds = new Set();
+  for (const clip of getUniqueClipRecords(clips)) {
+    const accounting = getClipAccounting(clip, campaign);
+    if (!accounting.eligible && accounting.paidViews <= 0 && accounting.paidMoney <= 0) continue;
+    paidViews += accounting.paidViews;
+    unpaidViews += accounting.unpaidViews;
+    paidMoney += accounting.paidMoney;
+    unpaidMoney += accounting.unpaidMoney;
+    accountedVideos++;
+    if (clip.userId) userIds.add(String(clip.userId));
+    if (process.env.DEBUG_CLIP_ACCOUNTING === 'true') console.log('[Clip Accounting]', { id: clip.id, userId: clip.userId, platform: clip.platform, videoId: clip.videoId, totalViews: accounting.totalViews, paidViews: accounting.paidViews, unpaidViews: accounting.unpaidViews, eligible: accounting.eligible });
+  }
+  return { users: userIds.size, videos: accountedVideos, paidViews, unpaidViews, totalViews: paidViews + unpaidViews, paidMoney, unpaidMoney, totalMoney: paidMoney + unpaidMoney };
+}
+
 function getClipStatsCycle(clip, campaign) {
   const storedCycleValue = clip?.cycle;
   if (storedCycleValue !== null && storedCycleValue !== undefined && storedCycleValue !== '') {
@@ -1809,6 +1849,7 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
       .setDescription('❌ Campaign not found. Please rejoin the campaign or contact staff.');
   }
 
+  const currentCycle = getCampaignCycle(campaign);
   const payoutThreshold = campaign?.payoutThreshold || 100000;
 
   const targetUserId =
@@ -1823,62 +1864,150 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
       .setDescription('❌ Could not resolve user identity context.');
   }
 
-  const approvedClips = Object.values(data.clips || {}).filter(clip =>
-    String(clip.userId) === String(targetUserId) &&
-    String(clip.campaignId) === String(campaignId) &&
-    isPayoutEligibleClip(clip) &&
-    isClipInCurrentCampaignCycle(clip, campaign)
-  );
+  const userClips = Object.values(data.clips || {}).filter(c => {
+    const matchUser = String(c.userId) === String(targetUserId);
+    const matchCampaign = String(c.campaignId) === String(campaign.id);
 
-  const pendingClips = Object.values(data.clipReviews || {}).filter(clip =>
-    String(clip.userId) === String(targetUserId) &&
-    String(clip.campaignId) === String(campaignId) &&
-    clip.status === 'pending' &&
-    isClipInCurrentCampaignCycle(clip, campaign)
-  );
+    // keep current-cycle filtering if that’s your intended stats window
+    const clipCycle = getCampaignCycle(campaign, c.submittedAt);
+    const matchCycle = Number(clipCycle) === Number(currentCycle);
 
-  const rejectedById = new Map();
-  for (const clip of [
-    ...Object.values(data.clipReviews || {}),
-    ...Object.values(data.clips || {})
-  ]) {
-    if (
-      String(clip.userId) !== String(targetUserId) ||
-      String(clip.campaignId) !== String(campaignId) ||
-      clip.status !== 'rejected' ||
-      !isClipInCurrentCampaignCycle(clip, campaign)
-    ) {
-      continue;
+    return matchUser && matchCampaign && matchCycle;
+  });
+
+  const approvedClips = userClips.filter(isPayoutEligibleClip);
+  const pendingClips = Object.values(data.clipReviews || {}).filter(c => String(c.userId) === String(targetUserId) && String(c.campaignId) === String(campaignId) && c.status === 'pending' && isClipInCurrentCampaignCycle(c, campaign));
+  const rejectedClips = getUniqueClipRecords([...Object.values(data.clipReviews || {}), ...Object.values(data.clips || {})]).filter(c => String(c.userId) === String(targetUserId) && String(c.campaignId) === String(campaignId) && c.status === 'rejected' && isClipInCurrentCampaignCycle(c, campaign));
+
+  const rawTotalViews = approvedClips.reduce((sum, clip) => {
+    return sum + (Number(clip.views) || 0);
+  }, 0);
+
+  const rawPaidViews = approvedClips.reduce((sum, clip) => {
+    return sum + (Number(clip.payout?.paidViews) || 0);
+  }, 0);
+
+  const rawUnpaidViews = approvedClips.reduce((sum, clip) => {
+    const views = Number(clip.views) || 0;
+    const paid = Number(clip.payout?.paidViews) || 0;
+    return sum + Math.max(views - paid, 0);
+  }, 0);
+
+  const rawTotalMoney = approvedClips.reduce((sum, clip) => {
+    if (clip.moneyMade != null) {
+      return sum + (Number(clip.moneyMade) || 0);
     }
-    rejectedById.set(clip.id, clip);
-  }
-  const rejectedClips = [...rejectedById.values()];
+    const views = Number(clip.views) || 0;
+    return sum + ((views / 1000000) * (campaign.ratePerMillion || 0));
+  }, 0);
 
-  const totalViews = approvedClips.reduce((sum, clip) => sum + getApprovedClipViews(clip), 0);
-  const moneyMade = approvedClips.reduce(
-    (sum, clip) => sum + getApprovedClipEarnings(clip, campaign),
-    0
+  const rawPaidMoney = approvedClips.reduce((sum, clip) => {
+    return sum + (Number(clip.payout?.paidMoney) || 0);
+  }, 0);
+
+  const rawUnpaidMoney = Math.max(rawTotalMoney - rawPaidMoney, 0);
+
+  const userCampaignClips = Object.values(data.clips || {}).filter(clip =>
+    String(clip.userId) === String(targetUserId) &&
+    String(clip.campaignId) === String(campaignId) &&
+    isClipInCurrentCampaignCycle(clip, campaign)
   );
+  const accounting = calculateClipCollectionAccounting(userCampaignClips, campaign);
+  const { totalViews, paidViews, unpaidViews, totalMoney, paidMoney, unpaidMoney } = accounting;
 
-  const viewsNeeded = Math.max(payoutThreshold - totalViews, 0);
+  const viewsNeeded = Math.max(payoutThreshold - unpaidViews, 0);
 
   const payoutText =
-    totalViews >= payoutThreshold
-      ? `Eligible for payout.\n**Money Made:** $${moneyMade.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-      : `Need **${formatNumber(viewsNeeded)}** more views`;
+    unpaidViews >= payoutThreshold
+      ? `Eligible for payout.\n**Unpaid Amount Ready:** $${unpaidMoney.toLocaleString('en-US', {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        })}`
+      : `Need **${formatNumber(viewsNeeded)}** more unpaid views`;
 
   return new EmbedBuilder()
     .setColor(0x7ED957)
     .setDescription(
       `<a:chart1:1504773558415523931> **Campaign Stats - ${campaignName}**\n\n` +
+
       `<a:rocket1:1504872045849346140> **Total Views**\n${formatNumber(totalViews)}\n\n` +
+      `<a:good1:1504871589332914176> **Paid Views**\n${formatNumber(paidViews)}\n\n` +
+      `<a:flyin:1506234392920723546> **Unpaid Views**\n${formatNumber(unpaidViews)}\n\n` +
+
+      `<a:Cash1:1504871843419521115> **Total Earnings**\n$${totalMoney.toLocaleString('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      })}\n\n` +
+
+      `<a:good1:1504871589332914176> **Paid Earnings**\n$${paidMoney.toLocaleString('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      })}\n\n` +
+
+      `<a:flyin:1506234392920723546> **Unpaid Earnings**\n$${unpaidMoney.toLocaleString('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      })}\n\n` +
+
       `<a:Cash1:1504871843419521115> **Payout Target: ${formatNumber(payoutThreshold)} Views**\n${payoutText}\n\n` +
+
       `<a:appr:1534931253952909453> **Approved Videos**\n${approvedClips.length}\n\n` +
       `<a:dot1:1508433228669780029> **Pending Videos**\n${pendingClips.length}\n\n` +
       `<a:cancel:1506235594303606794> **Rejected Videos**\n${rejectedClips.length}\n\n` +
+
       `🎞️ **View Your Clips**\nClick the button below to check the clips submitted for this campaign.`
     )
     .setFooter({ text: `Last update | ${new Date().toLocaleString()}` });
+}
+
+function buildApprovedClipUserEmbed(clip) {
+  const currentViews = Number(clip.views) || 0;
+  const currentMoney =
+    clip.moneyMade != null
+      ? Number(clip.moneyMade) || 0
+      : ((currentViews / 1000000) * ((CAMPAIGNS[clip.campaignId]?.ratePerMillion) || 0));
+
+  const titleText =
+    clip.title ||
+    clip.videoTitle ||
+    clip.caption ||
+    "View Approved Clip";
+
+  const embed = new EmbedBuilder()
+    .setColor(0x57F287)
+    .setAuthor({
+      name: clip.campaignName || "Creators Elite"
+    })
+    .setTitle("Your video has been approved ✅")
+    .setDescription(`[${titleText}](${clip.videoUrl || clip.url})`)
+    .addFields(
+      {
+        name: "<a:chart1:1504773558415523931> Current Views",
+        value: `${formatNumber(currentViews)}`,
+        inline: false
+      },
+      {
+        name: "<a:Cash1:1504871843419521115> Current Earnings",
+        value: `$${currentMoney.toFixed(2)}`,
+        inline: false
+      },
+      {
+        name: "🌐 Platform",
+        value: `${formatPlatform(clip.platform)}`,
+        inline: false
+      }
+    )
+    .setFooter({
+      text: "Creators Elite • Thank you for clipping ❤️",
+      iconURL: "https://cdn.discordapp.com/emojis/1504904179905200148.png"
+    })
+    .setTimestamp();
+
+  if (clip.thumbnailUrl) {
+    embed.setThumbnail(clip.thumbnailUrl);
+  }
+
+  return embed;
 }
  
 function makeSocialRequestId() {
@@ -2031,29 +2160,26 @@ function getCampaignTotals(data, campaignId) {
       };
   }
 
-  const users = Object.values(data.users || {}).filter(user =>
-    user.campaigns?.includes(campaignId)
-  ).length;
-
-  const clips = Object.values(data.clips || {}).filter(clip =>
+  const campaignClips = Object.values(data.clips || {}).filter(clip =>
     String(clip.campaignId) === String(campaignId) &&
-    isPayoutEligibleClip(clip) &&
     isClipInCurrentCampaignCycle(clip, campaign)
   );
-
-  const videos = clips.length;
-
-  const uncappedViews = clips.reduce(
-    (sum, clip) => sum + getApprovedClipViews(clip),
-    0
-  );
+  const accounting = calculateClipCollectionAccounting(campaignClips, campaign);
   const configuredViewCap = Number(campaign.viewCap);
-  const cappedViews = Number.isFinite(configuredViewCap) && configuredViewCap > 0
-    ? Math.min(uncappedViews, configuredViewCap)
-    : uncappedViews;
-  const payout = cappedViews / 1_000_000 * (Number(campaign.ratePerMillion) || 0);
-
-  return { users, videos, views: uncappedViews, payableViews: cappedViews, payout };
+  const cappedUnpaidViews = Number.isFinite(configuredViewCap) && configuredViewCap > 0
+    ? Math.min(accounting.unpaidViews, Math.max(configuredViewCap - accounting.paidViews, 0))
+    : accounting.unpaidViews;
+  const cappedUnpaidMoney = cappedUnpaidViews / 1_000_000 * (Number(campaign.ratePerMillion) || 0);
+  return {
+    users: accounting.users,
+    videos: accounting.videos,
+    views: accounting.totalViews,
+    paidViews: accounting.paidViews,
+    unpaidViews: accounting.unpaidViews,
+    paidMoney: accounting.paidMoney,
+    unpaidMoney: cappedUnpaidMoney,
+    payout: accounting.paidMoney + cappedUnpaidMoney
+  };
 }
 
 // Global tracking timestamp to block excessive name edits
@@ -2065,10 +2191,14 @@ async function updateServerStats(guild) {
     const data = loadData();
     const YEAR_GOAL = 100000; // Updated from your image configuration
 
-    const approvedClips = Object.values(data.clips || {}).filter(isPayoutEligibleClip);
-
-    const totalPaid = approvedClips.reduce((sum, c) => sum + (Number(c.moneyMade) || 0), 0);
-    const totalViews = approvedClips.reduce((sum, c) => sum + (Number(c.views) || 0), 0);
+    let totalPaid = 0;
+    let totalViews = 0;
+    for (const campaign of Object.values(CAMPAIGNS)) {
+        const campaignClips = Object.values(data.clips || {}).filter(clip => String(clip.campaignId) === String(campaign.id));
+        const accounting = calculateClipCollectionAccounting(campaignClips, campaign);
+        totalViews += accounting.totalViews;
+        totalPaid += accounting.paidMoney + accounting.unpaidMoney;
+    }
     const activeCampaigns = Object.values(CAMPAIGNS).filter(c => c.status === "active").length;
 
     let availableMoney = 0;
@@ -2112,6 +2242,7 @@ async function updateServerStats(guild) {
 function buildCampaignStatusEmbed(campaign, data) {
   const { periodStart, periodEnd } = getCampaignPeriod(campaign);
   const totals = getCampaignTotals(data, campaign.id);
+  console.log(`[Campaign Accounting] ${campaign.id}`, { users: totals.users, videos: totals.videos, paidViews: totals.paidViews, unpaidViews: totals.unpaidViews, totalViews: totals.views, payout: totals.payout });
 
   const cappedPayout = Math.min(
     Number(totals.payout) || 0,
@@ -2140,12 +2271,16 @@ function buildCampaignStatusEmbed(campaign, data) {
       `<a:rocket1:1504872045849346140> **Performance Metrics**\n` +
       `**Users:** ${totals.users}\n` +
       `**Videos:** ${totals.videos}\n` +
-      `**Views:** ${formatNumber(totals.views)}\n\n` +
+      `**Total Views:** ${formatNumber(totals.views)}\n` +
+      `**Paid Views:** ${formatNumber(totals.paidViews)}\n` +
+      `**Unpaid Views:** ${formatNumber(totals.unpaidViews)}\n\n` +
 
       `<a:Cash1:1504871843419521115> **Payout & Budget**\n` +
       `**Campaign Budget:** $${formatNumber(campaign.campaignBudget)}\n` +
-      `**Remaining:** $${formatNumber(remaining)}\n` +
-      `**Payout:** $${formatNumber(cappedPayout)} (${fulfilledPercent.toFixed(1)}%)\n\n` +
+      `**Already Paid:** $${formatNumber(totals.paidMoney)}\n` +
+      `**Current Unpaid:** $${formatNumber(totals.unpaidMoney)}\n` +
+      `**Total Fulfilled:** $${formatNumber(cappedPayout)} (${fulfilledPercent.toFixed(1)}%)\n` +
+      `**Remaining:** $${formatNumber(remaining)}\n\n` +
 
       `<a:warning:1504774411280973864> Once we hit the **${formatNumber(campaign.viewCap)} view cap**, any views after that won't be paid, so post early to secure your payout.\n\n` +
       `<:whiteCE:1504904179905200148> Powered by Creators Elite | ${new Date().toLocaleString()}`
@@ -7212,9 +7347,13 @@ ${reason}
       }
 
       try {
-        await sendClipApprovedDM(interaction.guild, clip);
+        const member = await interaction.guild.members.fetch(clip.userId);
+
+        await member.send({
+          embeds: [buildApprovedClipUserEmbed(clip)]
+        });
       } catch (err) {
-        console.error(`Could not send approved clip DM ${clipId}:`, err.message);
+        console.error("❌ Failed to send approval DM:", err.message);
       }
 
       try {
