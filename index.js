@@ -821,6 +821,29 @@ function parseCanonicalVideoUrl(resolvedUrl) {
   return null;
 }
 
+function getClipVideoKey(platform, videoId) {
+  const normalizedPlatform = String(platform || '').trim().toLowerCase();
+  const normalizedVideoId = String(videoId || '').trim();
+  return normalizedPlatform && normalizedVideoId ? `${normalizedPlatform}:${normalizedVideoId}` : null;
+}
+
+function normalizeClipVideoUrl(value) {
+  try {
+    const url = new URL(String(value || '').trim());
+    url.hash = '';
+    const host = url.hostname.toLowerCase();
+    if (host === 'youtube.com' || host.endsWith('.youtube.com') || host === 'youtu.be') {
+      const videoId = getYouTubeVideoId(url.toString());
+      return videoId ? `youtube:${videoId}` : null;
+    }
+    if (host === 'tiktok.com' || host.endsWith('.tiktok.com')) {
+      const match = url.pathname.match(/\/video\/(\d+)/);
+      return match ? `tiktok:${match[1]}` : null;
+    }
+  } catch {}
+  return null;
+}
+
 async function validateClipBeforeSubmission({ data, userId, campaignId, submittedUrl }) {
   const campaign = CAMPAIGNS[campaignId];
   if (!campaign) return { valid: false, message: '❌ Campaign not found.', metadata: null };
@@ -833,14 +856,24 @@ async function validateClipBeforeSubmission({ data, userId, campaignId, submitte
       return { valid: false, message: `❌ ${formatPlatform(parsed.platform)} is not enabled for this campaign.`, metadata: null };
     }
 
+    const incomingVideoKey = getClipVideoKey(parsed.platform, parsed.videoId);
+    const incomingUrlKey = normalizeClipVideoUrl(parsed.canonicalUrl);
     const allStoredClips = [
       ...Object.values(data.clipReviews || {}),
       ...Object.values(data.clips || {})
-    ];
+    ].filter(clip => String(clip.campaignId) === String(campaignId));
     const duplicate = allStoredClips.some(clip =>
-      (clip.platform === parsed.platform && clip.videoId === parsed.videoId) ||
-      String(clip.videoUrl || clip.url || '').split('?')[0] === parsed.canonicalUrl.split('?')[0]
+      (getClipVideoKey(clip.platform, clip.videoId) && getClipVideoKey(parsed.platform, parsed.videoId) && getClipVideoKey(clip.platform, clip.videoId) === getClipVideoKey(parsed.platform, parsed.videoId)) ||
+      (normalizeClipVideoUrl(clip.videoUrl || clip.url) && normalizeClipVideoUrl(parsed.canonicalUrl) && normalizeClipVideoUrl(clip.videoUrl || clip.url) === normalizeClipVideoUrl(parsed.canonicalUrl))
     );
+    const matchedDuplicate = duplicate ? allStoredClips.find(clip =>
+      (getClipVideoKey(clip.platform, clip.videoId) && incomingVideoKey && getClipVideoKey(clip.platform, clip.videoId) === incomingVideoKey) ||
+      (normalizeClipVideoUrl(clip.videoUrl || clip.url) && incomingUrlKey && normalizeClipVideoUrl(clip.videoUrl || clip.url) === incomingUrlKey)
+    ) : null;
+    if (duplicate) {
+      if (process.env.DEBUG_CLIP_DUPLICATES === 'true') console.log('[Clip Duplicate Check]', { campaignId, incomingPlatform: parsed.platform, incomingVideoId: parsed.videoId, incomingVideoKey, matchedClipId: matchedDuplicate?.id || null, matchedCampaignId: matchedDuplicate?.campaignId || null, matchedStatus: matchedDuplicate?.status || null });
+      return { valid: false, code: 'DUPLICATE_CLIP', message: 'Duplicate clip in this campaign.', metadata: null };
+    }
     if (duplicate) return { valid: false, message: '❌ This video has already been submitted.', metadata: null };
 
     const metadata = await fetchSubmissionMetadata(parsed.platform, parsed.canonicalUrl, parsed.videoId);
@@ -1258,6 +1291,7 @@ function validateAccountSubmission(userId, campaignId, platform, username) {
   return { isValid: true };
 }
 
+// Deprecated: submission flow uses validateClipBeforeSubmission() for campaign-scoped canonical duplicate checks.
 function validateClipSubmission(videoUrl) {
   const data = loadData();
   
@@ -6807,7 +6841,7 @@ ${reason}
             });
 
             if (!validation.valid) {
-                if ((validation.message || '').toLowerCase().includes('already been submitted')) duplicateCount++;
+                if (validation.code === 'DUPLICATE_CLIP') duplicateCount++;
                 else rejectedResults.push({ link: originalLink, reason: validation.message || 'Validation failed.' });
                 continue;
             }
@@ -6820,12 +6854,12 @@ ${reason}
                 continue;
             }
 
-            const videoKey = validation.platform + ':' + validation.videoId;
-            if (batchVideoKeys.has(videoKey)) {
+            const videoKey = getClipVideoKey(validation.platform, validation.videoId);
+            if (videoKey && batchVideoKeys.has(videoKey)) {
                 duplicateCount++;
                 continue;
             }
-            batchVideoKeys.add(videoKey);
+            if (videoKey) batchVideoKeys.add(videoKey);
 
             const metadata = validation.metadata;
             const matchedAccount = validation.matchedAccount;
