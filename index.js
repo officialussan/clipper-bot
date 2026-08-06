@@ -60,6 +60,11 @@ const PAYMENT_STAFF_CHANNEL_ID = process.env.PAYMENT_STAFF_CHANNEL_ID;
 const LEADERBOARD_CHANNEL_ID = '1495692728431018015';
 const LEADERBOARD_MESSAGE_ID = '1508380113056567417';
 const MONSTERLAB_API_KEY = process.env.MONSTERLAB_API_KEY;
+const INSTAGRAM_APP_ID = process.env.INSTAGRAM_APP_ID;
+const INSTAGRAM_APP_SECRET = process.env.INSTAGRAM_APP_SECRET;
+const INSTAGRAM_TEST_ACCESS_TOKEN = process.env.INSTAGRAM_TEST_ACCESS_TOKEN;
+const INSTAGRAM_REDIRECT_URI = process.env.INSTAGRAM_REDIRECT_URI;
+const INSTAGRAM_API_VERSION = process.env.INSTAGRAM_API_VERSION || 'v24.0';
 const PRICE_PER_PROXY = 7;
 const FINISHED_CAMPAIGNS_CATEGORY_ID = '1520064994274709747';
 const STAFF_CONTROL_CHANNEL_ID = "1521116369909710889";
@@ -71,6 +76,46 @@ const ACTIVE_CAMPAIGNS_CHANNEL_ID = process.env.ACTIVE_CAMPAIGNS_CHANNEL_ID;
 const CLIP_TRACK_INTERVAL_MS = 3 * 60 * 60 * 1000;
 const CLIP_TRACK_SCHEDULER_MS = 10 * 60 * 1000;
 const CLIP_TRACK_RETRY_MS = 15 * 60 * 1000;
+
+function getInstagramConfigurationStatus() {
+  const missing = [];
+  if (!INSTAGRAM_APP_ID) missing.push('INSTAGRAM_APP_ID');
+  if (!INSTAGRAM_APP_SECRET) missing.push('INSTAGRAM_APP_SECRET');
+  if (!INSTAGRAM_TEST_ACCESS_TOKEN) missing.push('INSTAGRAM_TEST_ACCESS_TOKEN');
+  if (!INSTAGRAM_REDIRECT_URI) missing.push('INSTAGRAM_REDIRECT_URI');
+  return { configured: missing.length === 0, missing };
+}
+
+async function fetchInstagramTestIdentity() {
+  if (!INSTAGRAM_TEST_ACCESS_TOKEN) throw new Error('Instagram test access token is not configured.');
+  const response = await axios.get('https://graph.instagram.com/me', {
+    params: {
+      fields: 'id,user_id,username,account_type',
+      access_token: INSTAGRAM_TEST_ACCESS_TOKEN
+    },
+    timeout: 15000
+  });
+  const data = response.data || {};
+  const instagramUserId = data.user_id || data.id;
+  if (!instagramUserId) throw new Error('Instagram did not return an account ID.');
+  return {
+    instagramUserId: String(instagramUserId),
+    apiIdentityId: data.id ? String(data.id) : null,
+    username: data.username || null,
+    accountType: data.account_type || null
+  };
+}
+
+function getInstagramApiErrorDetails(error) {
+  const metaError = error?.response?.data?.error || {};
+  return {
+    status: Number(error?.response?.status) || null,
+    code: Number(metaError.code) || null,
+    subcode: Number(metaError.error_subcode) || null,
+    type: metaError.type || null,
+    message: metaError.message || error?.message || 'Instagram API request failed.'
+  };
+}
 
 const clean = (str) =>
   str.replace(/[`*_|~]/g, '').trim();
@@ -3272,6 +3317,10 @@ async function updateSocialStaffMessage(guild, request) {
 client.once(Events.ClientReady, async () => {
     
     console.log(`Online as ${client.user.tag}`);
+    const instagramConfig = getInstagramConfigurationStatus();
+    console.log(instagramConfig.configured
+      ? 'Instagram API configuration: ready'
+      : `Instagram API configuration missing: ${instagramConfig.missing.join(', ')}`);
 
     autoTrackClipViews();
     setInterval(autoTrackClipViews, CLIP_TRACK_SCHEDULER_MS);
@@ -3454,6 +3503,40 @@ client.on(Events.MessageCreate, async message => {
 
     if (message.content.trim() === '!ding') {
       await message.reply('✅ Bot can read messages.');
+      return;
+    }
+
+    if (message.content.trim().toLowerCase() === '!testinstagram') {
+      if (!isAdmin(message.member)) {
+        await message.reply('❌ You are not allowed to do this.');
+        return;
+      }
+
+      const configuration = getInstagramConfigurationStatus();
+      if (!configuration.configured) {
+        await message.reply(`❌ Instagram API configuration missing: ${configuration.missing.join(', ')}`);
+        return;
+      }
+
+      try {
+        const identity = await fetchInstagramTestIdentity();
+        const embed = new EmbedBuilder()
+          .setColor(0x57F287)
+          .setTitle('Instagram API Connection')
+          .addFields(
+            { name: 'Status', value: '✅ Connected', inline: true },
+            { name: 'Username', value: identity.username ? `@${identity.username}` : 'Not returned', inline: true },
+            { name: 'Instagram User ID', value: identity.instagramUserId, inline: true },
+            { name: 'Account Type', value: identity.accountType || 'Not returned', inline: true },
+            { name: 'API Version', value: INSTAGRAM_API_VERSION, inline: true }
+          );
+        await message.reply({ embeds: [embed] });
+      } catch (error) {
+        const details = getInstagramApiErrorDetails(error);
+        await message.reply(
+          `❌ Instagram API connection failed.\nHTTP Status: ${details.status ?? 'Not available'}\nMeta Error Code: ${details.code ?? 'Not available'}\nMessage: ${details.message}`
+        );
+      }
       return;
     }
   
@@ -8357,6 +8440,11 @@ When done, click the button below.`,
 // ==========================================
 // 🌐 OAUTH2 WEB SERVER FOR FORCED JOINING
 // ==========================================
+
+app.get('/health/instagram', (req, res) => {
+  const configuration = getInstagramConfigurationStatus();
+  res.json({ configured: configuration.configured, missing: configuration.missing });
+});
 
 app.get('/callback', async (req, res) => {
   const code = req.query.code;
