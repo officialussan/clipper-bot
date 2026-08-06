@@ -68,6 +68,9 @@ const PAID_CHANNEL_ID = process.env.PAID_CHANNEL_ID;
 const AVAILABLE_CHANNEL_ID = process.env.AVAILABLE_CHANNEL_ID;
 const VIEWS_CHANNEL_ID = process.env.VIEWS_CHANNEL_ID;
 const ACTIVE_CAMPAIGNS_CHANNEL_ID = process.env.ACTIVE_CAMPAIGNS_CHANNEL_ID;
+const CLIP_TRACK_INTERVAL_MS = 3 * 60 * 60 * 1000;
+const CLIP_TRACK_SCHEDULER_MS = 10 * 60 * 1000;
+const CLIP_TRACK_RETRY_MS = 15 * 60 * 1000;
 
 const clean = (str) =>
   str.replace(/[`*_|~]/g, '').trim();
@@ -93,10 +96,16 @@ const SUPPORTED_COUNTRIES = [
 const ticketCooldowns = new Map();
 const claimedTickets = new Map();
 
-const dataFilePath =
-  process.env.RAILWAY_ENVIRONMENT
-    ? "/data/data.json"
-    : path.join(__dirname, "data.json");
+const localDataFilePath = path.join(__dirname, 'data.json');
+const railwayDataFilePath = '/data/data.json';
+const railwayBackupFilePath = '/data/data.backup.json';
+const primaryDataFilePath = process.env.RAILWAY_ENVIRONMENT ? railwayDataFilePath : localDataFilePath;
+const mirrorDataFilePath = localDataFilePath;
+const dataFilePath = primaryDataFilePath;
+// The project-level data.json mirror exists inside the running Railway
+// container. It does not automatically synchronize back to the developer's
+// local computer or Git repository. Persistent production copies live in
+// the mounted /data volume.
 
 const CAMPAIGNS = {
   elephant: {
@@ -211,53 +220,136 @@ Click the button below to start clipping and earning.`
   }
 };
 
-function loadData() {
-  if (!fs.existsSync(dataFilePath)) {
-    fs.writeFileSync(
-      dataFilePath,
-      JSON.stringify({
-        users: {},
-        applications: {},
-        campaignAccountRequests: {},
-        clips: {}
-      }, null, 2)
-    );
+function writeJsonAtomic(filePath, jsonText) {
+  const directory = path.dirname(filePath);
+  if (!fs.existsSync(directory)) fs.mkdirSync(directory, { recursive: true });
+  const tempPath = filePath + '.' + process.pid + '.tmp';
+  fs.writeFileSync(tempPath, jsonText, 'utf8');
+  fs.renameSync(tempPath, filePath);
+}
+
+function readJsonFileSafely(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const content = fs.readFileSync(filePath, 'utf8');
+    if (!content.trim()) return null;
+    const parsed = JSON.parse(content);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch (error) {
+    console.error('Could not read ' + filePath + ':', error.message);
+    return null;
   }
+}
 
-  const raw = JSON.parse(fs.readFileSync(dataFilePath, 'utf8'));
+function loadData() {
+  let raw = readJsonFileSafely(primaryDataFilePath);
+  let recovered = false;
+  if (!raw && process.env.RAILWAY_ENVIRONMENT) raw = readJsonFileSafely(railwayBackupFilePath), recovered = !!raw;
+  if (!raw && mirrorDataFilePath !== primaryDataFilePath) raw = readJsonFileSafely(mirrorDataFilePath), recovered = !!raw;
+  if (!raw) { raw = { users: {}, applications: {}, campaignAccountRequests: {}, clips: {}, campaignStatus: {}, payoutTrackers: {} }; recovered = true; }
 
-  if (!raw.users) raw.users = {};
-  if (!raw.applications) raw.applications = {};
-  if (!raw.campaignAccountRequests) raw.campaignAccountRequests = {};
-  if (!raw.clips) raw.clips = {};
-  if (!raw.campaignStatus) raw.campaignStatus = {};
-  if (!raw.payoutTrackers) raw.payoutTrackers = {};
-
-  // One-time storage migration. Existing payout card metadata and payment state
-  // are preserved under the permanent tracker key.
+  raw.users ||= {}; raw.applications ||= {}; raw.campaignAccountRequests ||= {}; raw.clips ||= {}; raw.clipReviews ||= {}; raw.campaignStatus ||= {}; raw.payoutTrackers ||= {}; raw.storageMigrations ||= {};
   for (const request of Object.values(raw.payoutRequests || {})) {
     if (!request?.campaignId || !request?.userId) continue;
-
-    const id = request.id || `${request.campaignId}_${request.userId}`;
+    const id = request.id || request.campaignId + '_' + request.userId;
     raw.payoutTrackers[id] ||= { ...request, id };
   }
   delete raw.payoutRequests;
-
   for (const clip of Object.values(raw.clips || {})) {
     clip.payout ||= {};
     clip.payout.paidViews = Number(clip.payout.paidViews ?? clip.payout.totalPaidViews ?? 0) || 0;
     clip.payout.paidMoney = Number(clip.payout.paidMoney ?? clip.payout.totalPaidAmount ?? 0) || 0;
     if (!Array.isArray(clip.payout.history)) clip.payout.history = [];
     clip.payout.lastPaidAt ??= null;
-    delete clip.payout.totalPaidViews;
-    delete clip.payout.totalPaidAmount;
+    delete clip.payout.totalPaidViews; delete clip.payout.totalPaidAmount;
   }
-
+  let migrationChanged = false;
+  if (!raw.storageMigrations.clipReviewSplitV1) {
+    let movedPending = 0;
+    let keptApproved = 0;
+    for (const [clipId, clip] of Object.entries(raw.clips || {})) {
+      const paidViews = Number(clip.payout?.paidViews) || 0;
+      const paidMoney = Number(clip.payout?.paidMoney) || 0;
+      const hasHistory = Array.isArray(clip.payout?.history) && clip.payout.history.length > 0;
+      const previouslyApproved = Boolean(clip.approvedAt || clip.wasEverApproved === true || paidViews > 0 || paidMoney > 0 || hasHistory);
+      const moveToReviews = clip.status === 'pending' || (clip.status === 'rejected' && !previouslyApproved);
+      initializeClipTrackingFields(clip);
+      if (moveToReviews) {
+        if (raw.clipReviews[clipId]) {
+          console.warn(`⚠️ Migration skipped duplicate clip ID ${clipId}`);
+          continue;
+        }
+        clip.payoutEligible = false;
+        clip.wasEverApproved = false;
+        if (clip.status === 'rejected') clip.rejectionStage ||= 'pre_approval';
+        raw.clipReviews[clipId] = clip;
+        delete raw.clips[clipId];
+        movedPending++;
+      } else {
+        if (clip.status === 'approved') { clip.payoutEligible ??= true; clip.wasEverApproved ??= true; }
+        if (clip.status === 'rejected' && previouslyApproved) { clip.payoutEligible = false; clip.wasEverApproved = true; clip.rejectionStage ||= 'post_approval'; }
+        keptApproved++;
+      }
+    }
+    raw.storageMigrations.clipReviewSplitV1 = true;
+    migrationChanged = true;
+    console.log(`✅ Clip review storage migration complete: ${movedPending} pending/rejected review clips moved, ${keptApproved} approved/history clips kept.`);
+  }
+  if (!raw.storageMigrations.clipTrackingScheduleV1) {
+    for (const collection of [raw.clipReviews, raw.clips]) {
+      for (const clip of Object.values(collection || {})) {
+        initializeClipTrackingFields(clip);
+        clip.trackingRetryAt ??= null;
+        clip.lastTrackingError ??= null;
+        clip.lastTrackingErrorAt ??= null;
+        if (clip.status === 'approved') clip.payoutEligible ??= true;
+      }
+    }
+    raw.storageMigrations.clipTrackingScheduleV1 = true;
+    migrationChanged = true;
+    console.log('✅ Clip tracking schedule migration complete.');
+  }
+  if (!raw.storageMigrations.rejectionLifecycleV1) {
+    for (const [clipId, clip] of Object.entries(raw.clipReviews || {})) {
+      if (clip.status !== 'rejected') continue;
+      clip.payoutEligible = false;
+      clip.wasEverApproved ??= false;
+      clip.rejectionStage ??= 'pre_approval';
+      clip.views = Math.max(Number(clip.views) || 0, Number(clip.currentViews) || 0, Number(clip.approvalViews) || 0, Number(clip.submissionViews) || 0);
+    }
+    for (const [clipId, clip] of Object.entries(raw.clips || {})) {
+      if (clip.status !== 'rejected') continue;
+      clip.views = Math.max(Number(clip.views) || 0, Number(clip.currentViews) || 0, Number(clip.approvalViews) || 0, Number(clip.submissionViews) || 0);
+      if (wasClipPreviouslyApproved(clip)) {
+        clip.payoutEligible = false;
+        clip.wasEverApproved = true;
+        clip.rejectionStage = 'post_approval';
+      } else if (!raw.clipReviews[clipId]) {
+        clip.payoutEligible = false;
+        clip.wasEverApproved = false;
+        clip.rejectionStage = 'pre_approval';
+        raw.clipReviews[clipId] = clip;
+        delete raw.clips[clipId];
+      }
+    }
+    raw.storageMigrations.rejectionLifecycleV1 = true;
+    migrationChanged = true;
+    console.log('✅ Rejection lifecycle migration complete.');
+  }
+  if (migrationChanged) recovered = true;
+  if (recovered) saveData(raw);
   return raw;
 }
 
 function saveData(data) {
-  fs.writeFileSync(dataFilePath, JSON.stringify(data, null, 2));
+  const jsonText = JSON.stringify(data, null, 2);
+  writeJsonAtomic(primaryDataFilePath, jsonText);
+  if (process.env.RAILWAY_ENVIRONMENT && railwayBackupFilePath !== primaryDataFilePath) {
+    try { writeJsonAtomic(railwayBackupFilePath, jsonText); } catch (error) { console.error('Could not update persistent data backup:', error.message); }
+  }
+  if (mirrorDataFilePath !== primaryDataFilePath) {
+    try { writeJsonAtomic(mirrorDataFilePath, jsonText); } catch (error) { console.error('Could not update project data.json mirror:', error.message); }
+  }
 }
 
 function getPayoutTracker(campaignId, userId) {
@@ -361,6 +453,157 @@ function formatPlatform(p) {
 
 function normalizeUsername(u) {
   return String(u).trim().replace(/^@+/, '');
+}
+
+function isPayoutEligibleClip(clip) {
+  return Boolean(clip && clip.status === 'approved' && clip.payoutEligible !== false);
+}
+
+function findClipRecord(data, clipId) {
+  if (data.clipReviews?.[clipId]) return { clip: data.clipReviews[clipId], collection: 'clipReviews' };
+  if (data.clips?.[clipId]) return { clip: data.clips[clipId], collection: 'clips' };
+  return null;
+}
+
+function wasClipPreviouslyApproved(clip) {
+  return Boolean(
+    clip?.wasEverApproved === true ||
+    clip?.approvedAt ||
+    Number(clip?.payout?.paidViews) > 0 ||
+    Number(clip?.payout?.paidMoney) > 0 ||
+    (Array.isArray(clip?.payout?.history) && clip.payout.history.length > 0)
+  );
+}
+
+function getClipRejectionStage(clip, collection) {
+  if (clip?.rejectionStage === 'post_approval') return 'post_approval';
+  return collection === 'clips' || wasClipPreviouslyApproved(clip)
+    ? 'post_approval'
+    : 'pre_approval';
+}
+
+function getClipSubmittedTimestamp(clip) {
+  const directTimestamp = Number(clip?.submittedTimestamp);
+  if (Number.isFinite(directTimestamp) && directTimestamp > 0) return directTimestamp;
+  const parsed = Date.parse(clip?.submittedAt || clip?.createdAt || '');
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function initializeClipTrackingFields(clip) {
+  const submittedTimestamp = getClipSubmittedTimestamp(clip);
+  clip.submittedTimestamp = submittedTimestamp;
+  clip.submittedAt ||= new Date(submittedTimestamp).toISOString();
+  clip.lastChecked = Number(clip.lastChecked) || submittedTimestamp;
+  clip.nextCheckAt = Number(clip.nextCheckAt) || submittedTimestamp + CLIP_TRACK_INTERVAL_MS;
+  return clip;
+}
+
+function isTrackableReviewClip(clip) {
+  return Boolean(
+    clip &&
+    clip.status === 'pending' &&
+    (clip.platform === 'tiktok' || clip.platform === 'youtube') &&
+    (clip.videoUrl || clip.url)
+  );
+}
+
+function isTrackableApprovedClip(clip) {
+  return Boolean(
+    clip &&
+    isPayoutEligibleClip(clip) &&
+    (clip.platform === 'tiktok' || clip.platform === 'youtube') &&
+    (clip.videoUrl || clip.url)
+  );
+}
+
+function isClipTrackingDue(clip, now = Date.now()) {
+  initializeClipTrackingFields(clip);
+  const retryAt = Number(clip.trackingRetryAt) || 0;
+  if (retryAt > 0 && now < retryAt) return false;
+  const nextCheckAt = Number(clip.nextCheckAt) || 0;
+  return nextCheckAt > 0 && now >= nextCheckAt;
+}
+
+function advanceClipNextCheckAt(clip, now = Date.now()) {
+  initializeClipTrackingFields(clip);
+  const submittedTimestamp = getClipSubmittedTimestamp(clip);
+  let nextCheckAt = Number(clip.nextCheckAt);
+  if (!Number.isFinite(nextCheckAt) || nextCheckAt <= 0) {
+    nextCheckAt = submittedTimestamp + CLIP_TRACK_INTERVAL_MS;
+  }
+  while (nextCheckAt <= now) nextCheckAt += CLIP_TRACK_INTERVAL_MS;
+  clip.nextCheckAt = nextCheckAt;
+  return nextCheckAt;
+}
+
+function getSafeTrackedViews(clip, metadata) {
+  const fetchedViews = Number(metadata?.views);
+  const existingViews = Math.max(
+    Number(clip.currentViews) || 0,
+    Number(clip.views) || 0,
+    Number(clip.submissionViews) || 0,
+    Number(clip.approvalViews) || 0
+  );
+  if (!Number.isFinite(fetchedViews) || fetchedViews < 0) return existingViews;
+  return Math.max(existingViews, fetchedViews);
+}
+
+function applyTrackedMetadata(clip, metadata) {
+  const trackedViews = getSafeTrackedViews(clip, metadata);
+  clip.currentViews = trackedViews;
+  clip.views = trackedViews;
+  if (metadata?.title) clip.title = metadata.title;
+  if (metadata?.thumbnailUrl) clip.thumbnailUrl = metadata.thumbnailUrl;
+  if (metadata?.authorName || metadata?.authorDisplayName || metadata?.authorUsername) {
+    clip.platformAuthorName = metadata.authorName || metadata.authorUsername || metadata.authorDisplayName;
+  }
+  if (metadata?.authorId) clip.platformAuthorId = metadata.authorId;
+  clip.lastChecked = Date.now();
+  clip.lastTrackingError = null;
+  clip.lastTrackingErrorAt = null;
+  clip.trackingRetryAt = null;
+  return trackedViews;
+}
+
+function updatePendingReviewTracking(clip, metadata) {
+  const views = applyTrackedMetadata(clip, metadata);
+  const rate = Number(CAMPAIGNS[clip.campaignId]?.ratePerMillion) || 0;
+  clip.estimatedEarnings = views / 1_000_000 * rate;
+  clip.payoutEligible = false;
+  delete clip.totalMoneyMade;
+  delete clip.moneyMade;
+  delete clip.weeklyMoneyMade;
+  delete clip.unpaidViews;
+  delete clip.unpaidMoney;
+  advanceClipNextCheckAt(clip);
+  return clip;
+}
+
+function updateApprovedClipTracking(clip, metadata) {
+  const views = applyTrackedMetadata(clip, metadata);
+  const rate = Number(CAMPAIGNS[clip.campaignId]?.ratePerMillion) || 0;
+  clip.totalMoneyMade = views / 1_000_000 * rate;
+  clip.moneyMade = clip.totalMoneyMade;
+  clip.weeklyViews = views;
+  clip.weeklyMoneyMade = clip.totalMoneyMade;
+  clip.payoutEligible = true;
+  clip.payout ||= { paidViews: 0, paidMoney: 0, lastPaidAt: null, history: [] };
+  const paidViews = Number(clip.payout.paidViews) || 0;
+  clip.unpaidViews = Math.max(views - paidViews, 0);
+  clip.unpaidMoney = clip.unpaidViews / 1_000_000 * rate;
+  advanceClipNextCheckAt(clip);
+  return clip;
+}
+
+function recordClipTrackingFailure(clip, error) {
+  clip.lastTrackingError = error?.message || 'Unknown tracking error';
+  clip.lastTrackingErrorAt = Date.now();
+  clip.trackingRetryAt = Date.now() + CLIP_TRACK_RETRY_MS;
+  return clip;
+}
+
+function delayBetweenPlatformRequests() {
+  return new Promise(resolve => setTimeout(resolve, 2000));
 }
 function normalizeSocialUsername(value) {
   return String(value || '').trim().replace(/^@+/, '').toLowerCase();
@@ -571,7 +814,11 @@ async function validateClipBeforeSubmission({ data, userId, campaignId, submitte
       return { valid: false, message: `❌ ${formatPlatform(parsed.platform)} is not enabled for this campaign.`, metadata: null };
     }
 
-    const duplicate = Object.values(data.clips || {}).some(clip =>
+    const allStoredClips = [
+      ...Object.values(data.clipReviews || {}),
+      ...Object.values(data.clips || {})
+    ];
+    const duplicate = allStoredClips.some(clip =>
       (clip.platform === parsed.platform && clip.videoId === parsed.videoId) ||
       String(clip.videoUrl || clip.url || '').split('?')[0] === parsed.canonicalUrl.split('?')[0]
     );
@@ -615,32 +862,32 @@ function getUserPayoutSummary(data, userId, campaignId) {
 
     const clips = Object.values(data.clips || {})
         .filter(c =>
-            c.userId === userId &&
-            c.campaignId === campaignId &&
-            c.status === "approved"
+            String(c.userId) === String(userId) &&
+            String(c.campaignId) === String(campaignId) &&
+            isPayoutEligibleClip(c)
         );
 
     const totalViews =
         clips.reduce(
-            (s,c)=>s+(c.views||0),
+            (s,c)=>s + getApprovedClipViews(c),
             0
         );
 
     const unpaidViews =
         clips.reduce(
-            (s,c)=>s+(c.unpaidViews||0),
+            (s,c)=>s + Math.max(getApprovedClipViews(c) - (Number(c.payout?.paidViews) || 0), 0),
             0
         );
 
     const totalMoney =
         clips.reduce(
-            (s,c)=>s+(c.totalMoneyMade||0),
+            (s,c)=>s + getApprovedClipEarnings(c, CAMPAIGNS[campaignId]),
             0
         );
 
     const unpaidMoney =
         clips.reduce(
-            (s,c)=>s+(c.unpaidMoney||0),
+            (s,c)=>s + Math.max(getApprovedClipViews(c) - (Number(c.payout?.paidViews) || 0), 0) / 1_000_000 * (Number(CAMPAIGNS[campaignId]?.ratePerMillion) || 0),
             0
         );
 
@@ -665,21 +912,24 @@ function calculateTrackerStats(tracker) {
     const campaign = CAMPAIGNS[tracker.campaignId];
     if (!campaign) return tracker;
 
-    const clips = Object.values(data.clips || {}).filter(clip =>
-        clip.userId === tracker.userId &&
-        clip.campaignId === tracker.campaignId &&
-        clip.status === 'approved'
+    const allCampaignClips = Object.values(data.clips || {}).filter(clip =>
+        String(clip.userId) === String(tracker.userId) &&
+        String(clip.campaignId) === String(tracker.campaignId)
     );
-    const lifetimeViews = clips.reduce((sum, clip) => sum + (Number(clip.views) || 0), 0);
-    const lifetimePaid = clips.reduce((sum, clip) => sum + (Number(clip.payout?.paidMoney) || 0), 0);
-    const paidViews = clips.reduce((sum, clip) => sum + (Number(clip.payout?.paidViews) || 0), 0);
+    const eligibleClips = allCampaignClips.filter(isPayoutEligibleClip);
+    const lifetimeViews = eligibleClips.reduce((sum, clip) => sum + getApprovedClipViews(clip), 0);
+    const lifetimePaid = allCampaignClips.reduce((sum, clip) => sum + (Number(clip.payout?.paidMoney) || 0), 0);
     const lifetimeEarned = lifetimeViews / 1000000 * (Number(campaign.ratePerMillion) || 0);
 
     tracker.lifetimeViews = lifetimeViews;
     tracker.lifetimeEarned = lifetimeEarned;
     tracker.lifetimePaid = lifetimePaid;
-    tracker.currentUnpaidViews = Math.max(lifetimeViews - paidViews, 0);
-    tracker.currentUnpaidMoney = Math.max(lifetimeEarned - lifetimePaid, 0);
+    tracker.currentUnpaidViews = eligibleClips.reduce((sum, clip) =>
+        sum + Math.max(getApprovedClipViews(clip) - (Number(clip.payout?.paidViews) || 0), 0), 0);
+    tracker.currentUnpaidMoney = eligibleClips.reduce((sum, clip) => {
+        const unpaidViews = Math.max(getApprovedClipViews(clip) - (Number(clip.payout?.paidViews) || 0), 0);
+        return sum + unpaidViews / 1_000_000 * (Number(campaign.ratePerMillion) || 0);
+    }, 0);
     if (tracker.status !== 'issue') {
         tracker.status = tracker.currentUnpaidViews === 0 ? 'paid' :
             tracker.currentUnpaidViews >= (Number(campaign.payoutThreshold) || 0) ? 'ready' : 'waiting';
@@ -1103,6 +1353,19 @@ function buildClipStaffEmbed(clip) {
   const clipUrl = clip.videoUrl || clip.url || '';
   const title = clip.title || clip.caption || clipUrl || 'View clip';
   const color = { pending: 0xF1C40F, approved: 0x57F287, rejected: 0xED4245 }[clip.status] || 0xF1C40F;
+  const pending = clip.status === 'pending';
+  const rejected = clip.status === 'rejected';
+  const rejectionStage = rejected ? getClipRejectionStage(clip, null) : null;
+  const earnings = pending || rejectionStage === 'pre_approval'
+    ? Number(clip.estimatedEarnings) || 0
+    : Number(clip.totalMoneyMade ?? clip.moneyMade ?? 0);
+  const statusText = pending ? '🟡 Pending Review' :
+    rejectionStage === 'pre_approval' ? '🔴 Rejected Before Approval' :
+    rejectionStage === 'post_approval' ? '🔴 Removed From Payment' : clip.status || 'pending';
+  const viewsLabel = rejected ? 'Latest Recorded Views' : 'Current Views';
+  const earningsLabel = rejectionStage === 'pre_approval' ? 'Estimated Earnings Before Rejection' :
+    rejectionStage === 'post_approval' ? 'Tracked Earnings Before Removal' :
+    pending ? 'Estimated Earnings' : 'Current Earnings';
   const embed = new EmbedBuilder()
     .setColor(color)
     .setTitle('Clip Review')
@@ -1112,11 +1375,17 @@ function buildClipStaffEmbed(clip) {
       '**Platform**\n' + formatPlatform(clip.platform) + '\n' +
       '**Account**\n@' + (clip.username || 'Unknown') + '\n' +
       '**Video**\n[' + title + '](' + clipUrl + ')\n' +
-      '**Status**\n' + (clip.status || 'pending') + '\n' +
-      '**Current Views**\n' + formatNumber(Number(clip.views) || 0) + '\n' +
-      '**Current Earnings**\n$' + Number(clip.totalMoneyMade ?? clip.moneyMade ?? 0).toFixed(2) + '\n' +
+      '**Status**\n' + statusText + '\n' +
+      '**' + viewsLabel + '**\n' + formatNumber(getSafeTrackedViews(clip, null)) + '\n' +
+      '**' + earningsLabel + '**\n$' + earnings.toFixed(2) + (pending ? ' — Not Yet Approved' : '') + '\n' +
+      (pending ? '**Payment Eligibility**\nNot eligible until approved\n' : '') +
+      (rejectionStage === 'pre_approval' ? '**Payment Eligibility**\nNot eligible\n' : '') +
+      (rejectionStage === 'post_approval' ? '**Payment Eligibility**\nNot eligible for new payment\n**Historical Paid**\n$' + (Number(clip.payout?.paidMoney) || 0).toFixed(2) + '\n' : '') +
+      (rejected ? '**Rejection Reason**\n' + (clip.rejectReason || 'Not provided') + '\n' : '') +
+      (pending ? '**Submission Views**\n' + formatNumber(Number(clip.submissionViews) || 0) + '\n' : '') +
       '**Approval Views**\n' + formatNumber(Number(clip.approvalViews) || 0) + '\n' +
-      '**Last Updated**\n<t:' + Math.floor((clip.lastChecked || Date.now()) / 1000) + ':R>'
+      '**Last Updated**\n<t:' + Math.floor((clip.lastChecked || Date.now()) / 1000) + ':R>\n' +
+      '**Next Scheduled Check**\n<t:' + Math.floor((clip.nextCheckAt || Date.now()) / 1000) + ':R>'
     );
   if (clip.thumbnailUrl) embed.setThumbnail(clip.thumbnailUrl);
   return embed;
@@ -1239,7 +1508,7 @@ async function sendStaffPayoutDashboard(guild, userId) {
 
   // Calculate live totals dynamically from approved clips
   const approvedClips = Object.values(data.clips || {}).filter(
-    clip => clip.userId === userId && clip.status === 'approved'
+    clip => clip.userId === userId && isPayoutEligibleClip(clip)
   );
   
   const liveTotalEarned = approvedClips.reduce((sum, clip) => sum + (Number(clip.totalMoneyMade) || 0), 0);
@@ -1299,7 +1568,7 @@ async function backfillPayoutCards() {
                 Object.values(data.clips)
                     .filter(c =>
                         c.campaignId === campaignId &&
-                        c.status === "approved"
+                        isPayoutEligibleClip(c)
                     )
                     .map(c => c.userId)
             )
@@ -1348,7 +1617,7 @@ function getLeaderboardUsers(data) {
   return users
     .map(user => {
       const userClips = Object.values(data.clips || {}).filter(
-        clip => clip.userId === user.discordId && clip.status === 'approved'
+        clip => clip.userId === user.discordId && isPayoutEligibleClip(clip)
       );
 
       const totalViews = userClips.reduce(
@@ -1375,7 +1644,7 @@ function buildLeaderboardEmbed(guild, data, page = 1, perPage = 10) {
   const sortedUsers = Object.entries(data.users || {})
     .map(([userId, userRecord]) => {
       const approvedClips = Object.values(data.clips || {}).filter(
-        clip => clip.userId === userId && clip.status === 'approved'
+        clip => clip.userId === userId && isPayoutEligibleClip(clip)
       );
 
       const liveTotalViews = approvedClips.reduce(
@@ -1470,7 +1739,7 @@ function getUserRank(data, userId) {
   const sortedUsers = Object.entries(data.users || {})
     .map(([id, userRecord]) => {
       const liveTotalViews = Object.values(data.clips || {}).filter(
-        clip => clip.userId === id && clip.status === 'approved'
+        clip => clip.userId === id && isPayoutEligibleClip(clip)
       ).reduce((sum, clip) => sum + (Number(clip.views) || 0), 0);
 
       return { id, totalViews: liveTotalViews };
@@ -1500,6 +1769,37 @@ function ensureCampaignStats(userRecord, campaignId) {
   return userRecord.campaignStats[campaignId];
 }
 
+function getApprovedClipViews(clip) {
+  if (!clip) return 0;
+
+  return Math.max(
+    Number(clip.views) || 0,
+    Number(clip.currentViews) || 0,
+    Number(clip.approvalViews) || 0
+  );
+}
+
+function getApprovedClipEarnings(clip, campaign) {
+  const views = getApprovedClipViews(clip);
+  const rate = Number(campaign?.ratePerMillion) || 0;
+  return views / 1_000_000 * rate;
+}
+
+function getClipStatsCycle(clip, campaign) {
+  const storedCycleValue = clip?.cycle;
+  if (storedCycleValue !== null && storedCycleValue !== undefined && storedCycleValue !== '') {
+    const storedCycle = Number(storedCycleValue);
+    if (Number.isFinite(storedCycle)) return storedCycle;
+  }
+
+  const fallbackDate = clip?.approvedAt || clip?.submittedAt || clip?.createdAt || Date.now();
+  return getCampaignCycle(campaign, fallbackDate);
+}
+
+function isClipInCurrentCampaignCycle(clip, campaign) {
+  return Number(getClipStatsCycle(clip, campaign)) === Number(getCampaignCycle(campaign));
+}
+
 function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, userId) {
   const campaign = CAMPAIGNS[campaignId];
 
@@ -1509,16 +1809,13 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
       .setDescription('❌ Campaign not found. Please rejoin the campaign or contact staff.');
   }
 
-  // 🟢 Fix 1: Pass the campaign object safely to get the target cycle index
-  const currentCycle = getCampaignCycle(campaign); 
   const payoutThreshold = campaign?.payoutThreshold || 100000;
 
-  // 🟢 Fix 2: Use the passed userId or fallback to userRecord safely to avoid 'interaction' crash
   const targetUserId =
-  userId ||
-  userRecord?.discordId ||
-  userRecord?.userId ||
-  userRecord?.id;
+    userId ||
+    userRecord?.discordId ||
+    userRecord?.userId ||
+    userRecord?.id;
 
   if (!targetUserId) {
     return new EmbedBuilder()
@@ -1526,31 +1823,45 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
       .setDescription('❌ Could not resolve user identity context.');
   }
 
-  // 🟢 Filter all clips belonging ONLY to this user, this campaign, and this cycle
-  const userClips = Object.values(data.clips || {}).filter(c => {
-      const matchUser = String(c.userId) === String(targetUserId);
-      const matchCampaign = String(c.campaignId) === String(campaign.id);
-      
-      // 🟢 Fix 3: To match the cycle index correctly, pass the parent campaign config context, 
-      // but supply the clip's submission date override if your utility supports it.
-      // If getCampaignCycle handles timestamped clips, ensure it gets the date string:
-      const clipCycle = getCampaignCycle(campaign, c.submittedAt); 
-      const matchCycle = Number(clipCycle) === Number(currentCycle);
+  const approvedClips = Object.values(data.clips || {}).filter(clip =>
+    String(clip.userId) === String(targetUserId) &&
+    String(clip.campaignId) === String(campaignId) &&
+    isPayoutEligibleClip(clip) &&
+    isClipInCurrentCampaignCycle(clip, campaign)
+  );
 
-      return matchUser && matchCampaign && matchCycle;
-  });
+  const pendingClips = Object.values(data.clipReviews || {}).filter(clip =>
+    String(clip.userId) === String(targetUserId) &&
+    String(clip.campaignId) === String(campaignId) &&
+    clip.status === 'pending' &&
+    isClipInCurrentCampaignCycle(clip, campaign)
+  );
 
-  // Calculate status metrics safely using lowercase matching
-  const approvedClips = userClips.filter(c => String(c.status).toLowerCase() === "approved");
-  const pendingClips = userClips.filter(c => String(c.status).toLowerCase() === "pending");
-  const rejectedClips = userClips.filter(c => String(c.status).toLowerCase() === "rejected");
+  const rejectedById = new Map();
+  for (const clip of [
+    ...Object.values(data.clipReviews || {}),
+    ...Object.values(data.clips || {})
+  ]) {
+    if (
+      String(clip.userId) !== String(targetUserId) ||
+      String(clip.campaignId) !== String(campaignId) ||
+      clip.status !== 'rejected' ||
+      !isClipInCurrentCampaignCycle(clip, campaign)
+    ) {
+      continue;
+    }
+    rejectedById.set(clip.id, clip);
+  }
+  const rejectedClips = [...rejectedById.values()];
 
-  const totalViews = approvedClips.reduce((sum, c) => sum + (Number(c.weeklyViews) || 0), 0);
-  const moneyMade = approvedClips.reduce((sum, c) => sum + (Number(c.weeklyMoneyMade) || 0), 0);
+  const totalViews = approvedClips.reduce((sum, clip) => sum + getApprovedClipViews(clip), 0);
+  const moneyMade = approvedClips.reduce(
+    (sum, clip) => sum + getApprovedClipEarnings(clip, campaign),
+    0
+  );
 
   const viewsNeeded = Math.max(payoutThreshold - totalViews, 0);
 
-  // 🟢 Fix 4: Format money made with proper decimal precision instead of raw numbers
   const payoutText =
     totalViews >= payoutThreshold
       ? `Eligible for payout.\n**Money Made:** $${moneyMade.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -1562,9 +1873,9 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
       `<a:chart1:1504773558415523931> **Campaign Stats - ${campaignName}**\n\n` +
       `<a:rocket1:1504872045849346140> **Total Views**\n${formatNumber(totalViews)}\n\n` +
       `<a:Cash1:1504871843419521115> **Payout Target: ${formatNumber(payoutThreshold)} Views**\n${payoutText}\n\n` +
-      `<:approve1:1508373907411963955> **Approved Videos**\n${approvedClips.length}\n\n` +
+      `<a:appr:1534931253952909453> **Approved Videos**\n${approvedClips.length}\n\n` +
       `<a:dot1:1508433228669780029> **Pending Videos**\n${pendingClips.length}\n\n` +
-      `<:reject1:1508373970259546162> **Rejected Videos**\n${rejectedClips.length}\n\n` +
+      `<a:cancel:1506235594303606794> **Rejected Videos**\n${rejectedClips.length}\n\n` +
       `🎞️ **View Your Clips**\nClick the button below to check the clips submitted for this campaign.`
     )
     .setFooter({ text: `Last update | ${new Date().toLocaleString()}` });
@@ -1715,53 +2026,34 @@ function getCampaignTotals(data, campaignId) {
           users: 0,
           videos: 0,
           views: 0,
+          payableViews: 0,
           payout: 0
       };
   }
 
-  const currentCycle = getCampaignCycle(campaign);
   const users = Object.values(data.users || {}).filter(user =>
     user.campaigns?.includes(campaignId)
   ).length;
 
-  const clips = Object.values(data.clips || {}).filter(clip => {
-
-      if (
-          clip.campaignId !== campaignId ||
-          clip.status !== "approved"
-      ) {
-          return false;
-      }
-
-      if (campaign.campaignMode === "monthly") {
-
-          return (clip.cycle ?? 0) === currentCycle;
-
-      }
-
-      return (clip.cycle ?? 0) === currentCycle;
-
-  });
+  const clips = Object.values(data.clips || {}).filter(clip =>
+    String(clip.campaignId) === String(campaignId) &&
+    isPayoutEligibleClip(clip) &&
+    isClipInCurrentCampaignCycle(clip, campaign)
+  );
 
   const videos = clips.length;
 
-  const views = clips.reduce(
-      (sum, clip) => sum + (Number(clip.weeklyViews) || 0),
-      0
+  const uncappedViews = clips.reduce(
+    (sum, clip) => sum + getApprovedClipViews(clip),
+    0
   );
+  const configuredViewCap = Number(campaign.viewCap);
+  const cappedViews = Number.isFinite(configuredViewCap) && configuredViewCap > 0
+    ? Math.min(uncappedViews, configuredViewCap)
+    : uncappedViews;
+  const payout = cappedViews / 1_000_000 * (Number(campaign.ratePerMillion) || 0);
 
-  const payout = clips.reduce(
-      (sum, clip) => sum + (Number(clip.weeklyMoneyMade) || 0),
-      0
-  );
-
-  for (const clip of Object.values(data.clips || {})) {
-
-      if (clip.campaignId !== campaignId) continue;
-
-  }
-
-  return { users, videos, views, payout };
+  return { users, videos, views: uncappedViews, payableViews: cappedViews, payout };
 }
 
 // Global tracking timestamp to block excessive name edits
@@ -1773,7 +2065,7 @@ async function updateServerStats(guild) {
     const data = loadData();
     const YEAR_GOAL = 100000; // Updated from your image configuration
 
-    const approvedClips = Object.values(data.clips || {}).filter(c => c.status === "approved");
+    const approvedClips = Object.values(data.clips || {}).filter(isPayoutEligibleClip);
 
     const totalPaid = approvedClips.reduce((sum, c) => sum + (Number(c.moneyMade) || 0), 0);
     const totalViews = approvedClips.reduce((sum, c) => sum + (Number(c.views) || 0), 0);
@@ -1822,17 +2114,17 @@ function buildCampaignStatusEmbed(campaign, data) {
   const totals = getCampaignTotals(data, campaign.id);
 
   const cappedPayout = Math.min(
-    totals.payout || 0,
-    campaign.campaignBudget || 0
+    Number(totals.payout) || 0,
+    Number(campaign.campaignBudget) || 0
   );
 
   const remaining = Math.max(
-    (campaign.campaignBudget || 0) - cappedPayout,
+    (Number(campaign.campaignBudget) || 0) - cappedPayout,
     0
   );
 
-  const fulfilledPercent = campaign.campaignBudget
-    ? Math.min((cappedPayout / campaign.campaignBudget) * 100, 100)
+  const fulfilledPercent = Number(campaign.campaignBudget) > 0
+    ? Math.min((cappedPayout / Number(campaign.campaignBudget)) * 100, 100)
     : 0;
 
   return new EmbedBuilder()
@@ -2027,10 +2319,13 @@ async function addMissingPayoutChannels() {
 function buildCampaignPanelButtons(campaign, data) {
   const totals = getCampaignTotals(data, campaign.id);
 
-  // Safely compute percentage
-  const fulfilledPercent = campaign.campaignBudget
-    ? Math.min((totals.payout / campaign.campaignBudget) * 100, 100).toFixed(1)
-    : '0.0';
+  const cappedPayout = Math.min(
+    Number(totals.payout) || 0,
+    Number(campaign.campaignBudget) || 0
+  );
+  const fulfilledPercent = Number(campaign.campaignBudget) > 0
+    ? Math.min(cappedPayout / Number(campaign.campaignBudget) * 100, 100)
+    : 0;
 
   // 🟢 FIX: Dynamic fallbacks to check both the state tree and the raw campaign object properties safely
   const isFinished =
@@ -2057,7 +2352,7 @@ function buildCampaignPanelButtons(campaign, data) {
 
     new ButtonBuilder()
       .setCustomId(`campaign_fulfilled:${campaign.id}`)
-      .setLabel(`Fulfilled: ${fulfilledPercent}%`)
+      .setLabel(`Fulfilled: ${fulfilledPercent.toFixed(1)}%`)
       .setEmoji("<a:Loadin:1506234461459714100>")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(true)
@@ -2440,14 +2735,15 @@ async function getYouTubeViews(url) {
 }
 
 async function fetchClipMetadata(clip) {
+  const clipUrl = clip.videoUrl || clip.url;
   if (clip.platform === 'tiktok') {
-    const res = await axios.get(`https://www.tikwm.com/api/?url=${encodeURIComponent(clip.url)}`, { timeout: 15000 });
+    const res = await axios.get(`https://www.tikwm.com/api/?url=${encodeURIComponent(clipUrl)}`, { timeout: 15000 });
     const item = res.data?.data || {};
     return { views: Number(item.play_count) || 0, title: item.title || '', thumbnailUrl: item.cover || item.origin_cover || null, authorName: item.author?.nickname || item.author?.unique_id || null };
   }
 
   if (clip.platform !== 'youtube') return { views: Number(clip.currentViews) || 0, title: clip.title || '', thumbnailUrl: clip.thumbnailUrl || null, authorName: clip.platformAuthorName || null };
-  const videoId = getYouTubeVideoId(clip.url);
+  const videoId = getYouTubeVideoId(clipUrl);
   if (!videoId) return { views: 0, title: '', thumbnailUrl: null, authorName: null };
 
   const res = await axios.get('https://www.googleapis.com/youtube/v3/videos', {
@@ -2528,178 +2824,80 @@ async function autoTrackClipViews() {
 
   try {
     const data = loadData();
-    const staffUpdateGuild = client.guilds.cache.first();
+    const guild = client.guilds.cache.first();
 
-    // 1. Reset cumulative user counts before aggregating
-    for (const user of Object.values(data.users || {})) {
-      if (user.stats) {
-        user.stats.totalViews = 0;
-        user.stats.moneyMade = 0;
+    let changed = false;
+    const updatedCampaignIds = new Set();
+    const updatedPayoutPairs = new Set();
+    const approvedClipIds = new Set(Object.entries(data.clips || {})
+      .filter(([, clip]) => clip.status === 'approved')
+      .map(([clipId]) => clipId));
+
+    for (const [clipId, clip] of Object.entries(data.clipReviews || {})) {
+      if (approvedClipIds.has(clipId)) {
+        console.warn(`Duplicate clip lifecycle record detected: ${clipId}`);
+        continue;
       }
-      
-      if (user.campaignStats) {
-        for (const campaignId of Object.keys(user.campaignStats)) {
-          for (const platform of Object.keys(user.campaignStats[campaignId])) {
-            user.campaignStats[campaignId][platform].totalViews = 0;
-            user.campaignStats[campaignId][platform].moneyMade = 0;
-          }
+      if (!isTrackableReviewClip(clip) || !isClipTrackingDue(clip)) continue;
+      try {
+        const metadata = await fetchClipMetadata(clip);
+        updatePendingReviewTracking(clip, metadata);
+        data.clipReviews[clipId] = clip;
+        changed = true;
+        if (guild) {
+          try { await updateClipStaffMessage(guild, clip); }
+          catch (error) { console.error(`Could not update pending staff message ${clipId}:`, error.message); }
         }
+      } catch (error) {
+        recordClipTrackingFailure(clip, error);
+        data.clipReviews[clipId] = clip;
+        changed = true;
+        console.error(`Pending clip tracking failed ${clipId}:`, error.message);
       }
+      await delayBetweenPlatformRequests();
     }
 
-    // 2. Loop through all clips
     for (const [clipId, clip] of Object.entries(data.clips || {})) {
-      // FIX: Skip ONLY rejected clips. This allows 'pending' and 'approved' to track!
-      if (clip.status === 'rejected') continue; 
-      if (!clip.url) continue;
-
-      const lastChecked = clip.lastChecked || 0;
-      
-      // Fetch live views if 30 minutes have passed since last check
-      if (Date.now() - lastChecked >= 30 * 60 * 1000) {
-        try {
-          const metadata = await fetchClipMetadata(clip);
-          const currentViews = metadata.views;
-
-          const startingViews = clip.startingViews || 0;
-          const weeklyBaseline = clip.weeklyBaselineViews || startingViews;
-
-          // Monthly views
-          const earnedViews = Math.max(
-              currentViews - startingViews,
-              0
-          );
-
-          // Weekly views
-          const weeklyViews = Math.max(
-              currentViews - weeklyBaseline,
-              0
-          );
-
-          clip.currentViews = currentViews;
-          if (metadata.title) clip.title = metadata.title;
-          if (metadata.thumbnailUrl) clip.thumbnailUrl = metadata.thumbnailUrl;
-          if (metadata.authorName) clip.platformAuthorName = metadata.authorName;
-
-          // Monthly total
-          clip.views = earnedViews;
-
-          // Current week's gain
-          clip.weeklyViews = weeklyViews;
-
-          clip.lastChecked = Date.now();
-          clip.trackingError = null;
-
-          const campaign = CAMPAIGNS[clip.campaignId];
-          const rate = campaign?.ratePerMillion || 0;
-
-          clip.totalMoneyMade =
-              (earnedViews / 1000000) * rate;
-
-          const paidViews = Number(clip.payout?.paidViews) || 0;
-          clip.unpaidViews = Math.max(earnedViews - paidViews, 0);
-
-          clip.unpaidMoney =
-              (clip.unpaidViews / 1000000) * rate;
-          clip.weeklyMoneyMade = (weeklyViews / 1000000) * rate;
-
-          data.clips[clipId] = clip;
-
-          if (
-            staffUpdateGuild &&
-            clip.status === 'approved' &&
-            (clip.platform === 'tiktok' || clip.platform === 'youtube')
-          ) {
-            try {
-              await updateClipStaffMessage(staffUpdateGuild, clip);
-            } catch (err) {
-              console.error(`Could not update staff clip message ${clip.id}:`, err.message);
-            }
-          }
-        } catch (err) {
-          clip.trackingError = err.message;
-          clip.lastChecked = Date.now();
-          data.clips[clipId] = clip;
+      if (!isTrackableApprovedClip(clip) || !isClipTrackingDue(clip)) continue;
+      try {
+        const metadata = await fetchClipMetadata(clip);
+        updateApprovedClipTracking(clip, metadata);
+        data.clips[clipId] = clip;
+        changed = true;
+        updatedCampaignIds.add(clip.campaignId);
+        updatedPayoutPairs.add(`${clip.campaignId}:${clip.userId}`);
+        if (guild) {
+          try { await updateClipStaffMessage(guild, clip); }
+          catch (error) { console.error(`Could not update approved staff message ${clipId}:`, error.message); }
         }
-        
-        // API rate limit delay
-        await new Promise(resolve => setTimeout(resolve, 2000));
+      } catch (error) {
+        recordClipTrackingFailure(clip, error);
+        data.clips[clipId] = clip;
+        changed = true;
+        console.error(`Approved clip tracking failed ${clipId}:`, error.message);
       }
+      await delayBetweenPlatformRequests();
+    }
 
-      // 3. Accumulate data into user profiles ONLY if the clip is approved
-      // This ensures stats/leaderboards don't show unapproved views!
-      if (clip.status === 'approved' || clip.status === 'pending') {
-        const userId = clip.userId;
-        if (data.users[userId]) {
-          const userRecord = data.users[userId];
-          
-          // Add to global profile metrics
-          userRecord.stats.totalViews += Number(clip.views) || 0;
-          userRecord.stats.moneyMade += Number(clip.totalMoneyMade) || 0;
+    if (changed) saveData(data);
 
-          // Campaign stats should ONLY count this week's gain
-          const platformStats = ensureCampaignPlatformStats(
-            userRecord,
-            clip.campaignId,
-            clip.platform,
-            clip.username || ''
-          );
-          platformStats.totalViews += Number(clip.weeklyViews) || 0;
-          platformStats.moneyMade +=
-              ((Number(clip.weeklyViews) || 0) / 1000000) *
-          (CAMPAIGNS[clip.campaignId]?.ratePerMillion || 0);
-        }
+    if (guild && updatedCampaignIds.size > 0) {
+      for (const campaignId of updatedCampaignIds) {
+        try { await updateCampaignPanelMessage(guild, campaignId); }
+        catch (error) { console.error(`Could not refresh campaign panel ${campaignId}:`, error.message); }
+      }
+      try { await updateLeaderboardMessage(guild); }
+      catch (error) { console.error('Could not refresh leaderboard:', error.message); }
+      try { await updateServerStats(guild); }
+      catch (error) { console.error('Could not refresh server counters:', error.message); }
+      for (const pair of updatedPayoutPairs) {
+        const [campaignId, userId] = pair.split(':');
+        try { await syncPayoutCard(guild, campaignId, userId); }
+        catch (error) { console.error(`Could not refresh payout card ${pair}:`, error.message); }
       }
     }
-  
-    saveData(data);
 
-const guild = client.guilds.cache.first();
-
-if (guild) {
-
-    await updateLeaderboardMessage(guild);
-
-    for (const campaignId of Object.keys(CAMPAIGNS)) {
-        await updateCampaignPanelMessage(guild, campaignId);
-    }
-
-    const payoutPairs = new Set(
-        Object.values(data.clips || {})
-            .filter(clip => clip.status === 'approved')
-            .map(clip => clip.campaignId + ':' + clip.userId)
-    );
-
-    for (const pair of payoutPairs) {
-        const [campaignId, userId] = pair.split(':');
-        const campaign = CAMPAIGNS[campaignId];
-        if (!campaign) continue;
-
-        const trackerId = campaignId + '_' + userId;
-
-        const tracker = data.payoutTrackers[trackerId] || {
-            id: trackerId,
-            campaignId,
-            userId,
-            channelId: null,
-            messageId: null,
-            createdAt: Date.now()
-        };
-
-        calculateTrackerStats(tracker);
-
-        data.payoutTrackers[trackerId] = tracker;
-    }
-
-    saveData(data);
-
-    for (const pair of payoutPairs) {
-        const [campaignId, userId] = pair.split(':');
-        await syncPayoutCard(guild, campaignId, userId);
-    }
-
-}
-console.log('Auto tracking completed & Leaderboards updated!');
+    console.log('Auto tracking completed.');
   } catch (err) {
     console.error('❌ Auto tracking failed:', err);
   } finally {
@@ -2825,7 +3023,7 @@ client.once(Events.ClientReady, async () => {
     console.log(`Online as ${client.user.tag}`);
 
     autoTrackClipViews();
-    setInterval(autoTrackClipViews, 30 * 60 * 1000);
+    setInterval(autoTrackClipViews, CLIP_TRACK_SCHEDULER_MS);
 
     archiveFinishedCampaigns();
     setInterval(archiveFinishedCampaigns, 5 * 60 * 1000);
@@ -3579,34 +3777,14 @@ client.on(Events.MessageCreate, async message => {
 async function updateClipStaffMessage(guild, clip) {
     if (!guild || !clip) return;
 
-    const data = loadData();
-
-    // Determine platform key for lookup
-    const platformKey = (clip.platform || '').toLowerCase();
-    const channelKey = platformKey.includes('ig') || platformKey.includes('instagram') ? 'instagram'
-                     : platformKey.includes('tiktok') ? 'tiktok'
-                     : platformKey.includes('youtube') || platformKey.includes('yt') ? 'youtube'
-                     : platformKey;
-
-    const campaignStaffMap = data.campaignStaffChannels?.[clip.campaignId];
-
-    // 🟢 4-TIER FALLBACK CHANNEL RESOLUTION
-    const channelId = clip.staffChannelId 
-                   || campaignStaffMap?.[channelKey] 
-                   || CAMPAIGNS[clip.campaignId]?.staffChannels?.[channelKey]
-                   || CAMPAIGNS[clip.campaignId]?.staffChannelId;
-
-    if (!channelId || !clip.staffMessageId) {
-        console.log(`⚠️ Missing channelId (${channelId}) or staffMessageId (${clip.staffMessageId}) for clip ${clip.id}`);
+    if (!clip.staffChannelId || !clip.staffMessageId) {
+        console.warn(`Missing staff message reference for clip ${clip.id}`);
         return;
     }
 
-    // Backfill missing staffChannelId into clip record
-    clip.staffChannelId = channelId;
-
-    const ch = guild.channels.cache.get(channelId);
+    const ch = guild.channels.cache.get(clip.staffChannelId);
     if (!ch) {
-        console.log(`⚠️ Could not locate staff channel ID ${channelId} in guild cache for clip ${clip.id}`);
+        console.warn(`Could not locate staff channel for clip ${clip.id}`);
         return;
     }
 
@@ -3620,7 +3798,7 @@ async function updateClipStaffMessage(guild, clip) {
             console.log(`✅ Updated staff message for clip ${clip.id}`);
         }
     } catch (error) {
-        console.log('Could not update clip staff message:', error.message);
+        console.warn(`Could not update clip staff message ${clip.id}:`, error.message);
     }
 }
 
@@ -3981,9 +4159,9 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         const approvedClips = Object.values(data.clips).filter(c =>
-            c.userId === userId &&
-            c.campaignId === campaignId &&
-            c.status === "approved"
+            String(c.userId) === String(userId) &&
+            String(c.campaignId) === String(campaignId) &&
+            isPayoutEligibleClip(c)
         );
 
         let paidViews = 0;
@@ -4000,7 +4178,7 @@ client.on(Events.InteractionCreate, async interaction => {
             }
 
             const newViews = Math.max(
-                (clip.views || 0) - (clip.payout.paidViews || 0),
+                getApprovedClipViews(clip) - (Number(clip.payout.paidViews) || 0),
                 0
             );
 
@@ -4064,7 +4242,7 @@ client.on(Events.InteractionCreate, async interaction => {
             <a:chart1:1504773558415523931> **Views Paid**
             ${formatNumber(paidViews)}
 
-            💰 **Amount Paid**
+            <a:Cash1:1504871843419521115> **Amount Paid**
             **$${paidMoney.toFixed(2)}**
 
             🏦 **Destination**
@@ -4201,7 +4379,7 @@ This issue is related to your **${paymentLabel.replace(" ID","")}** account rath
 <a:chart1:1504773558415523931> **Views Affected**
 ${formatNumber(unpaidViews)}
 
-💰 **Expected Payout**
+<a:Cash1:1504871843419521115> **Expected Payout**
 **$${unpaidMoney.toFixed(2)}**
 
 🏦 **${paymentLabel}**
@@ -6435,6 +6613,9 @@ ${reason}
             const metadata = validation.metadata;
             const matchedAccount = validation.matchedAccount;
             const clipId = makeClipId();
+            const submittedTimestamp = Date.now();
+            const currentViews = Math.max(Number(metadata.views) || 0, 0);
+            const estimatedEarnings = currentViews / 1000000 * (Number(campaign.ratePerMillion) || 0);
             const clip = {
                 id: clipId,
                 userId: interaction.user.id,
@@ -6452,34 +6633,44 @@ ${reason}
                 publishedTimestamp: metadata.publishedTimestamp || null,
                 title: metadata.title || validation.canonicalUrl,
                 thumbnailUrl: metadata.thumbnailUrl || null,
-                currentViews: Number(metadata.views) || 0,
-                submissionViews: Number(metadata.views) || 0,
-                startingViews: Number(metadata.views) || 0,
-                weeklyBaselineViews: Number(metadata.views) || 0,
-                views: 0,
-                weeklyViews: 0,
-                monthlyViews: 0,
-                weeklyMoneyMade: 0,
-                totalMoneyMade: 0,
-                moneyMade: 0,
+                currentViews,
+                submissionViews: currentViews,
+                views: currentViews,
+                estimatedEarnings,
                 status: 'pending',
-                submittedAt: new Date().toISOString(),
-                lastChecked: Date.now(),
+                payoutEligible: false,
+                wasEverApproved: false,
+                submittedTimestamp,
+                submittedAt: new Date(submittedTimestamp).toISOString(),
+                createdAt: new Date(submittedTimestamp).toISOString(),
+                lastChecked: submittedTimestamp,
+                nextCheckAt: submittedTimestamp + CLIP_TRACK_INTERVAL_MS,
                 cycle: getCampaignCycle(campaign, new Date()),
                 staffChannelId: staffChannel ? staffChannel.id : null,
                 staffMessageId: null,
                 payout: { paidViews: 0, paidMoney: 0, lastPaidAt: null, history: [] }
             };
 
-            if (staffChannel) {
+            data.clipReviews ||= {};
+            if (!staffChannel) {
+                rejectedResults.push({ link: originalLink, reason: '❌ Staff review channel is unavailable. Please try again.' });
+                continue;
+            }
+            try {
                 const staffMessage = await staffChannel.send({
                     embeds: [buildClipStaffEmbed(clip)],
                     components: buildClipStaffButtons(clip)
-                }).catch(() => null);
-                if (staffMessage) clip.staffMessageId = staffMessage.id;
+                });
+                clip.staffChannelId = staffChannel.id;
+                clip.staffMessageId = staffMessage.id;
+            } catch (error) {
+                console.error(`Could not create staff review message for ${clipId}:`, error.message);
+                rejectedResults.push({ link: originalLink, reason: '❌ The clip was verified, but its staff review message could not be created. Please try again.' });
+                continue;
             }
 
-            data.clips[clipId] = clip;
+            initializeClipTrackingFields(clip);
+            data.clipReviews[clipId] = clip;
             platformStats.videosPosted++;
             userRecord.stats.videosPosted++;
             submittedCount++;
@@ -6514,7 +6705,13 @@ ${reason}
       }
 
       const userRecord = ensureUser(data, member);
-      const embed = buildCampaignStatsEmbed(data, userRecord, campaignId, campaign.name);
+      const embed = buildCampaignStatsEmbed(
+        data,
+        userRecord,
+        campaignId,
+        campaign.name,
+        interaction.user.id
+      );
 
       saveData(data);
 
@@ -6921,80 +7118,128 @@ ${reason}
 
       const clipId = interaction.customId.split(':')[1];
       const data = loadData();
-      const clip = data.clips?.[clipId];
+      const located = findClipRecord(data, clipId);
 
-      if (!clip) {
+      if (!located) {
         return interaction.reply({ content: '❌ Clip not found.', flags: MessageFlags.Ephemeral });
       }
+
+      const clip = located.clip;
+      const sourceCollection = located.collection;
 
       if (clip.status === 'approved') {
         return interaction.reply({ content: '❌ This clip is already approved.', flags: MessageFlags.Ephemeral });
       }
 
-      // 🟢 1. Safely calculate campaign cycle with fallbacks
-      const campaign = CAMPAIGNS[clip.campaignId];
-      try {
-        clip.cycle = getCampaignCycle(campaign, new Date());
-      } catch (err) {
-        console.error(`⚠️ Failed to calculate cycle for clip ${clipId}:`, err.message);
-        clip.cycle = 1; // Fallback cycle value
+      if (clip.status !== 'pending') {
+        return interaction.reply({ content: '❌ Only pending clips can be approved.', flags: MessageFlags.Ephemeral });
       }
 
-      // 🟢 2. Retroactively backfill missing staffChannelId for legacy clips
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const campaign = CAMPAIGNS[clip.campaignId];
+      if (!campaign) {
+        return interaction.editReply({ content: '❌ Campaign not found.' });
+      }
+
       if (!clip.staffChannelId) {
         clip.staffChannelId = interaction.channelId;
       }
 
-      // 🟢 3. Backfill staffMessageId if missing from button message
       if (!clip.staffMessageId && interaction.message) {
         clip.staffMessageId = interaction.message.id;
       }
 
-      // Transition clip state
+      let latestViews = Math.max(
+        Number(clip.currentViews) || 0,
+        Number(clip.views) || 0,
+        Number(clip.submissionViews) || 0
+      );
+
       try {
         const metadata = await fetchClipMetadata(clip);
-        const rate = Number(campaign?.ratePerMillion) || 0;
-        Object.assign(clip, {
-          currentViews: metadata.views,
-          startingViews: 0,
-          views: metadata.views,
-          weeklyBaselineViews: 0,
-          weeklyViews: metadata.views,
-          monthlyViews: metadata.views,
-          title: metadata.title,
-          thumbnailUrl: metadata.thumbnailUrl,
-          platformAuthorName: metadata.authorName,
-          approvalViews: metadata.views,
-          lastChecked: Date.now()
-        });
-        clip.totalMoneyMade = clip.views / 1000000 * rate;
-        clip.moneyMade = clip.totalMoneyMade;
-        clip.weeklyMoneyMade = clip.weeklyViews / 1000000 * rate;
-      } catch (err) {
-        console.error(`Could not fetch approved clip metadata ${clipId}:`, err.message);
-      }
-      clip.status = 'approved';
-      clip.approvedAt = Date.now();
+        latestViews = Math.max(latestViews, Number(metadata?.views) || 0);
 
+        if (metadata?.title) clip.title = metadata.title;
+        if (metadata?.thumbnailUrl) clip.thumbnailUrl = metadata.thumbnailUrl;
+        if (metadata?.authorName) clip.platformAuthorName = metadata.authorName;
+      } catch (err) {
+        console.error(`Could not refresh clip ${clipId} before approval:`, err.message);
+      }
+
+      const approvedAt = Date.now();
+      const rate = Number(campaign.ratePerMillion) || 0;
+      clip.status = 'approved';
+      clip.payoutEligible = true;
+      clip.wasEverApproved = true;
+      clip.approvedAt = approvedAt;
+      clip.currentViews = latestViews;
+      clip.views = latestViews;
+      clip.approvalViews = latestViews;
+      clip.cycle = getCampaignCycle(campaign, new Date(approvedAt));
+      clip.totalMoneyMade = latestViews / 1000000 * rate;
+      clip.moneyMade = clip.totalMoneyMade;
+      clip.weeklyViews = latestViews;
+      clip.weeklyMoneyMade = clip.totalMoneyMade;
+      clip.lastChecked = approvedAt;
+
+      data.clips ||= {};
+      data.clipReviews ||= {};
       data.clips[clipId] = clip;
+      if (sourceCollection === 'clipReviews') {
+        delete data.clipReviews[clipId];
+      }
+
+      const userRecord = data.users?.[clip.userId];
+      if (userRecord) {
+        userRecord.stats ||= {};
+        userRecord.stats.videosApproved = (Number(userRecord.stats.videosApproved) || 0) + 1;
+        const platformStats = ensureCampaignPlatformStats(
+          userRecord,
+          clip.campaignId,
+          clip.platform,
+          clip.username || ''
+        );
+        platformStats.videosApproved = (Number(platformStats.videosApproved) || 0) + 1;
+      }
+
       saveData(data);
 
-      await sendClipApprovedDM(interaction.guild, clip);
-
-      await syncPayoutCard(interaction.guild, clip.campaignId, clip.userId);
-
-      // Trigger background stats recalculation
-      const guild = client.guilds.cache.get(process.env.GUILD_ID) || interaction.guild;
-      if (guild && typeof updateServerStats === 'function') {
-          updateServerStats(guild).catch(err => console.error("⚠️ Server stats update error:", err.message));
+      try {
+        await updateClipStaffMessage(interaction.guild, clip);
+      } catch (err) {
+        console.error(`Could not update approved staff message ${clipId}:`, err.message);
       }
 
-      // Re-render the staff message in the channel (swaps buttons to Reject + Update Views)
-      await updateClipStaffMessage(interaction.guild, clip);
+      try {
+        await sendClipApprovedDM(interaction.guild, clip);
+      } catch (err) {
+        console.error(`Could not send approved clip DM ${clipId}:`, err.message);
+      }
 
-      await interaction.reply({
-        content: `✅ Clip structural verification approved. Auto-tracking continuing smoothly from its live background loop baseline.`,
-        flags: MessageFlags.Ephemeral
+      try {
+        await syncPayoutCard(interaction.guild, clip.campaignId, clip.userId);
+      } catch (err) {
+        console.error(`Could not sync payout card for approved clip ${clipId}:`, err.message);
+      }
+
+      const guild = client.guilds.cache.get(process.env.GUILD_ID) || interaction.guild;
+      if (guild && typeof updateServerStats === 'function') {
+        updateServerStats(guild).catch(err => console.error('Server stats update error:', err.message));
+      }
+      if (guild && typeof updateLeaderboardMessage === 'function') {
+        updateLeaderboardMessage(guild).catch(err => console.error('Leaderboard update error:', err.message));
+      }
+      if (guild && typeof updateCampaignPanelMessage === 'function') {
+        try {
+          await updateCampaignPanelMessage(guild, clip.campaignId);
+        } catch (err) {
+          console.error(`Could not refresh campaign panel ${clip.campaignId}:`, err.message);
+        }
+      }
+
+      await interaction.editReply({
+        content: `✅ Clip approved with ${formatNumber(latestViews)} views.`
       });
       return;
     }
@@ -7107,21 +7352,27 @@ ${reason}
 
       const clipId = interaction.customId.split(':')[1];
       const data = loadData();
-      const clip = data.clips?.[clipId];
+      const located = findClipRecord(data, clipId);
 
-      if (!clip) {
+      if (!located) {
         await interaction.reply({
           content: '❌ Clip not found.',
           flags: MessageFlags.Ephemeral
         });
         return;
       }
+      const clip = located.clip;
 
       if (clip.status === 'rejected') {
         await interaction.reply({
           content: '❌ This clip is already rejected.',
           flags: MessageFlags.Ephemeral
         });
+        return;
+      }
+
+      if (clip.status !== 'pending' && clip.status !== 'approved') {
+        await interaction.reply({ content: '❌ Only pending or approved clips can be rejected.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -7158,15 +7409,16 @@ ${reason}
       const reason = interaction.fields.getTextInputValue('reject_reason').trim();
 
       const data = loadData();
-      const clip = data.clips?.[clipId];
+      const located = findClipRecord(data, clipId);
 
-      if (!clip) {
+      if (!located) {
         await interaction.reply({
           content: '❌ Clip not found.',
           flags: MessageFlags.Ephemeral
         });
         return;
       }
+      const clip = located.clip;
 
       if (clip.status === 'rejected') {
         await interaction.reply({
@@ -7176,45 +7428,67 @@ ${reason}
         return;
       }
 
+      if (clip.status !== 'pending' && clip.status !== 'approved') {
+        await interaction.reply({ content: '❌ Only pending or approved clips can be rejected.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
       const userRecord = data.users?.[clip.userId];
+      const rejectionStage = getClipRejectionStage(clip, located.collection);
 
       clip.status = 'rejected';
+      clip.payoutEligible = false;
+      clip.wasEverApproved = rejectionStage === 'post_approval';
+      clip.rejectionStage = rejectionStage;
       clip.rejectReason = reason;
       clip.rejectedAt = Date.now();
       clip.rejectedBy = interaction.user.id;
+      clip.trackingRetryAt = null;
 
-      clip.views = 0;
-      clip.totalMoneyMade = 0;
-      clip.trackingError = null;
-
-      data.clips[clipId] = clip;
+      if (rejectionStage === 'pre_approval') {
+        data.clipReviews ||= {};
+        data.clipReviews[clipId] = clip;
+        delete data.clips[clipId];
+      } else {
+        clip.rejectedAtViews = Math.max(Number(clip.views) || 0, Number(clip.currentViews) || 0, Number(clip.approvalViews) || 0);
+        data.clips ||= {};
+        data.clips[clipId] = clip;
+      }
 
       if (userRecord) {
         if (!userRecord.stats) userRecord.stats = {};
         userRecord.stats.videosRejected = (userRecord.stats.videosRejected || 0) + 1;
+        const platformStats = ensureCampaignPlatformStats(userRecord, clip.campaignId, clip.platform, clip.username || '');
+        platformStats.videosRejected = (Number(platformStats.videosRejected) || 0) + 1;
       }
 
       saveData(data);
 
-      const guild = client.guilds.cache.get(process.env.GUILD_ID);
+      try { await updateClipStaffMessage(interaction.guild, clip); }
+      catch (error) { console.error(`Could not update rejected staff message ${clipId}:`, error.message); }
 
-      if (guild) {
-          updateServerStats(guild);
+      if (rejectionStage === 'post_approval') {
+        try { await updateCampaignPanelMessage(interaction.guild, clip.campaignId); } catch (error) { console.error(`Could not refresh campaign panel ${clip.campaignId}:`, error.message); }
+        try { await updateLeaderboardMessage(interaction.guild); } catch (error) { console.error('Could not refresh leaderboard:', error.message); }
+        try { await updateServerStats(interaction.guild); } catch (error) { console.error('Could not refresh server counters:', error.message); }
+        try { await syncPayoutCard(interaction.guild, clip.campaignId, clip.userId); } catch (error) { console.error(`Could not refresh payout card ${clip.campaignId}:${clip.userId}:`, error.message); }
       }
-
-      await updateClipStaffMessage(interaction.guild, clip);
 
       const member = await interaction.guild.members.fetch(clip.userId).catch(() => null);
 
       if (member) {
         await member.send(
           `❌ **Clip Rejected**\n\n` +
-          `Your clip for **${CAMPAIGNS[clip.campaignId]?.name || 'campaign'}** was rejected.\n\n` +
+          `Your ${rejectionStage === 'pre_approval' ? 'clip was not approved.' : 'previously approved clip has been removed from payment eligibility.'}\n\n` +
+          `Campaign: **${CAMPAIGNS[clip.campaignId]?.name || 'campaign'}**\n` +
+          `Video: ${clip.videoUrl || clip.url || 'Not available'}\n\n` +
           `**Reason:** ${reason}`
         ).catch(() => {});
       }
 
-      await interaction.reply({
+      await interaction.editReply({
         content: `✅ Clip rejected.\nReason: ${reason}`,
         flags: MessageFlags.Ephemeral
       });
@@ -7222,46 +7496,81 @@ ${reason}
       return;
     }
 
-    if (interaction.customId.startsWith("restore_clip:")) {
+    if (interaction.isButton() && interaction.customId.startsWith("restore_clip:")) {
+        if (!interaction.guild || !isAdmin(interaction.member)) {
+            return interaction.reply({ content: "❌ You are not allowed to do this.", flags: MessageFlags.Ephemeral });
+        }
 
         const clipId = interaction.customId.split(":")[1];
-
         const data = loadData();
-
-        const clip = data.clips[clipId];
-
-        if (!clip) {
-            return interaction.reply({
-                content: "❌ Clip not found.",
-                flags: MessageFlags.Ephemeral
-            });
+        const located = findClipRecord(data, clipId);
+        if (!located) {
+            return interaction.reply({ content: "❌ Clip not found.", flags: MessageFlags.Ephemeral });
+        }
+        const clip = located.clip;
+        if (clip.status !== 'rejected') {
+            return interaction.reply({ content: "❌ Only rejected clips can be restored.", flags: MessageFlags.Ephemeral });
         }
 
-        clip.status = "approved";
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        const rejectionStage = getClipRejectionStage(clip, located.collection);
+        const campaign = CAMPAIGNS[clip.campaignId];
+        const userRecord = data.users?.[clip.userId];
+        const restoredAt = Date.now();
+        clip.rejectionStage = null;
         clip.rejectReason = null;
-        clip.restoredAt = Date.now();
+        clip.rejectedAt = null;
+        clip.rejectedBy = null;
+        clip.restoredAt = restoredAt;
         clip.restoredBy = interaction.user.id;
+        clip.lastTrackingError = null;
+        clip.lastTrackingErrorAt = null;
+        clip.trackingRetryAt = null;
 
-        data.clips[clipId] = clip;
+        try {
+            const metadata = await fetchClipMetadata(clip);
+            if (rejectionStage === 'pre_approval') updatePendingReviewTracking(clip, metadata);
+            else updateApprovedClipTracking(clip, metadata);
+        } catch (error) {
+            console.error(`Could not refresh restored clip ${clipId}:`, error.message);
+            advanceClipNextCheckAt(clip);
+        }
+
+        if (rejectionStage === 'pre_approval') {
+            clip.status = 'pending';
+            clip.payoutEligible = false;
+            clip.wasEverApproved = false;
+            data.clipReviews ||= {};
+            data.clipReviews[clipId] = clip;
+            delete data.clips[clipId];
+        } else {
+            clip.status = 'approved';
+            clip.payoutEligible = true;
+            clip.wasEverApproved = true;
+            data.clips ||= {};
+            data.clips[clipId] = clip;
+            delete data.clipReviews[clipId];
+        }
+
+        if (userRecord) {
+            userRecord.stats ||= {};
+            userRecord.stats.videosRejected = Math.max((Number(userRecord.stats.videosRejected) || 0) - 1, 0);
+            const platformStats = ensureCampaignPlatformStats(userRecord, clip.campaignId, clip.platform, clip.username || '');
+            platformStats.videosRejected = Math.max((Number(platformStats.videosRejected) || 0) - 1, 0);
+        }
 
         saveData(data);
+        try { await updateClipStaffMessage(interaction.guild, clip); }
+        catch (error) { console.error(`Could not update restored staff message ${clipId}:`, error.message); }
 
-        const guild = client.guilds.cache.get(process.env.GUILD_ID);
-
-        if (guild) {
-            updateServerStats(guild);
+        if (rejectionStage === 'post_approval') {
+            try { await updateCampaignPanelMessage(interaction.guild, clip.campaignId); } catch (error) { console.error(`Could not refresh campaign panel ${clip.campaignId}:`, error.message); }
+            try { await updateLeaderboardMessage(interaction.guild); } catch (error) { console.error('Could not refresh leaderboard:', error.message); }
+            try { await updateServerStats(interaction.guild); } catch (error) { console.error('Could not refresh server counters:', error.message); }
+            try { await syncPayoutCard(interaction.guild, clip.campaignId, clip.userId); } catch (error) { console.error(`Could not refresh payout card ${clip.campaignId}:${clip.userId}:`, error.message); }
         }
 
-        await updateClipStaffMessage(
-            interaction.guild,
-            clip
-        );
-
-        await interaction.reply({
-            content: "✅ Clip restored successfully.",
-            flags: MessageFlags.Ephemeral
-        });
-
+        await interaction.editReply({ content: "✅ Clip restored successfully." });
         return;
     }
 
