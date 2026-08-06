@@ -195,7 +195,6 @@ All you have to do is **register for the campaign below** and follow the guideli
 
 • **Content Standard:** Low-quality, spam, misleading, or heavily manipulated edits may result in removal from the campaign
 
-• **Submission Rule:** Only videos posted within the last 24 hours are eligible for submission. Views begin counting only after submission is approved.
 
 ## <a:Cash1:1504871843419521115> Payment Details
 
@@ -448,19 +447,18 @@ function ensureUserSocials(data, userId) {
 }
 
 function getApprovedCampaignAccounts(data, userId, campaignId, platform) {
-  const campaignAccounts = data.users?.[userId]?.campaignAccounts?.[campaignId];
-  if (!campaignAccounts) return [];
+  const userRecord = data.users?.[String(userId)];
+  const platformAccounts = userRecord?.campaignAccounts?.[campaignId]?.[platform];
+  if (!platformAccounts) return [];
 
-  const candidates = Array.isArray(campaignAccounts)
-    ? campaignAccounts
-    : Array.isArray(campaignAccounts[platform])
-      ? campaignAccounts[platform]
-      : campaignAccounts[platform]
-        ? [campaignAccounts[platform]]
-        : Object.values(campaignAccounts).flatMap(value => Array.isArray(value) ? value : [value]);
+  const candidates = Array.isArray(platformAccounts)
+    ? platformAccounts
+    : typeof platformAccounts === 'object' && ('username' in platformAccounts || 'verified' in platformAccounts || 'status' in platformAccounts)
+      ? [platformAccounts]
+      : Object.values(platformAccounts || {});
 
   return candidates
-    .filter(account => account?.verified === true && (!account.platform || account.platform === platform))
+    .filter(account => account && (account.verified === true || account.status === 'approved'))
     .map(account => ({
       platform: account.platform || platform,
       username: account.username || '',
@@ -504,24 +502,6 @@ function validateVideoOwnership(approvedAccounts, metadata) {
   };
 }
 
-function validateSubmissionAge(publishedTimestamp, now = Date.now()) {
-  const timestamp = Number(publishedTimestamp);
-  if (!Number.isFinite(timestamp) || timestamp <= 0) {
-    return { valid: false, ageMs: null, reason: 'Missing or invalid publication timestamp.' };
-  }
-
-  const ageMs = Number(now) - timestamp;
-  const maxAgeMs = 24 * 60 * 60 * 1000;
-  if (ageMs < -(5 * 60 * 1000)) {
-    return { valid: false, ageMs, reason: 'Publication timestamp is too far in the future.' };
-  }
-  if (ageMs > maxAgeMs) {
-    return { valid: false, ageMs, reason: 'This clip is older than 24 hours and is not eligible for submission.' };
-  }
-
-  return { valid: true, ageMs, reason: null };
-}
-
 function parseCanonicalVideoUrl(resolvedUrl) {
   const url = new URL(resolvedUrl);
   const host = url.hostname.toLowerCase();
@@ -561,9 +541,6 @@ async function validateClipBeforeSubmission({ data, userId, campaignId, submitte
 
     const metadata = await fetchSubmissionMetadata(parsed.platform, parsed.canonicalUrl, parsed.videoId);
     metadata.platform = parsed.platform;
-    const age = validateSubmissionAge(metadata.publishedTimestamp);
-    if (!age.valid) return { valid: false, message: `❌ ${age.reason}`, metadata };
-
     const accounts = getApprovedCampaignAccounts(data, userId, campaignId, parsed.platform);
     if (!accounts.length) {
       return { valid: false, message: `❌ You do not have a verified ${formatPlatform(parsed.platform)} account for this campaign.`, metadata };
