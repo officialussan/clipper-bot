@@ -362,6 +362,41 @@ function formatPlatform(p) {
 function normalizeUsername(u) {
   return String(u).trim().replace(/^@+/, '');
 }
+function normalizeSocialUsername(value) {
+  return String(value || '').trim().replace(/^@+/, '').toLowerCase();
+}
+function normalizeExternalId(value) {
+  return String(value || '').trim();
+}
+
+async function resolveYouTubeChannelIdentity(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return null;
+  let channelId = null;
+  let handle = null;
+  try {
+    const url = /^https?:\/\//i.test(raw) ? new URL(raw) : null;
+    const path = url?.pathname || raw;
+    const channelMatch = path.match(/\/channel\/(UC[\w-]{20,})/i);
+    const handleMatch = path.match(/@([^/?#]+)/);
+    if (/^UC[\w-]{20,}$/i.test(raw)) channelId = raw;
+    else if (channelMatch) channelId = channelMatch[1];
+    else handle = (handleMatch?.[1] || raw.replace(/^@/, '')).trim();
+
+    const params = { part: 'snippet', key: process.env.YOUTUBE_API_KEY };
+    if (channelId) params.id = channelId;
+    else params.forHandle = handle;
+    let response = await axios.get('https://www.googleapis.com/youtube/v3/channels', { timeout: 15000, params });
+    let item = response.data?.items?.[0];
+    if (!item && !channelId && handle) {
+      response = await axios.get('https://www.googleapis.com/youtube/v3/channels', { timeout: 15000, params: { part: 'snippet', forUsername: handle, key: process.env.YOUTUBE_API_KEY } });
+      item = response.data?.items?.[0];
+    }
+    return item ? { channelId: item.id, handle: handle || null, title: item.snippet?.title || null } : null;
+  } catch {
+    return null;
+  }
+}
 function normalizeSocialKey(platform, username) {
   return `${platform}:${normalizeUsername(username).toLowerCase()}`;
 }
@@ -468,29 +503,32 @@ function getApprovedCampaignAccounts(data, userId, campaignId, platform) {
     }));
 }
 
-function validateVideoOwnership(approvedAccounts, metadata) {
+async function validateVideoOwnership(approvedAccounts, metadata) {
   const accounts = approvedAccounts || [];
   const platform = metadata?.platform || (metadata?.authorUsername ? 'tiktok' : 'youtube');
   const authorUsername = normalizeUsername(metadata?.authorUsername || '').toLowerCase();
   const authorDisplayName = normalizeUsername(metadata?.authorDisplayName || '').toLowerCase();
 
   for (const account of accounts) {
-    const storedId = account.externalAccountId ? String(account.externalAccountId) : null;
-    const authorId = metadata?.authorId ? String(metadata.authorId) : null;
+    let storedId = normalizeExternalId(account.externalAccountId || account.source?.channelId);
+    const authorId = normalizeExternalId(metadata?.authorId);
 
     if (storedId && authorId) {
       if (storedId === authorId) return { valid: true, matchedAccount: account, reason: null };
       continue;
     }
 
-    const storedUsername = normalizeUsername(account.username || '').toLowerCase();
+    const storedUsername = normalizeSocialUsername(account.username);
     if (!storedUsername) continue;
 
     if (platform === 'youtube') {
-      if (storedUsername === authorDisplayName || storedUsername === authorUsername) {
+      const identity = await resolveYouTubeChannelIdentity(account.username);
+      if (identity?.channelId && identity.channelId === authorId) {
+        account.source.externalAccountId ||= identity.channelId;
+        account.source.channelId ||= identity.channelId;
         return { valid: true, matchedAccount: account, reason: null };
       }
-    } else if (storedUsername === authorUsername) {
+    } else if (storedUsername && storedUsername === normalizeSocialUsername(metadata?.authorUsername)) {
       return { valid: true, matchedAccount: account, reason: null };
     }
   }
@@ -541,15 +579,26 @@ async function validateClipBeforeSubmission({ data, userId, campaignId, submitte
 
     const metadata = await fetchSubmissionMetadata(parsed.platform, parsed.canonicalUrl, parsed.videoId);
     metadata.platform = parsed.platform;
+    if (parsed.platform === 'tiktok' && !normalizeUsername(metadata.authorUsername || '')) {
+      return { valid: false, message: '❌ We could not verify the TikTok username for this video. Please submit the full public TikTok video link or try again shortly.', metadata };
+    }
     const accounts = getApprovedCampaignAccounts(data, userId, campaignId, parsed.platform);
     if (!accounts.length) {
       return { valid: false, message: `❌ You do not have a verified ${formatPlatform(parsed.platform)} account for this campaign.`, metadata };
     }
 
-    const ownership = validateVideoOwnership(accounts, metadata);
+    const ownership = await validateVideoOwnership(accounts, metadata);
     if (!ownership.valid) {
       const author = metadata.authorUsername || metadata.authorDisplayName || 'an unlinked account';
       return { valid: false, message: `❌ This video was posted by **@${author}**, but that account is not linked and approved for this campaign.`, metadata };
+    }
+
+    if (parsed.platform === 'tiktok' && metadata.authorId && !ownership.matchedAccount.externalAccountId) {
+      ownership.matchedAccount.source.externalAccountId = String(metadata.authorId);
+      saveData(data);
+    }
+    if (parsed.platform === 'youtube' && ownership.matchedAccount.source?.externalAccountId) {
+      saveData(data);
     }
 
     return { valid: true, message: null, metadata, platform: parsed.platform, videoId: parsed.videoId, canonicalUrl: parsed.canonicalUrl, matchedAccount: ownership.matchedAccount };
@@ -2425,10 +2474,12 @@ async function fetchSubmissionMetadata(platform, canonicalUrl, videoId) {
     if (!data) throw new Error('TikTok video could not be found or is not publicly available.');
 
     const createdAt = Number(data.create_time);
+    const authorUsername = data?.author?.unique_id || data?.author?.uniqueId || data?.author?.username || data?.author_name || null;
+    const authorDisplayName = data?.author?.nickname || data?.author?.name || null;
     return {
-      authorUsername: data.author?.unique_id || null,
+      authorUsername,
       authorId: data.author?.id || data.author?.uid || null,
-      authorDisplayName: data.author?.nickname || null,
+      authorDisplayName,
       title: data.title || '',
       views: Number(data.play_count) || 0,
       thumbnailUrl: data.cover || data.origin_cover || null,
