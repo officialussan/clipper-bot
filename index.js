@@ -5809,25 +5809,34 @@ ${reason}
       const currentRank = getUserRank(data, interaction.user.id);
       const rankString = currentRank ? `#${currentRank}` : 'Unranked';
 
-      // 2. FETCH ALL CLIPS FOR THIS USER
-      const allUserClips = Object.values(data.clips || {}).filter(
-        clip => clip.userId === interaction.user.id
+      // Use the same canonical records and accounting as the leaderboard and
+      // campaign overview. Rejected clips remain in clipReviews, so looking at
+      // data.clips alone made the denied count permanently read as zero.
+      const userClipRecords = Object.values(data.clips || {}).filter(
+        clip => String(clip.userId) === String(interaction.user.id)
       );
-      
-      const approvedClips = allUserClips.filter(c => c.status === 'approved');
-      const approvedCount = approvedClips.length;
-      const rejectedCount = allUserClips.filter(c => c.status === 'rejected').length;
+      const userReviewRecords = Object.values(data.clipReviews || {}).filter(
+        clip => String(clip.userId) === String(interaction.user.id)
+      );
+      const statusRecords = getUniqueClipRecords(
+        [...userReviewRecords, ...userClipRecords],
+        { scope: 'account_analytics_status_counts', userId: interaction.user.id }
+      );
+      const approvedCount = statusRecords.filter(clip => clip.status === 'approved').length;
+      const rejectedCount = statusRecords.filter(clip => clip.status === 'rejected').length;
 
-      // 3. DYNAMICALLY RE-CALCULATE ALL-TIME VIEWS AND EARNINGS FROM APPROVED CLIPS
-      const liveTotalViews = approvedClips.reduce(
-        (sum, clip) => sum + (Number(clip.views) || 0), 
-        0
-      );
-
-      const liveTotalEarned = approvedClips.reduce(
-        (sum, clip) => sum + (Number(clip.totalMoneyMade) || 0), 
-        0
-      );
+      const liveTotalViews = getUserAllTimeCreditedViews(data, interaction.user.id);
+      const liveTotalEarned = Object.values(CAMPAIGNS).reduce((total, campaign) => {
+        const campaignClips = userClipRecords.filter(
+          clip => String(clip.campaignId) === String(campaign.id)
+        );
+        const accounting = calculateClipCollectionAccounting(campaignClips, campaign, {
+          scope: 'account_analytics',
+          campaignId: campaign.id,
+          userId: interaction.user.id
+        });
+        return total + accounting.totalMoney;
+      }, 0);
 
       const embed = new EmbedBuilder()
         .setColor(0x7ED957)
@@ -5838,9 +5847,9 @@ ${reason}
         .setDescription(
           `All-time Clipping Analytics\n\n` +
           `<a:rocket1:1504872045849346140> **Leaderboard**\n${rankString}\n` + 
-          `<a:Cash1:1504871843419521115> **Total Earned**\n$${formatNumber(liveTotalEarned)}\n` + // Fixed: Using calculated live data
+          `<a:Cash1:1504871843419521115> **Total Earned**\n$${liveTotalEarned.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}\n` +
           `<a:fire1:1504871649491554487> **Campaigns Joined**\n${userRecord.campaigns?.length || 0}\n` +
-          `<a:chart1:1504773558415523931> **Total Views**\n${formatNumber(liveTotalViews)}\n` + // Fixed: Using calculated live data
+          `<a:chart1:1504773558415523931> **Total Views**\n${formatNumber(liveTotalViews)}\n` +
           `<:approve1:1508373907411963955> **Clips Approved**\n${approvedCount}\n` + 
           `<:reject1:1508373970259546162> **Clips Denied**\n${rejectedCount}\n\n` + 
           `<:whiteCE:1504904179905200148> Powered by Creators Elite`
