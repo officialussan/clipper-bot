@@ -5925,24 +5925,24 @@ ${reason}
 
             .setDescription(
 
-    `## 💰 Your Payments
+    `## <a:flyin:1506234392920723546> Your Payments
 
-    **Total Earned**
+    <a:Cash1:1504871843419521115> **Total Earned**
     $${formatNumber(totalEarned)}
 
-    **Already Paid**
+    <a:good1:1504871589332914176> **Already Paid**
     $${formatNumber(totalPaid)}
 
-    **Current Unpaid**
+    <a:dot1:1508433228669780029> **Current Unpaid**
     $${formatNumber(totalPending)}
 
-    **Campaigns Joined**
+    <a:fire1:1504871649491554487> **Campaigns Joined**
     ${userRecord.campaigns?.length || 0}
 
-    **${paymentLabel}**
+    <:usdt1:1504872188317012098> **${paymentLabel}**
     ${paymentValue}
 
-    ⚠ Network fees may apply depending on the payout network.`
+    <a:warning:1504774411280973864> Network fees may apply depending on the payout network.`
 
             );
 
@@ -5965,6 +5965,8 @@ ${reason}
                     .setCustomId("edit_usdt_address")
 
                     .setLabel("Edit ID")
+
+                    .setEmoji("<:usdt1:1504872188317012098>")
 
                     .setStyle(ButtonStyle.Secondary)
 
@@ -9698,19 +9700,18 @@ function buildPaymentReceiptPage(interaction, payments, page) {
   const campaign = CAMPAIGNS[payment.campaignId];
   const campaignName = campaign?.name || payment.campaignName || `Archived Campaign (${payment.campaignId})`;
   const statusDetails = {
-    paid: { label: '✅ Paid', color: 0x57F287 },
+    paid: { label: '<a:appr:1534931253952909453> Paid', color: 0x57F287 },
     pending: { label: '⏳ Payment Pending', color: 0xFEE75C },
     waiting: { label: '⏳ Payment Pending', color: 0xFEE75C },
     ready: { label: '🟡 Ready for Payment', color: 0xFEE75C },
-    issue: { label: '❌ Payment Error', color: 0xED4245 },
-    failed: { label: '❌ Payment Error', color: 0xED4245 },
-    rejected: { label: '❌ Payment Rejected', color: 0xED4245 }
+    issue: { label: '<a:cancel:1506235594303606794> Payment Error', color: 0xED4245 },
+    failed: { label: '<a:cancel:1506235594303606794> Payment Error', color: 0xED4245 },
+    rejected: { label: '<a:cancel:1506235594303606794> Payment Rejected', color: 0xED4245 }
   }[String(payment.status || '').toLowerCase()] || { label: '⚪ Unknown', color: 0x99AAB5 };
   const dateText = Number.isFinite(payment.timestamp)
     ? new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric', year: 'numeric' }).format(new Date(payment.timestamp))
     : 'Not recorded';
   const ratePerThousand = Number.isFinite(payment.ratePerMillion) ? payment.ratePerMillion / 1000 : null;
-  const campaignEmoji = campaign?.emoji || payment.campaignEmoji || '🟥';
   const reason = payment.reason ? `\n\n**Reason:** ${String(payment.reason).replace(/[\r\n]+/g, ' ').slice(0, 500)}` : '';
   const clipCount = payment.clips > 1 ? `\n**Clips:** ${payment.clips}` : '';
   const embed = new EmbedBuilder()
