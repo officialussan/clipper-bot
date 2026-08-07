@@ -333,16 +333,16 @@ function normalizeApifyInstagramReel(item, requestedUrl) {
     .find(value => typeof value === 'string' && /^https:\/\//i.test(value));
   const permalink = parsePublicInstagramReelUrl(source.reelUrl || source.url || source.permalink);
 
-  // The diagnostic command shows both Actor counters; videoViewCount remains
-  // the current fallback until a live comparison confirms another field.
+  // Apify Instagram Reel public play count is represented by
+  // videoPlayCount in the current Actor output.
+  // videoViewCount may represent a different/partial metric and must not
+  // take precedence for Reel tracking.
   const viewMetric = getFirstFiniteApifyMetric([
-    { field: 'videoViewCount', value: source.videoViewCount },
     { field: 'videoPlayCount', value: source.videoPlayCount },
+    { field: 'videoViewCount', value: source.videoViewCount },
     { field: 'playCount', value: source.playCount },
     { field: 'views', value: source.views },
-    { field: 'viewCount', value: source.viewCount },
-    { field: 'videoViews', value: source.videoViews },
-    { field: 'plays', value: source.plays }
+    { field: 'viewCount', value: source.viewCount }
   ]);
 
   return {
