@@ -9638,7 +9638,6 @@ function getUserPaymentReceipts(data, userId) {
       const existing = grouped.get(groupKey) || {
         campaignId,
         campaignName: payment?.campaignName || clip.campaignName,
-        campaignEmoji: payment?.campaignEmoji || clip.campaignEmoji,
         paymentId,
         timestamp: Number.isFinite(timestamp) ? timestamp : null,
         timestampValue,
@@ -9653,7 +9652,6 @@ function getUserPaymentReceipts(data, userId) {
       existing.views += Math.max(views, 0);
       existing.amount += Math.max(amount, 0);
       if (!existing.campaignName) existing.campaignName = payment?.campaignName || clip.campaignName;
-      if (!existing.campaignEmoji) existing.campaignEmoji = payment?.campaignEmoji || clip.campaignEmoji;
       if (!existing.paymentId && paymentId) existing.paymentId = paymentId;
       if (!Number.isFinite(existing.timestamp) && Number.isFinite(timestamp)) {
         existing.timestamp = timestamp;
@@ -9719,7 +9717,7 @@ function buildPaymentReceiptPage(interaction, payments, page) {
     .setAuthor(author)
     .setTitle('Detailed Overview of Your Payments')
     .setDescription(
-      `${campaignEmoji} **${campaignName}**\n\n` +
+      `**${campaignName}**\n\n` +
       `**Expected:** $${payment.amount.toFixed(2)}\n` +
       `**Status:** ${statusDetails.label}\n` +
       `**Date:** ${dateText}\n\n` +
