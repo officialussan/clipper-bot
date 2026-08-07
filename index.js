@@ -783,6 +783,40 @@ function loadData() {
     raw.storageMigrations.monthlyEarningRunLifecycleV1 = true;
     migrationChanged = true;
   }
+  if (!raw.storageMigrations.monthlyEarningRunBackfillV2) {
+    const now = Date.now();
+    let backfilled = 0;
+    let repaired = 0;
+    for (const collection of [raw.clips, raw.clipReviews]) {
+      for (const clip of Object.values(collection || {})) {
+        const campaign = CAMPAIGNS[clip?.campaignId];
+        if (!campaign?.separateEarningLifecycle) continue;
+        const belongsToCurrentRun = isClipInCampaignEarningRun(clip, campaign);
+        const campaignEnd = getCampaignEarningEnd(campaign);
+        if (belongsToCurrentRun && !clip.earningRunKey) {
+          clip.earningRunKey = getCampaignEarningRunKey(campaign);
+          backfilled++;
+        }
+        if (
+          belongsToCurrentRun &&
+          campaignEnd !== null && now < campaignEnd &&
+          clip.trackingStatus === 'completed' &&
+          clip.completedReason === 'campaign_earning_period_ended' &&
+          (clip.status === 'pending' || clip.status === 'approved')
+        ) {
+          clip.trackingStatus = 'active';
+          delete clip.completedAt;
+          delete clip.completedReason;
+          repaired++;
+        }
+      }
+    }
+    raw.storageMigrations.monthlyEarningRunBackfillV2 = true;
+    migrationChanged = true;
+    if (process.env.DEBUG_MY_STATS === 'true') {
+      console.log('[My Stats Backfill]', { backfilled, repaired });
+    }
+  }
   if (migrationChanged) recovered = true;
   if (recovered) saveData(raw);
   return raw;
@@ -2420,9 +2454,12 @@ function isClipInCampaignEarningRun(clip, campaign) {
   const submittedAt = getClipSubmissionTimestamp(clip);
   const start = getCampaignEarningStart(campaign);
   const end = getCampaignEarningEnd(campaign);
-  if (submittedAt === null || start === null || submittedAt < start) return false;
-  if (end !== null && submittedAt >= end) return false;
-  return !clip?.earningRunKey || clip.earningRunKey === getCampaignEarningRunKey(campaign);
+  if (!Number.isFinite(submittedAt) || !Number.isFinite(start) || !Number.isFinite(end)) return false;
+  if (submittedAt < start || submittedAt >= end) return false;
+  // A submission timestamp inside this configured run is authoritative for
+  // legacy records created before earningRunKey was introduced.
+  if (!clip?.earningRunKey) return true;
+  return String(clip.earningRunKey) === String(getCampaignEarningRunKey(campaign));
 }
 
 function isCampaignEarningActive(campaign, date = new Date()) {
@@ -2726,31 +2763,59 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
       .setDescription('❌ Could not resolve user identity context.');
   }
 
-  const userClips = Object.values(data.clips || {}).filter(c => {
-    const matchUser = String(c.userId) === String(targetUserId);
-    const matchCampaign = String(c.campaignId) === String(campaignId);
-
-    // keep current-cycle filtering if that’s your intended stats window
-    const clipCycle = getClipBudgetCycleIndex(c, campaign);
-    const matchCycle = campaign.separateEarningLifecycle
-      ? isClipInCampaignEarningPeriod(c, campaign)
-      : Number(clipCycle) === Number(currentCycle);
-
-    return matchUser && matchCampaign && matchCycle;
-  });
-
-  const approvedClips = userClips.filter(isPayoutEligibleClip);
-  const inStatsScope = clip => campaign.separateEarningLifecycle ? isClipInCampaignEarningPeriod(clip, campaign) : isClipInCurrentBudgetCycle(clip, campaign);
-  const pendingClips = Object.values(data.clipReviews || {}).filter(c => String(c.userId) === String(targetUserId) && String(c.campaignId) === String(campaignId) && c.status === 'pending' && inStatsScope(c));
-  const rejectedClips = getUniqueClipRecords([...Object.values(data.clipReviews || {}), ...Object.values(data.clips || {})]).filter(c => String(c.userId) === String(targetUserId) && String(c.campaignId) === String(campaignId) && c.status === 'rejected' && inStatsScope(c));
-
-  const userCampaignClips = Object.values(data.clips || {}).filter(clip =>
+  const inStatsScope = clip => campaign.separateEarningLifecycle
+    ? isClipInCampaignEarningRun(clip, campaign)
+    : isClipInCurrentBudgetCycle(clip, campaign);
+  const matchesUserCampaign = clip =>
     String(clip.userId) === String(targetUserId) &&
-    String(clip.campaignId) === String(campaignId) &&
-    inStatsScope(clip)
-  );
+    String(clip.campaignId) === String(campaignId);
+  const currentRunClipRecords = Object.values(data.clips || {})
+    .filter(clip => matchesUserCampaign(clip) && inStatsScope(clip));
+  const currentReviewClips = Object.values(data.clipReviews || {})
+    .filter(clip => matchesUserCampaign(clip) && inStatsScope(clip));
+  const approvedClips = currentRunClipRecords.filter(isPayoutEligibleClip);
+  const pendingClips = currentReviewClips.filter(clip => clip.status === 'pending');
+  const rejectedClips = getUniqueClipRecords([...currentReviewClips, ...currentRunClipRecords])
+    .filter(clip => clip.status === 'rejected');
+
+  const userCampaignClips = currentRunClipRecords;
   const accounting = calculateClipCollectionAccounting(userCampaignClips, campaign, { scope: 'my_stats', campaignId, userId: targetUserId });
   const { totalViews, paidViews, unpaidViews, totalMoney, paidMoney, unpaidMoney } = accounting;
+  if (process.env.DEBUG_MY_STATS === 'true') {
+    const records = [
+      ...Object.values(data.clips || {}).map(clip => ({ clip, collection: 'clips' })),
+      ...Object.values(data.clipReviews || {}).map(clip => ({ clip, collection: 'clipReviews' }))
+    ].filter(({ clip }) => matchesUserCampaign(clip));
+    console.log('[My Stats Diagnostic]', {
+      userId: targetUserId,
+      campaignId,
+      campaignStart: campaign.startDate,
+      campaignEnd: campaign.endDate,
+      currentEarningRunKey: campaign.separateEarningLifecycle ? getCampaignEarningRunKey(campaign) : null,
+      approvedRecordsFound: approvedClips.length,
+      reviewRecordsFound: currentReviewClips.length
+    });
+    for (const { clip, collection } of records) {
+      const belongsToCurrentRun = inStatsScope(clip);
+      const submittedAt = getClipSubmissionTimestamp(clip);
+      const exclusionReason = belongsToCurrentRun ? null :
+        !Number.isFinite(submittedAt) ? 'missing_submission_timestamp' :
+        campaign.separateEarningLifecycle && submittedAt < getCampaignEarningStart(campaign) ? 'before_campaign_earning_start' :
+        campaign.separateEarningLifecycle && submittedAt >= getCampaignEarningEnd(campaign) ? 'after_campaign_earning_end' :
+        campaign.separateEarningLifecycle && clip.earningRunKey ? 'earning_run_key_mismatch' : 'outside_current_budget_cycle';
+      console.log('[My Stats Record]', {
+        clipId: clip.id,
+        collection,
+        status: clip.status,
+        submittedAt: clip.submittedAt,
+        submittedTimestamp: clip.submittedTimestamp,
+        earningRunKey: clip.earningRunKey,
+        trackingStatus: clip.trackingStatus,
+        belongsToCurrentRun,
+        exclusionReason
+      });
+    }
+  }
   if (process.env.DEBUG_CLIP_ACCOUNTING === 'true') {
     const campaignAudit = getCampaignTotals(data, campaignId);
     const difference = campaignAudit.views - totalViews;
@@ -2761,7 +2826,7 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
 
   const viewsNeeded = Math.max(payoutThreshold - unpaidViews, 0);
   const weeklyUserViews = campaign.separateEarningLifecycle
-    ? userCampaignClips.reduce((sum, clip) => sum + (clip.budgetTracking?.budgetCycleKey === getCampaignBudgetCycleKey(campaign) ? Math.max(Number(clip.budgetTracking?.creditedViewsThisCycle) || 0, 0) : 0), 0)
+    ? approvedClips.reduce((sum, clip) => sum + (clip.budgetTracking?.budgetCycleKey === getCampaignBudgetCycleKey(campaign) ? Math.max(Number(clip.budgetTracking?.creditedViewsThisCycle) || 0, 0) : 0), 0)
     : null;
 
   const payoutEligible = payoutThreshold > 0 && unpaidViews >= payoutThreshold;
