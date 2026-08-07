@@ -276,6 +276,38 @@ function getFirstFiniteNonNegativeValue(values) {
   return null;
 }
 
+function getFirstFiniteApifyMetric(candidates) {
+  for (const candidate of candidates) {
+    if (candidate.value === null || candidate.value === undefined || candidate.value === '') continue;
+    const numeric = Number(candidate.value);
+    if (Number.isFinite(numeric) && numeric >= 0) {
+      return { value: numeric, field: candidate.field };
+    }
+  }
+  return { value: null, field: null };
+}
+
+function getSafeApifyInstagramDiagnostics(item) {
+  const diagnostics = {};
+  const keyMatches = /view|play|like|comment|share|reach|impression|video|count/i;
+  const addValue = (key, value) => {
+    if (!keyMatches.test(key) || (typeof value !== 'number' && typeof value !== 'string')) return;
+    if (typeof value === 'string' && (/^https?:\/\//i.test(value) || value.length > 100)) return;
+    diagnostics[key] = value;
+  };
+
+  for (const [key, value] of Object.entries(item || {})) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      for (const [nestedKey, nestedValue] of Object.entries(value)) {
+        addValue(`${key}.${nestedKey}`, nestedValue);
+      }
+    } else {
+      addValue(key, value);
+    }
+  }
+  return diagnostics;
+}
+
 function getApifyTimestampMs(value) {
   if (value === null || value === undefined || value === '') return null;
   const numeric = Number(value);
@@ -301,6 +333,18 @@ function normalizeApifyInstagramReel(item, requestedUrl) {
     .find(value => typeof value === 'string' && /^https:\/\//i.test(value));
   const permalink = parsePublicInstagramReelUrl(source.reelUrl || source.url || source.permalink);
 
+  // The diagnostic command shows both Actor counters; videoViewCount remains
+  // the current fallback until a live comparison confirms another field.
+  const viewMetric = getFirstFiniteApifyMetric([
+    { field: 'videoViewCount', value: source.videoViewCount },
+    { field: 'videoPlayCount', value: source.videoPlayCount },
+    { field: 'playCount', value: source.playCount },
+    { field: 'views', value: source.views },
+    { field: 'viewCount', value: source.viewCount },
+    { field: 'videoViews', value: source.videoViews },
+    { field: 'plays', value: source.plays }
+  ]);
+
   return {
     platform: 'instagram',
     videoId: String(source.id || source.videoId || shortcode),
@@ -309,7 +353,8 @@ function normalizeApifyInstagramReel(item, requestedUrl) {
     username,
     title,
     thumbnailUrl: thumbnailCandidate || null,
-    views: getFirstFiniteNonNegativeValue([source.videoViewCount, source.videoPlayCount, source.playCount, source.views, source.viewCount]),
+    views: viewMetric.value,
+    viewMetricField: viewMetric.field,
     likes: getFirstFiniteNonNegativeValue([source.likeCount, source.likesCount, source.likes]),
     comments: getFirstFiniteNonNegativeValue([source.commentCount, source.commentsCount, source.comments]),
     publishedTimestamp: getApifyTimestampMs(source.timestamp || source.publishedTimestamp || source.publishedAt || source.takenAt),
@@ -3853,8 +3898,10 @@ client.on(Events.MessageCreate, async message => {
         }) || items[0];
 
         if (!matchingItem) throw new Error('Instagram Reel data could not be retrieved.');
+        const diagnostics = getSafeApifyInstagramDiagnostics(matchingItem);
         if (process.env.DEBUG_APIFY_INSTAGRAM === 'true') {
           console.log('[Apify Instagram Fields]', Object.keys(matchingItem || {}));
+          console.log('[Apify Instagram Metric Diagnostics]', diagnostics);
         }
 
         const reel = normalizeApifyInstagramReel(matchingItem, parsedReel.canonicalUrl);
@@ -3871,6 +3918,21 @@ client.on(Events.MessageCreate, async message => {
         const published = reel.publishedTimestamp
           ? new Date(reel.publishedTimestamp).toLocaleString()
           : 'Unknown';
+        const diagnosticLines = Object.entries(diagnostics)
+          .slice(0, 15)
+          .map(([field, value]) => `${field}: ${String(value)}`);
+        const diagnosticChunks = [];
+        let diagnosticChunk = '';
+        for (const line of diagnosticLines) {
+          const nextChunk = diagnosticChunk ? `${diagnosticChunk}\n${line}` : line;
+          if (nextChunk.length > 1000 && diagnosticChunk) {
+            diagnosticChunks.push(diagnosticChunk);
+            diagnosticChunk = line;
+          } else {
+            diagnosticChunk = nextChunk;
+          }
+        }
+        if (diagnosticChunk) diagnosticChunks.push(diagnosticChunk);
         const embed = new EmbedBuilder()
           .setColor(0x57F287)
           .setTitle('Apify Instagram Reel Test')
@@ -3879,13 +3941,23 @@ client.on(Events.MessageCreate, async message => {
             { name: 'Status', value: '✅ Reel retrieved', inline: true },
             { name: 'Owner', value: `@${reel.username}`, inline: true },
             { name: 'Views', value: reel.views === null ? 'Not available' : reel.views.toLocaleString(), inline: true },
+            { name: 'View field', value: reel.viewMetricField || 'Not available', inline: true },
             { name: 'Likes', value: reel.likes === null ? 'Not available' : reel.likes.toLocaleString(), inline: true },
             { name: 'Comments', value: reel.comments === null ? 'Not available' : reel.comments.toLocaleString(), inline: true },
             { name: 'Published', value: published, inline: true },
-            { name: 'Source', value: 'Apify', inline: true }
+            { name: 'Source', value: 'Apify', inline: true },
+            { name: 'Potential view/count fields', value: diagnosticChunks.shift() || 'No safe candidate metrics returned.' }
           );
         if (reel.thumbnailUrl) embed.setThumbnail(reel.thumbnailUrl);
         await loadingMessage.edit({ content: null, embeds: [embed] });
+        if (diagnosticChunks.length) {
+          await message.reply({
+            embeds: [new EmbedBuilder()
+              .setColor(0x5865F2)
+              .setTitle('Apify Instagram Reel Test — Additional Diagnostics')
+              .setDescription(diagnosticChunks.join('\n\n'))]
+          });
+        }
       } catch (error) {
         const messageText = error?.apifyInstagramError?.message || error?.message || 'Instagram Reel data could not be retrieved.';
         await loadingMessage.edit(`❌ ${messageText}`);
