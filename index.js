@@ -53,6 +53,7 @@ const CONNECT_ACCOUNTS_CHANNEL_ID = process.env.CONNECT_ACCOUNTS_CHANNEL_ID;
 const VERIFY_DEMOGRAPHICS_CHANNEL_ID = process.env.VERIFY_DEMOGRAPHICS_CHANNEL_ID;
 const TICKET_LOG_CHANNEL_ID = process.env.TICKET_LOG_CHANNEL_ID;
 const DEMOGRAPHICS_STAFF_CHANNEL_ID = process.env.DEMOGRAPHICS_STAFF_CHANNEL_ID;
+const GET_HELP_CHANNEL_ID = process.env.GET_HELP_CHANNEL_ID || '1492888887452762313';
 const DEMOGRAPHICS_UPLOAD_CATEGORY_ID = process.env.DEMOGRAPHICS_UPLOAD_CATEGORY_ID;
 const PAYMENT_STAFF_CHANNEL_ID = process.env.PAYMENT_STAFF_CHANNEL_ID;
 const LEADERBOARD_CHANNEL_ID = '1495692728431018015';
@@ -5760,91 +5761,32 @@ ${reason}
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('view_user_clips:')) {
-      const [, targetUserId, pageStr] = interaction.customId.split(':');
-      const userId = targetUserId || interaction.user.id;
-      const currentPage = parseInt(pageStr || '1', 10);
-      
-      const data = loadData();
-      
-      // 1. Fetch and sort user clips (Newest first)
-      const userClips = Object.values(data.clips || {})
-        .filter(clip => clip.userId === userId)
-        .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-
-      if (userClips.length === 0) {
-        await interaction.reply({
-          content: '❌ You haven\'t submitted any video clips to track yet.',
+      const [, ownerUserId, pageStr] = interaction.customId.split(':');
+      const isPaginationClick = Boolean(ownerUserId);
+      if (isPaginationClick && String(interaction.user.id) !== String(ownerUserId)) {
+        return interaction.reply({
+          content: '❌ This clip overview belongs to another user.',
           flags: MessageFlags.Ephemeral
         });
-        return;
       }
 
-      // 2. Pagination Math (Displaying 2 clips per embed page to match your reference layout)
-      const clipsPerPage = 2;
-      const totalPages = Math.ceil(userClips.length / clipsPerPage);
-      const startIndex = (currentPage - 1) * clipsPerPage;
-      const pageClips = userClips.slice(startIndex, startIndex + clipsPerPage);
-
-      // Status Symbol Mapping Helper
-      const getStatusEmoji = (status) => {
-        switch (String(status).toLowerCase()) {
-          case 'approved': return '🟢';
-          case 'pending_update': return '⏳';
-          case 'pending': return '🟡';
-          case 'rejected': return '🔴';
-          case 'removed': return '⚫';
-          default: return '⚪';
-        }
-      };
-
-      // 3. Aggregate Pending Counts for Header Labeling
-      const pendingUpdateCount = userClips.filter(c => c.status === 'pending_update').length;
-
-      let descriptionText = `### Videos submitted by ${interaction.user.username}\n\n`;
-      descriptionText += `📊 **${userClips.length} clips total** · ${pendingUpdateCount} pending update\n\n`;
-
-      // 4. Construct Item Text Rows Dynamic Strings
-      pageClips.forEach((clip, index) => {
-        const globalIndex = startIndex + index + 1;
-        const statusEmoji = getStatusEmoji(clip.status);
-        const platformName = clip.platform ? clip.platform.charAt(0).toUpperCase() + clip.platform.slice(1) : 'Video';
-        
-        // Use clean fallback date strings if missing relative timing fields
-        const timeAgoText = clip.updatedAt ? 'Updated recently' : 'No recent updates';
-
-        descriptionText += `${statusEmoji} **${globalIndex}. @${clip.username || 'user'}: [${platformName} Link](${clip.link || '#'})**\n`;
-        descriptionText += `↳ **${formatNumber(clip.views || 0)}** paid views · **${clip.likes || 0}** likes · **$${formatNumber(clip.totalMoneyMade || 0)}** earned\n`;
-        descriptionText += `*${timeAgoText}*\n\n`;
+      const page = Number.isInteger(Number(pageStr)) ? Number(pageStr) : 0;
+      const pageData = buildUserClipsPage({
+        data: loadData(),
+        userId: ownerUserId || interaction.user.id,
+        page,
+        perPage: 2,
+        displayName: interaction.user.username
       });
 
-      // Status Legend Footer Context
-      descriptionText += `**Status Legend**\n`;
-      descriptionText += `🟢 Updated  ⏳ Pending Update  🟡 Pending  🔴 Rejected  ⚫ Removed\n`;
-
-      const embed = new EmbedBuilder()
-        .setColor(0x7ED957)
-        .setDescription(descriptionText)
-        .setTimestamp();
-
-      // 5. Paginated Button Navigation Row Configuration
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`view_user_clips:${userId}:${currentPage - 1}`)
-          .setLabel('Previous')
-          .setStyle(ButtonStyle.Primary)
-          .setDisabled(currentPage === 1),
-        new ButtonBuilder()
-          .setCustomId(`view_user_clips:${userId}:${currentPage + 1}`)
-          .setLabel('Next')
-          .setStyle(ButtonStyle.Primary)
-          .setDisabled(currentPage === totalPages)
-      );
-
-      // Check if interaction was an initial click or page switch update flip
-      if (interaction.replied || interaction.deferred) {
-        await interaction.editReply({ embeds: [embed], components: [row] });
+      if (isPaginationClick) {
+        await interaction.update({ embeds: [pageData.embed], components: pageData.components });
       } else {
-        await interaction.reply({ embeds: [embed], components: [row], flags: MessageFlags.Ephemeral });
+        await interaction.reply({
+          embeds: [pageData.embed],
+          components: pageData.components,
+          flags: MessageFlags.Ephemeral
+        });
       }
       return;
     }
@@ -6268,10 +6210,13 @@ ${reason}
              .setStyle(ButtonStyle.Danger)
           );
 
-          await staffChannel.send({
+          const staffMessage = await staffChannel.send({
             embeds: [embed],
             components: [row]
           });
+          submission.staffChannelId = staffChannel.id;
+          submission.staffMessageId = staffMessage.id;
+          saveData(data);
         }
 
         await uploadChannel.send('✅ Demographics submitted successfully. Staff will review it soon.');
@@ -6300,44 +6245,87 @@ ${reason}
       return;
     }
 
-    if (
-      interaction.isButton() &&
-      interaction.customId.startsWith('approve_demographics:')
-    ) {
+    if (interaction.isButton() && interaction.customId.startsWith('demo_approve:')) {
+      if (!isAdmin(interaction.member)) {
+        return interaction.reply({ content: '❌ You are not allowed to approve demographic applications.', flags: MessageFlags.Ephemeral });
+      }
       const submissionId = interaction.customId.split(':')[1];
+      const submission = loadData().demographicsSubmissions?.[submissionId];
+      if (!submission) {
+        return interaction.reply({ content: '❌ Demographic application not found.', flags: MessageFlags.Ephemeral });
+      }
+      if (submission.status === 'approved') {
+        return interaction.reply({ content: '❌ This demographic application has already been approved.', flags: MessageFlags.Ephemeral });
+      }
+      if (submission.status !== 'pending') {
+        return interaction.reply({ content: '❌ This demographic application is no longer pending review.', flags: MessageFlags.Ephemeral });
+      }
+      const tierMenu = new StringSelectMenuBuilder()
+        .setCustomId(`demographic_tier_select:${submissionId}`)
+        .setPlaceholder('Choose the approved demographic tier')
+        .addOptions(
+          { label: 'Tier 1', value: 'Tier 1' },
+          { label: 'Tier 2', value: 'Tier 2' },
+          { label: 'Tier 3', value: 'Tier 3' }
+        );
+      await interaction.reply({
+        content: 'Select the demographic tier before approving this application.',
+        components: [new ActionRowBuilder().addComponents(tierMenu)],
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('demographic_tier_select:')) {
+      if (!isAdmin(interaction.member)) {
+        return interaction.reply({ content: '❌ You are not allowed to approve demographic applications.', flags: MessageFlags.Ephemeral });
+      }
+      const submissionId = interaction.customId.split(':')[1];
+      const selectedTier = interaction.values[0];
+      if (!['Tier 1', 'Tier 2', 'Tier 3'].includes(selectedTier)) {
+        return interaction.reply({ content: '❌ Invalid demographic tier.', flags: MessageFlags.Ephemeral });
+      }
 
       const data = loadData();
-      const submission = data.demographics[submissionId];
+      const submission = data.demographicsSubmissions?.[submissionId];
+      if (!submission) {
+        return interaction.reply({ content: '❌ Demographic application not found.', flags: MessageFlags.Ephemeral });
+      }
+      if (submission.status === 'approved') {
+        return interaction.reply({ content: '❌ This demographic application has already been approved.', flags: MessageFlags.Ephemeral });
+      }
+      if (submission.status !== 'pending') {
+        return interaction.reply({ content: '❌ This demographic application is no longer pending review.', flags: MessageFlags.Ephemeral });
+      }
 
+      const approvedAt = Date.now();
+      submission.demographicTier = selectedTier;
+      submission.tierAssignedBy = interaction.user.id;
+      submission.tierAssignedAt = approvedAt;
       submission.status = 'approved';
+      submission.approvedBy = interaction.user.id;
+      submission.approvedAt = approvedAt;
+
+      const targetMember = await interaction.guild.members.fetch(submission.userId).catch(() => null);
+      const userRecord = targetMember
+        ? ensureUser(data, targetMember)
+        : (data.users[submission.userId] ||= { discordId: submission.userId, stats: {}, campaigns: [] });
+      userRecord.demographicTier = selectedTier;
+      userRecord.demographics = {
+        ...(userRecord.demographics || {}),
+        status: 'approved',
+        tier: selectedTier,
+        approvedAt,
+        approvedBy: interaction.user.id
+      };
 
       saveData(data);
-
-      // 👇 ADD DM CODE HERE
-      const user = await client.users
-        .fetch(submission.userId)
-        .catch(() => null);
-
-      if (user) {
-        await user.send(
-          `✅ Your demographics submission for ${CAMPAIGNS[submission.campaignId].name} has been approved.`
-        ).catch(() => {});
-      }
-
-      const category = interaction.guild.channels.cache.get(
-        submission.uploadCategoryId
-      );
-
-      if (category) {
-        await category.delete(
-          `Demographics ${submission.status}`
-        ).catch(console.error);
-      }
-
-      await interaction.update({
-        content: '✅ Approved',
-        components: []
+      await updateDemographicStaffReviewMessage(interaction.guild, submission, interaction.user).catch(error => {
+        console.error(`Could not update demographic review ${submissionId}:`, error.message);
       });
+      await sendDemographicApprovalDM(submission.userId, submission);
+      await interaction.update({ content: `✅ Approved as **${selectedTier}**.`, components: [] });
+      return;
     }
 
     if (
@@ -9584,6 +9572,135 @@ client.on('messageCreate', async message => {
 });
 
 // Your existing login statement
+function buildUserClipsPage({ data, userId, page = 0, perPage = 2, displayName }) {
+  const getClipTimestamp = clip => {
+    const numericTimestamp = Number(clip?.submittedTimestamp);
+    if (Number.isFinite(numericTimestamp) && numericTimestamp > 0) return numericTimestamp;
+    const parsedTimestamp = Date.parse(clip?.submittedAt || clip?.createdAt || '');
+    return Number.isFinite(parsedTimestamp) ? parsedTimestamp : 0;
+  };
+  const getStatusEmoji = status => ({
+    approved: '🟢',
+    pending_update: '⏳',
+    pending: '🟡',
+    rejected: '🔴',
+    removed: '⚫'
+  })[String(status || '').toLowerCase()] || '⚪';
+  const userClips = Object.values(data.clips || {})
+    .filter(clip => String(clip.userId) === String(userId))
+    .sort((a, b) => getClipTimestamp(b) - getClipTimestamp(a));
+
+  if (!userClips.length) {
+    return {
+      embed: new EmbedBuilder()
+        .setColor(0x7ED957)
+        .setDescription("❌ You haven't submitted any video clips to track yet."),
+      components: [],
+      page: 0,
+      totalPages: 0
+    };
+  }
+
+  const totalPages = Math.ceil(userClips.length / perPage);
+  const currentPage = Math.min(Math.max(Number(page) || 0, 0), totalPages - 1);
+  const startIndex = currentPage * perPage;
+  const pageClips = userClips.slice(startIndex, startIndex + perPage);
+  const pendingUpdateCount = userClips.filter(clip => clip.status === 'pending_update').length;
+  let descriptionText = `### Videos submitted by ${displayName || 'you'}\n\n`;
+  descriptionText += `📊 **${userClips.length} clips total** · ${pendingUpdateCount} pending update\n\n`;
+
+  pageClips.forEach((clip, index) => {
+    const globalIndex = startIndex + index + 1;
+    const platformName = clip.platform ? clip.platform.charAt(0).toUpperCase() + clip.platform.slice(1) : 'Video';
+    const timeAgoText = clip.updatedAt ? 'Updated recently' : 'No recent updates';
+    descriptionText += `${getStatusEmoji(clip.status)} **${globalIndex}. @${clip.username || 'user'}: [${platformName} Link](${clip.link || '#'})**\n`;
+    descriptionText += `↳ **${formatNumber(clip.views || 0)}** paid views · **${clip.likes || 0}** likes · **$${formatNumber(clip.totalMoneyMade || 0)}** earned\n`;
+    descriptionText += `*${timeAgoText}*\n\n`;
+  });
+  descriptionText += '**Status Legend**\n';
+  descriptionText += '🟢 Updated  ⏳ Pending Update  🟡 Pending  🔴 Rejected  ⚫ Removed\n';
+
+  const embed = new EmbedBuilder()
+    .setColor(0x7ED957)
+    .setDescription(descriptionText)
+    .setFooter({ text: `Page ${currentPage + 1}/${totalPages}` })
+    .setTimestamp();
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`view_user_clips:${userId}:${currentPage - 1}`)
+      .setLabel('Previous')
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(currentPage === 0),
+    new ButtonBuilder()
+      .setCustomId(`view_user_clips:${userId}:${currentPage + 1}`)
+      .setLabel('Next')
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(currentPage === totalPages - 1)
+  );
+  return { embed, components: [row], page: currentPage, totalPages };
+}
+
+function buildDemographicStaffReviewEmbed(submission, approvedBy) {
+  const campaignName = CAMPAIGNS[submission.campaignId]?.name || submission.campaignName || `Archived Campaign (${submission.campaignId})`;
+  const account = submission.account || {};
+  const approverText = approvedBy ? `<@${approvedBy.id}>` : (submission.approvedBy ? `<@${submission.approvedBy}>` : 'Unknown');
+  return new EmbedBuilder()
+    .setColor(submission.status === 'approved' ? 0x57F287 : 0xF1C40F)
+    .setTitle('🌍 Demographics Submission')
+    .setDescription(
+      `**User:** <@${submission.userId}> (${submission.userId})\n` +
+      `**Country:** ${submission.country || 'Not recorded'}\n` +
+      `**Account:** ${account.platform ? `${formatPlatform(account.platform)} ` : ''}@${account.username || 'Unknown'}\n` +
+      `**Campaign:** ${cleanDropdownLabel(campaignName)}\n` +
+      `**Video:** ${submission.videoUrl || 'Not recorded'}\n` +
+      `**Status:** ${submission.status === 'approved' ? '✅ Approved' : 'Pending'}` +
+      (submission.status === 'approved'
+        ? `\n**Assigned Tier:** ${submission.demographicTier || 'Not recorded'}\n**Approved By:** ${approverText}`
+        : '')
+    );
+}
+
+async function updateDemographicStaffReviewMessage(guild, submission, approvedBy) {
+  if (!submission.staffChannelId || !submission.staffMessageId) return;
+  const channel = await guild.channels.fetch(submission.staffChannelId).catch(() => null);
+  if (!channel?.messages) return;
+  const message = await channel.messages.fetch(submission.staffMessageId).catch(() => null);
+  if (!message) return;
+  await message.edit({
+    embeds: [buildDemographicStaffReviewEmbed(submission, approvedBy)],
+    components: []
+  });
+}
+
+async function sendDemographicApprovalDM(userId, submission) {
+  try {
+    const user = await client.users.fetch(userId);
+    const username = `@${submission.account?.username || 'unknown'}`;
+    const tier = submission.demographicTier || 'Unknown tier';
+    const embed = new EmbedBuilder()
+      .setColor(0x57F287)
+      .setAuthor({
+        name: 'Creators Elite',
+        iconURL: 'https://cdn.discordapp.com/emojis/1504904179905200148.png'
+      })
+      .setTitle('Your application got approved 🟩')
+      .setDescription(
+        `Your account ${username} has been verified and marked as part of a **${tier}** country demographic.\n\n` +
+        'You can now join campaigns that require this audience type.\n\n' +
+        '**Note:** This tier is based on your current audience demographics and may be adjusted later if we find it is incorrect.\n\n' +
+        `If you believe your assigned tier is wrong, please open a ticket in <#${GET_HELP_CHANNEL_ID}> so our support team can review it.`
+      )
+      .setFooter({
+        text: 'Creators Elite',
+        iconURL: 'https://cdn.discordapp.com/emojis/1504904179905200148.png'
+      })
+      .setTimestamp();
+    await user.send({ embeds: [embed] });
+  } catch {
+    console.warn(`Could not DM demographic approval to ${userId}`);
+  }
+}
+
 function formatPaymentReceiptViews(value) {
   const views = Number(value);
   if (!Number.isFinite(views) || views < 0) return 'Not recorded';
