@@ -20,8 +20,6 @@ const {
   MessageFlags
 } = require('discord.js');
 
-const { MongoClient } = require('mongodb');
-
 const cron = require("node-cron");
 
 const express = require('express');
@@ -65,6 +63,8 @@ const INSTAGRAM_APP_SECRET = process.env.INSTAGRAM_APP_SECRET;
 const INSTAGRAM_TEST_ACCESS_TOKEN = process.env.INSTAGRAM_TEST_ACCESS_TOKEN;
 const INSTAGRAM_REDIRECT_URI = process.env.INSTAGRAM_REDIRECT_URI;
 const INSTAGRAM_API_VERSION = process.env.INSTAGRAM_API_VERSION || 'v24.0';
+const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN;
+const APIFY_INSTAGRAM_ACTOR = 'apify~instagram-reel-scraper';
 const PRICE_PER_PROXY = 7;
 const FINISHED_CAMPAIGNS_CATEGORY_ID = '1520064994274709747';
 const STAFF_CONTROL_CHANNEL_ID = "1521116369909710889";
@@ -206,6 +206,121 @@ function getInstagramMediaTitle(media) {
 }
 
 const instagramMediaTestCooldowns = new Map();
+const apifyInstagramTestCooldowns = new Map();
+
+function parsePublicInstagramReelUrl(input) {
+  let url;
+  try {
+    url = new URL(String(input || '').trim());
+  } catch {
+    return null;
+  }
+
+  const hostname = url.hostname.toLowerCase().replace(/^www\./, '');
+  if (hostname !== 'instagram.com') return null;
+
+  const match = url.pathname.match(/^\/reels?\/([^/?#]+)\/?/i);
+  if (!match) return null;
+
+  const shortcode = String(match[1] || '').trim();
+  if (!shortcode) return null;
+
+  return {
+    platform: 'instagram',
+    shortcode,
+    canonicalUrl: `https://www.instagram.com/reel/${shortcode}/`
+  };
+}
+
+function getApifyInstagramError(error) {
+  const status = Number(error?.response?.status) || null;
+  if (status === 402) return { status, message: 'Apify account does not have enough usage credit.' };
+  if (status === 401 || status === 403) return { status, message: 'Apify API token is invalid or unauthorized.' };
+  return { status, message: 'Instagram Reel data could not be retrieved.' };
+}
+
+async function runApifyInstagramReelScraper(reelUrl) {
+  if (!APIFY_API_TOKEN) throw new Error('APIFY_API_TOKEN is not configured.');
+
+  const parsed = parsePublicInstagramReelUrl(reelUrl);
+  if (!parsed) throw new Error('Invalid Instagram Reel URL.');
+
+  try {
+    const response = await axios.post(
+      `https://api.apify.com/v2/acts/${APIFY_INSTAGRAM_ACTOR}/run-sync-get-dataset-items`,
+      {
+        // The official Reel Scraper accepts direct Reel URLs in its `username` array.
+        username: [parsed.canonicalUrl],
+        resultsLimit: 1
+      },
+      {
+        headers: { Authorization: `Bearer ${APIFY_API_TOKEN}` },
+        timeout: 120000
+      }
+    );
+    return Array.isArray(response.data) ? response.data : [];
+  } catch (error) {
+    const details = getApifyInstagramError(error);
+    const wrapped = new Error(details.message);
+    wrapped.apifyInstagramError = details;
+    throw wrapped;
+  }
+}
+
+function getFirstFiniteNonNegativeValue(values) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') continue;
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric >= 0) return numeric;
+  }
+  return null;
+}
+
+function getApifyTimestampMs(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric < 100000000000 ? numeric * 1000 : numeric;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeApifyInstagramReel(item, requestedUrl) {
+  const requested = parsePublicInstagramReelUrl(requestedUrl);
+  if (!requested) throw new Error('Invalid Instagram Reel URL.');
+  const source = item || {};
+  const shortcode = String(source.shortcode || source.shortCode || requested.shortcode).trim();
+  const usernameValue = [source.ownerUsername, source.username, source.owner?.username, source.authorUsername]
+    .find(value => typeof value === 'string' && value.trim());
+  const username = usernameValue ? usernameValue.replace(/^@+/, '').trim() : '';
+  if (!username) throw new Error('Apify did not return the Reel owner username.');
+
+  const caption = String(source.caption || source.text || source.title || '').trim();
+  const firstLine = caption.split(/\r?\n/)[0].trim();
+  const title = firstLine ? (firstLine.length > 100 ? `${firstLine.slice(0, 97)}...` : firstLine) : 'Instagram Reel';
+  const thumbnailCandidate = [source.displayUrl, source.thumbnailUrl, source.thumbnailSrc]
+    .find(value => typeof value === 'string' && /^https:\/\//i.test(value));
+  const permalink = parsePublicInstagramReelUrl(source.reelUrl || source.url || source.permalink);
+
+  return {
+    platform: 'instagram',
+    videoId: String(source.id || source.videoId || shortcode),
+    shortcode,
+    url: permalink?.canonicalUrl || requested.canonicalUrl,
+    username,
+    title,
+    thumbnailUrl: thumbnailCandidate || null,
+    views: getFirstFiniteNonNegativeValue([source.videoViewCount, source.videoPlayCount, source.playCount, source.views, source.viewCount]),
+    likes: getFirstFiniteNonNegativeValue([source.likeCount, source.likesCount, source.likes]),
+    comments: getFirstFiniteNonNegativeValue([source.commentCount, source.commentsCount, source.comments]),
+    publishedTimestamp: getApifyTimestampMs(source.timestamp || source.publishedTimestamp || source.publishedAt || source.takenAt),
+    fetchedAt: Date.now(),
+    source: 'apify'
+  };
+}
+
+async function fetchInstagramPublicReelMetadata(reelUrl) {
+  return runApifyInstagramReelScraper(reelUrl);
+}
 
 const clean = (str) =>
   str.replace(/[`*_|~]/g, '').trim();
@@ -3704,6 +3819,76 @@ client.on(Events.MessageCreate, async message => {
       } catch (error) {
         const details = error.instagramApiError || getInstagramApiErrorDetails(error);
         await loadingMessage.edit(`❌ Instagram media retrieval failed.\nHTTP Status: ${details.status ?? 'Not available'}\nMeta Error Code: ${details.code ?? 'Not available'}\nMessage: ${details.message || error.message}`);
+      }
+      return;
+    }
+
+    if (message.content.trim().toLowerCase().startsWith('!testapifyinstagram')) {
+      if (!isAdmin(message.member)) {
+        await message.reply('❌ You are not allowed to do this.');
+        return;
+      }
+
+      const reelInput = message.content.trim().replace(/^!testapifyinstagram\b/i, '').trim();
+      const parsedReel = parsePublicInstagramReelUrl(reelInput);
+      if (!parsedReel) {
+        await message.reply('❌ Provide one public Instagram Reel URL, for example: `!testapifyinstagram https://www.instagram.com/reel/ABC123/`');
+        return;
+      }
+
+      const now = Date.now();
+      const lastRun = apifyInstagramTestCooldowns.get(message.author.id) || 0;
+      if (now - lastRun < 30_000) {
+        await message.reply('Please wait before running the Apify Instagram test again.');
+        return;
+      }
+      apifyInstagramTestCooldowns.set(message.author.id, now);
+
+      const loadingMessage = await message.reply('⏳ Retrieving public Instagram Reel metadata through Apify…');
+      try {
+        const items = await fetchInstagramPublicReelMetadata(parsedReel.canonicalUrl);
+        const matchingItem = items.find(item => {
+          const itemUrl = parsePublicInstagramReelUrl(item?.inputUrl || item?.reelUrl || item?.url || item?.permalink);
+          return itemUrl?.shortcode === parsedReel.shortcode || String(item?.shortcode || item?.shortCode || '') === parsedReel.shortcode;
+        }) || items[0];
+
+        if (!matchingItem) throw new Error('Instagram Reel data could not be retrieved.');
+        if (process.env.DEBUG_APIFY_INSTAGRAM === 'true') {
+          console.log('[Apify Instagram Fields]', Object.keys(matchingItem || {}));
+        }
+
+        const reel = normalizeApifyInstagramReel(matchingItem, parsedReel.canonicalUrl);
+        if (process.env.DEBUG_APIFY_INSTAGRAM === 'true') {
+          console.log('[Apify Instagram Normalized]', {
+            shortcode: reel.shortcode,
+            username: reel.username,
+            views: reel.views,
+            source: reel.source
+          });
+        }
+
+        const safeTitle = reel.title.replace(/[\\[\]]/g, '\\$&');
+        const published = reel.publishedTimestamp
+          ? new Date(reel.publishedTimestamp).toLocaleString()
+          : 'Unknown';
+        const embed = new EmbedBuilder()
+          .setColor(0x57F287)
+          .setTitle('Apify Instagram Reel Test')
+          .setDescription(`[${safeTitle}](${reel.url})`)
+          .addFields(
+            { name: 'Status', value: '✅ Reel retrieved', inline: true },
+            { name: 'Owner', value: `@${reel.username}`, inline: true },
+            { name: 'Views', value: reel.views === null ? 'Not available' : reel.views.toLocaleString(), inline: true },
+            { name: 'Likes', value: reel.likes === null ? 'Not available' : reel.likes.toLocaleString(), inline: true },
+            { name: 'Comments', value: reel.comments === null ? 'Not available' : reel.comments.toLocaleString(), inline: true },
+            { name: 'Published', value: published, inline: true },
+            { name: 'Source', value: 'Apify', inline: true }
+          );
+        if (reel.thumbnailUrl) embed.setThumbnail(reel.thumbnailUrl);
+        await loadingMessage.edit({ content: null, embeds: [embed] });
+      } catch (error) {
+        const messageText = error?.apifyInstagramError?.message || error?.message || 'Instagram Reel data could not be retrieved.';
+        await loadingMessage.edit(`❌ ${messageText}`);
       }
       return;
     }
