@@ -762,6 +762,25 @@ function loadData() {
     raw.storageMigrations.crowderWeeklyBudgetMonthlyEarningsV1 = true;
     migrationChanged = true;
   }
+  if (!raw.storageMigrations.monthlyEarningRunLifecycleV1) {
+    const now = Date.now();
+    for (const collection of [raw.clips, raw.clipReviews]) {
+      for (const clip of Object.values(collection || {})) {
+        const campaign = CAMPAIGNS[clip.campaignId];
+        if (!campaign?.separateEarningLifecycle) continue;
+        if (isClipInCampaignEarningRun(clip, campaign)) {
+          clip.earningRunKey ||= getCampaignEarningRunKey(campaign);
+          clip.trackingStatus ||= 'active';
+        } else {
+          clip.trackingStatus = 'completed';
+          clip.completedAt ||= now;
+          clip.completedReason = 'campaign_earning_period_ended';
+        }
+      }
+    }
+    raw.storageMigrations.monthlyEarningRunLifecycleV1 = true;
+    migrationChanged = true;
+  }
   if (migrationChanged) recovered = true;
   if (recovered) saveData(raw);
   return raw;
@@ -925,18 +944,24 @@ function initializeClipTrackingFields(clip) {
 }
 
 function isTrackableReviewClip(clip) {
+  const campaign = CAMPAIGNS[clip?.campaignId];
   return Boolean(
     clip &&
     clip.status === 'pending' &&
+    clip.trackingStatus !== 'completed' &&
+    (!campaign?.separateEarningLifecycle || isClipInCampaignEarningPeriod(clip, campaign)) &&
     (clip.platform === 'tiktok' || clip.platform === 'youtube' || clip.platform === 'instagram') &&
     (clip.videoUrl || clip.url)
   );
 }
 
 function isTrackableApprovedClip(clip) {
+  const campaign = CAMPAIGNS[clip?.campaignId];
   return Boolean(
     clip &&
     isPayoutEligibleClip(clip) &&
+    clip.trackingStatus !== 'completed' &&
+    (!campaign?.separateEarningLifecycle || isClipInCampaignEarningPeriod(clip, campaign)) &&
     (clip.platform === 'tiktok' || clip.platform === 'youtube' || clip.platform === 'instagram') &&
     (clip.videoUrl || clip.url)
   );
@@ -2164,14 +2189,8 @@ function getLeaderboardUsers(data) {
 
   return users
     .map(user => {
-      const userClips = Object.values(data.clips || {}).filter(
-        clip => clip.userId === user.discordId && isPayoutEligibleClip(clip)
-      );
-
-      const totalViews = userClips.reduce(
-        (sum, clip) => sum + (Number(clip.views) || 0),
-        0
-      );
+      const userClips = Object.values(data.clips || {}).filter(clip => clip.userId === user.discordId && isPayoutEligibleClip(clip));
+      const totalViews = getUserAllTimeCreditedViews(data, user.discordId);
 
       const moneyMade = userClips.reduce(
         (sum, clip) => sum + (Number(clip.totalMoneyMade) || 0),
@@ -2191,14 +2210,7 @@ function buildLeaderboardEmbed(guild, data, page = 1, perPage = 10) {
   // 1. MAP & AGGREGATE VIEWS FOR EVERY USER
   const sortedUsers = Object.entries(data.users || {})
     .map(([userId, userRecord]) => {
-      const approvedClips = Object.values(data.clips || {}).filter(
-        clip => clip.userId === userId && isPayoutEligibleClip(clip)
-      );
-
-      const liveTotalViews = approvedClips.reduce(
-        (sum, clip) => sum + (Number(clip.views) || 0),
-        0
-      );
+      const liveTotalViews = getUserAllTimeCreditedViews(data, userId);
 
       const finalName =
           userRecord.displayName ||
@@ -2217,6 +2229,12 @@ function buildLeaderboardEmbed(guild, data, page = 1, perPage = 10) {
     // 2. FILTER OUT USERS WITH 0 VIEWS AND SORT HIGHEST TO LOWEST
     .filter(user => user.totalViews > 0)
     .sort((a, b) => b.totalViews - a.totalViews);
+
+  if (process.env.DEBUG_STATS_CONSISTENCY === 'true') {
+    const leaderboardViews = sortedUsers.reduce((sum, user) => sum + user.totalViews, 0);
+    const serverViews = getServerAllTimeCreditedViews(data);
+    console.log('[Stats Consistency]', { serverViews, leaderboardViews, difference: leaderboardViews - serverViews });
+  }
 
   // 3. PAGINATION MATH
   const totalPages = Math.max(1, Math.ceil(sortedUsers.length / perPage));
@@ -2286,9 +2304,7 @@ function buildLeaderboardButtons(page, totalPages) {
 function getUserRank(data, userId) {
   const sortedUsers = Object.entries(data.users || {})
     .map(([id, userRecord]) => {
-      const liveTotalViews = Object.values(data.clips || {}).filter(
-        clip => clip.userId === id && isPayoutEligibleClip(clip)
-      ).reduce((sum, clip) => sum + (Number(clip.views) || 0), 0);
+      const liveTotalViews = getUserAllTimeCreditedViews(data, id);
 
       return { id, totalViews: liveTotalViews };
     })
@@ -2363,6 +2379,29 @@ function getCampaignEarningPeriod(campaign) {
   };
 }
 
+function getCampaignEarningStart(campaign) {
+  const value = Date.parse(campaign?.startDate || '');
+  return Number.isFinite(value) ? value : null;
+}
+
+function getCampaignEarningEnd(campaign) {
+  const value = Date.parse(campaign?.endDate || '');
+  return Number.isFinite(value) ? value : null;
+}
+
+function getCampaignEarningRunKey(campaign) {
+  return [campaign?.id || 'unknown', campaign?.startDate || '', campaign?.endDate || ''].join(':');
+}
+
+function isClipInCampaignEarningRun(clip, campaign) {
+  const submittedAt = getClipSubmissionTimestamp(clip);
+  const start = getCampaignEarningStart(campaign);
+  const end = getCampaignEarningEnd(campaign);
+  if (submittedAt === null || start === null || submittedAt < start) return false;
+  if (end !== null && submittedAt >= end) return false;
+  return !clip?.earningRunKey || clip.earningRunKey === getCampaignEarningRunKey(campaign);
+}
+
 function isCampaignEarningActive(campaign, date = new Date()) {
   const { periodStart, periodEnd } = getCampaignEarningPeriod(campaign);
   if (!campaign?.separateEarningLifecycle) return true;
@@ -2373,10 +2412,7 @@ function isCampaignEarningActive(campaign, date = new Date()) {
 
 function isClipInCampaignEarningPeriod(clip, campaign, date = new Date()) {
   if (!campaign?.separateEarningLifecycle) return isClipInCurrentBudgetCycle(clip, campaign, date);
-  const { periodStart, periodEnd } = getCampaignEarningPeriod(campaign);
-  const submittedAt = getClipSubmissionTimestamp(clip);
-  if (!periodStart || !periodEnd || !submittedAt) return false;
-  return submittedAt >= periodStart.getTime() && submittedAt < periodEnd.getTime() && isCampaignEarningActive(campaign, date);
+  return isClipInCampaignEarningRun(clip, campaign) && isCampaignEarningActive(campaign, date);
 }
 
 function getCampaignBudgetCycleKey(campaign, date = new Date()) {
@@ -2411,6 +2447,8 @@ function campaignHasViewCap(campaign) {
 }
 
 function getClipCreditedViews(clip) {
+  const persistedCredited = Number(clip?.campaignCreditedViews);
+  if (Number.isFinite(persistedCredited) && persistedCredited >= 0) return persistedCredited;
   return Math.max(Number(clip?.views) || 0, Number(clip?.approvalViews) || 0);
 }
 
@@ -2490,6 +2528,27 @@ function finalizeExpiredBudgetCycleClips(data = loadData(), now = new Date()) {
         clip.completedAt ||= Date.now();
         clip.completedReason ||= 'budget_cycle_ended';
         changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+function finalizeOutOfRunClips(data, now = Date.now()) {
+  let changed = false;
+  for (const collection of [data?.clips || {}, data?.clipReviews || {}]) {
+    for (const clip of Object.values(collection)) {
+      const campaign = CAMPAIGNS[clip?.campaignId];
+      if (!campaign?.separateEarningLifecycle) continue;
+      const campaignEnd = getCampaignEarningEnd(campaign);
+      const belongsToRun = isClipInCampaignEarningRun(clip, campaign);
+      if (!belongsToRun || (campaignEnd !== null && now >= campaignEnd)) {
+        if (clip.trackingStatus !== 'completed') {
+          clip.trackingStatus = 'completed';
+          clip.completedAt ||= now;
+          clip.completedReason = 'campaign_earning_period_ended';
+          changed = true;
+        }
       }
     }
   }
@@ -2587,6 +2646,24 @@ function calculateClipCollectionAccounting(clips, campaign, diagnosticContext = 
   return result;
 }
 
+function getUserAllTimeCreditedViews(data, userId) {
+  return Object.values(CAMPAIGNS).reduce((total, campaign) => {
+    const clips = Object.values(data.clips || {}).filter(clip =>
+      String(clip.userId) === String(userId) && String(clip.campaignId) === String(campaign.id)
+    );
+    const accounting = calculateClipCollectionAccounting(clips, campaign, { scope: 'leaderboard', campaignId: campaign.id, userId });
+    return total + (Number(accounting.totalViews) || 0);
+  }, 0);
+}
+
+function getServerAllTimeCreditedViews(data) {
+  return Object.values(CAMPAIGNS).reduce((total, campaign) => {
+    const clips = Object.values(data.clips || {}).filter(clip => String(clip.campaignId) === String(campaign.id));
+    const accounting = calculateClipCollectionAccounting(clips, campaign, { scope: 'server_stats', campaignId: campaign.id });
+    return total + (Number(accounting.totalViews) || 0);
+  }, 0);
+}
+
 function getClipStatsCycle(clip, campaign) {
   const storedCycleValue = clip?.cycle;
   if (storedCycleValue !== null && storedCycleValue !== undefined && storedCycleValue !== '') {
@@ -2664,13 +2741,17 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
     ? userCampaignClips.reduce((sum, clip) => sum + (clip.budgetTracking?.budgetCycleKey === getCampaignBudgetCycleKey(campaign) ? Math.max(Number(clip.budgetTracking?.creditedViewsThisCycle) || 0, 0) : 0), 0)
     : null;
 
-  const payoutText =
-    unpaidViews >= payoutThreshold
-      ? `Eligible for payout.\n**Unpaid Amount Ready:** $${unpaidMoney.toLocaleString('en-US', {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2
-        })}`
-      : `Need **${formatNumber(viewsNeeded)}** more unpaid views`;
+  const payoutEligible = payoutThreshold > 0 && unpaidViews >= payoutThreshold;
+  const payoutTracker = Object.values(data.payoutTrackers || {}).find(tracker =>
+    String(tracker.userId) === String(targetUserId) && String(tracker.campaignId) === String(campaignId)
+  );
+  const payoutStatus = payoutTracker?.status === 'issue' ? '⚠️ Payment on hold' :
+    payoutTracker?.status === 'ready' ? '✅ Ready for payout' :
+    payoutTracker?.status === 'pending' ? '⏳ Payment pending' :
+    '✅ Eligible for payout';
+  const payoutSection = payoutEligible
+    ? `<a:Cash1:1504871843419521115> **Payout Status**\n${payoutStatus}\n\n`
+    : `<a:Cash1:1504871843419521115> **Payout Target: ${formatNumber(payoutThreshold)} Views**\nNeed **${formatNumber(viewsNeeded)}** more unpaid views\n\n`;
 
   return new EmbedBuilder()
     .setColor(0x7ED957)
@@ -2697,7 +2778,7 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
         maximumFractionDigits: 2
       })}\n\n` +
 
-      `<a:Cash1:1504871843419521115> **Payout Target: ${formatNumber(payoutThreshold)} Views**\n${payoutText}\n\n` +
+      payoutSection +
 
       `<a:appr:1534931253952909453> **Approved Videos**\n${approvedClips.length}\n\n` +
       `<a:dot1:1508433228669780029> **Pending Videos**\n${pendingClips.length}\n\n` +
@@ -2755,6 +2836,37 @@ function buildApprovedClipUserEmbed(clip) {
     embed.setThumbnail(clip.thumbnailUrl);
   }
 
+  return embed;
+}
+
+function buildRejectedClipUserEmbed(clip, reason) {
+  const campaign = CAMPAIGNS[clip.campaignId];
+  const title = String(clip.title || clip.videoTitle || clip.caption || 'View Clip')
+    .replace(/\\/g, '\\\\').replace(/\[/g, '\\[').replace(/\]/g, '\\]');
+  const clipUrl = clip.videoUrl || clip.url || null;
+  const rejectionStage = getClipRejectionStage(clip, null);
+  const views = getSafeTrackedViews(clip, null);
+  const earnings = Number(clip.totalMoneyMade ?? clip.moneyMade ?? clip.estimatedEarnings ?? 0) || 0;
+  const paidMoney = Number(clip.payout?.paidMoney) || 0;
+  const embed = new EmbedBuilder()
+    .setColor(0xED4245)
+    .setAuthor({ name: campaign?.name || clip.campaignName || 'Creators Elite' })
+    .setTitle('Your video has been rejected ❌')
+    .setDescription(clipUrl ? `[${title}](${clipUrl})` : title)
+    .addFields(
+      { name: '<a:cancel:1506235594303606794> Reason', value: reason || 'Not provided', inline: false },
+      { name: '<a:chart1:1504773558415523931> Latest Recorded Views', value: formatNumber(views), inline: true },
+      { name: '🌐 Platform', value: formatPlatform(clip.platform), inline: true }
+    )
+    .setFooter({ text: 'Creators Elite • Thank you for clipping ❤️', iconURL: 'https://cdn.discordapp.com/emojis/1504904179905200148.png' })
+    .setTimestamp();
+  if (rejectionStage === 'pre_approval') {
+    embed.addFields({ name: '<a:chart2:1504773558415523932> Estimated Earnings Before Rejection', value: `$${earnings.toFixed(2)} — not payable`, inline: false });
+  } else {
+    embed.addFields({ name: '<a:Cash1:1504871843419521115> Tracked Earnings Before Removal', value: `$${earnings.toFixed(2)}`, inline: false });
+    if (paidMoney > 0) embed.addFields({ name: '<a:appr:1534931253952909453> Historical Paid', value: `$${paidMoney.toFixed(2)}`, inline: false });
+  }
+  if (clip.thumbnailUrl) embed.setThumbnail(clip.thumbnailUrl);
   return embed;
 }
  
@@ -2955,11 +3067,10 @@ async function updateServerStats(guild) {
     const YEAR_GOAL = 100000; // Updated from your image configuration
 
     let totalPaid = 0;
-    let totalViews = 0;
+    const totalViews = getServerAllTimeCreditedViews(data);
     for (const campaign of Object.values(CAMPAIGNS)) {
         const campaignClips = Object.values(data.clips || {}).filter(clip => String(clip.campaignId) === String(campaign.id));
         const accounting = calculateClipCollectionAccounting(campaignClips, campaign, { scope: 'server_stats', campaignId: campaign.id });
-        totalViews += accounting.totalViews;
         totalPaid += accounting.paidMoney + accounting.unpaidMoney;
     }
     const activeCampaigns = Object.values(CAMPAIGNS).filter(c => c.status === "active").length;
@@ -3763,6 +3874,7 @@ async function autoTrackClipViews() {
     const guild = client.guilds.cache.first();
 
     let changed = finalizeExpiredBudgetCycleClips(data);
+    changed = finalizeOutOfRunClips(data, Date.now()) || changed;
     const updatedCampaignIds = new Set();
     const updatedPayoutPairs = new Set();
     const approvedClipIds = new Set(Object.entries(data.clips || {})
@@ -4849,7 +4961,7 @@ client.on(Events.MessageCreate, async message => {
         await channel.send({
 
             content:
-    `## ${campaign.name}
+    `## ${campaignName}
 
     Staff Controls`,
 
@@ -5821,7 +5933,7 @@ ${reason}
     **Already Paid**
     $${formatNumber(totalPaid)}
 
-    **Pending**
+    **Current Unpaid**
     $${formatNumber(totalPending)}
 
     **Campaigns Joined**
@@ -6692,180 +6804,22 @@ ${reason}
       return;
     }
 
-    if (
-        interaction.isButton() &&
-        interaction.customId === "payout_detailed_overview"
-    ) {
-
-        const data = loadData();
-
-        const approvedClips = Object.values(data.clips || {}).filter(
-
-            c =>
-
-                c.userId === interaction.user.id &&
-
-                c.status === "approved"
-
-        );
-
-        if (!approvedClips.length) {
-
-            return interaction.reply({
-
-                content: "You don't have any approved clips yet.",
-
-                flags: MessageFlags.Ephemeral
-
-            });
-
-        }
-
-        let text = "";
-
-        const campaigns = {};
-
-        approvedClips.forEach(clip => {
-
-            if (!campaigns[clip.campaignId]) {
-
-                campaigns[clip.campaignId] = {
-
-                    totalViews: 0,
-
-                    paidViews: 0,
-
-                    earned: 0,
-
-                    paidMoney: 0
-
-                };
-
-            }
-
-            campaigns[clip.campaignId].totalViews += clip.views || 0;
-
-            campaigns[clip.campaignId].paidViews +=
-
-                clip.payout?.paidViews || 0;
-
-            campaigns[clip.campaignId].earned +=
-
-                clip.totalMoneyMade || 0;
-
-            campaigns[clip.campaignId].paidMoney +=
-
-                clip.payout?.paidMoney || 0;
-
-        });
-
-        for (const campaignId in campaigns) {
-
-            const stats = campaigns[campaignId];
-
-            const campaign = CAMPAIGNS[campaignId];
-
-            const unpaidViews =
-
-                stats.totalViews -
-
-                stats.paidViews;
-
-            const pendingMoney =
-
-                stats.earned -
-
-                stats.paidMoney;
-
-            const payout = Object.values(
-
-                data.payoutTrackers || {}
-
-            ).find(
-
-                p =>
-
-                    p.userId === interaction.user.id &&
-
-                    p.campaignId === campaignId &&
-
-                    p.status === "pending"
-
-            );
-
-            let status = "✅ Paid";
-
-            if (payout)
-
-                status = "⏳ Pending";
-
-            const issue = Object.values(
-
-                data.payoutTrackers || {}
-
-            ).find(
-
-                p =>
-
-                    p.userId === interaction.user.id &&
-
-                    p.campaignId === campaignId &&
-
-                    p.status === "issue"
-
-            );
-
-            if (issue)
-
-                status = "⚠ On Hold";
-
-            text +=
-
-    `## ${campaign.name}
-
-    **Total Views**
-    ${formatNumber(stats.totalViews)}
-
-    **Paid Views**
-    ${formatNumber(stats.paidViews)}
-
-    **Unpaid Views**
-    ${formatNumber(unpaidViews)}
-
-    **Total Earned**
-    $${formatNumber(stats.earned)}
-
-    **Already Paid**
-    $${formatNumber(stats.paidMoney)}
-
-    **Pending**
-    $${formatNumber(pendingMoney)}
-
-    **Status**
-    ${status}
-
-    `;
-
-        }
-
-        const embed = new EmbedBuilder()
-
-            .setColor(0x7ED957)
-
-            .setTitle("Payment Breakdown")
-
-            .setDescription(text)
-
-            .setTimestamp();
-
+    if (interaction.isButton() && interaction.customId === "payout_detailed_overview") {
+        const payments = getUserPaymentReceipts(loadData(), interaction.user.id);
+        const page = 0;
         await interaction.reply({
-
-            embeds: [embed],
-
+            ...buildPaymentReceiptPage(interaction, payments, page),
             flags: MessageFlags.Ephemeral
-
         });
+        return;
+    }
 
+    if (interaction.isButton() && interaction.customId.startsWith("payout_receipt_page:")) {
+        const requestedPage = Number(interaction.customId.split(":")[1]);
+        const payments = getUserPaymentReceipts(loadData(), interaction.user.id);
+        const page = Math.min(Math.max(Number.isInteger(requestedPage) ? requestedPage : 0, 0), Math.max(payments.length - 1, 0));
+        await interaction.update(buildPaymentReceiptPage(interaction, payments, page));
+        return;
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_view:')) {
@@ -7812,6 +7766,8 @@ ${reason}
                 wasEverApproved: false,
                 submittedTimestamp,
                 budgetCycleIndex: submissionBudgetCycle,
+                earningRunKey: campaign.separateEarningLifecycle ? getCampaignEarningRunKey(campaign) : undefined,
+                trackingStatus: campaign.separateEarningLifecycle ? 'active' : undefined,
                 budgetCycleSubmittedAt: submittedTimestamp,
                 submittedAt: new Date(submittedTimestamp).toISOString(),
                 createdAt: new Date(submittedTimestamp).toISOString(),
@@ -8677,13 +8633,7 @@ ${reason}
       const member = await interaction.guild.members.fetch(clip.userId).catch(() => null);
 
       if (member) {
-        await member.send(
-          `❌ **Clip Rejected**\n\n` +
-          `Your ${rejectionStage === 'pre_approval' ? 'clip was not approved.' : 'previously approved clip has been removed from payment eligibility.'}\n\n` +
-          `Campaign: **${CAMPAIGNS[clip.campaignId]?.name || 'campaign'}**\n` +
-          `Video: ${clip.videoUrl || clip.url || 'Not available'}\n\n` +
-          `**Reason:** ${reason}`
-        ).catch(() => {});
+        await member.send({ embeds: [buildRejectedClipUserEmbed(clip, reason)] }).catch(() => {});
       }
 
       await interaction.editReply({
@@ -9632,4 +9582,159 @@ client.on('messageCreate', async message => {
 });
 
 // Your existing login statement
+function formatPaymentReceiptViews(value) {
+  const views = Number(value);
+  if (!Number.isFinite(views) || views < 0) return 'Not recorded';
+  return new Intl.NumberFormat('en-US', {
+    notation: 'compact',
+    maximumFractionDigits: views >= 1_000_000 ? 1 : 0
+  }).format(views);
+}
+
+function createStablePaymentReference(value) {
+  let hash = 2166136261;
+  for (const character of String(value)) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `CE-${(hash >>> 0).toString(36).toUpperCase().padStart(6, '0').slice(-6)}`;
+}
+
+function getUserPaymentReceipts(data, userId) {
+  const grouped = new Map();
+  const clipCollections = [
+    ...Object.values(data.clips || {}),
+    ...Object.values(data.clipReviews || {})
+  ];
+
+  for (const clip of clipCollections) {
+    if (String(clip?.userId) !== String(userId)) continue;
+    const history = Array.isArray(clip.payout?.history) ? clip.payout.history : [];
+    const legacyHistory = history.length ? history :
+      (Number(clip.payout?.paidViews) > 0 || Number(clip.payout?.paidMoney) > 0 ? [{
+        views: clip.payout.paidViews,
+        amount: clip.payout.paidMoney,
+        paidAt: clip.payout.lastPaidAt,
+        status: 'paid'
+      }] : []);
+
+    legacyHistory.forEach((payment, index) => {
+      const campaignId = payment?.campaignId || clip.campaignId || 'unknown';
+      const timestampValue = payment?.paidAt || payment?.completedAt || payment?.createdAt || payment?.timestamp || payment?.date || null;
+      const timestamp = Number.isFinite(Number(timestampValue))
+        ? Number(timestampValue)
+        : Date.parse(timestampValue || '');
+      const paymentId = payment?.paymentId || payment?.transactionId || payment?.id || null;
+      const groupKey = paymentId
+        ? `id:${campaignId}:${paymentId}`
+        : Number.isFinite(timestamp)
+          ? `time:${campaignId}:${Math.floor(timestamp / 1000)}`
+          : `legacy:${campaignId}:${clip.id || clip.videoUrl || index}:${index}`;
+      const ratePerMillion = Number(payment?.ratePerMillion ?? payment?.payoutRate ?? CAMPAIGNS[campaignId]?.ratePerMillion);
+      const views = Number(payment?.views ?? payment?.paidViews ?? 0) || 0;
+      const amount = Number(payment?.amount ?? payment?.paidMoney ?? payment?.money ?? payment?.payoutAmount ?? 0) || 0;
+      const existing = grouped.get(groupKey) || {
+        campaignId,
+        campaignName: payment?.campaignName || clip.campaignName,
+        campaignEmoji: payment?.campaignEmoji || clip.campaignEmoji,
+        paymentId,
+        timestamp: Number.isFinite(timestamp) ? timestamp : null,
+        timestampValue,
+        views: 0,
+        amount: 0,
+        ratePerMillion: Number.isFinite(ratePerMillion) ? ratePerMillion : null,
+        status: payment?.status || 'paid',
+        reason: payment?.reason || payment?.error || payment?.issueReason || null,
+        clips: new Set(),
+        sourceKeys: []
+      };
+      existing.views += Math.max(views, 0);
+      existing.amount += Math.max(amount, 0);
+      if (!existing.campaignName) existing.campaignName = payment?.campaignName || clip.campaignName;
+      if (!existing.campaignEmoji) existing.campaignEmoji = payment?.campaignEmoji || clip.campaignEmoji;
+      if (!existing.paymentId && paymentId) existing.paymentId = paymentId;
+      if (!Number.isFinite(existing.timestamp) && Number.isFinite(timestamp)) {
+        existing.timestamp = timestamp;
+        existing.timestampValue = timestampValue;
+      }
+      if (!Number.isFinite(existing.ratePerMillion) && Number.isFinite(ratePerMillion)) existing.ratePerMillion = ratePerMillion;
+      if (existing.status === 'paid' && payment?.status) existing.status = payment.status;
+      if (!existing.reason) existing.reason = payment?.reason || payment?.error || payment?.issueReason || null;
+      existing.clips.add(clip.id || clip.videoUrl || `${campaignId}:${index}`);
+      existing.sourceKeys.push(`${clip.id || clip.videoUrl || 'legacy'}:${index}:${timestampValue || ''}:${views}:${amount}`);
+      grouped.set(groupKey, existing);
+    });
+  }
+
+  return [...grouped.values()]
+    .map(payment => ({
+      ...payment,
+      clips: payment.clips.size,
+      paymentReference: payment.paymentId || createStablePaymentReference([
+        payment.campaignId,
+        payment.timestampValue || '',
+        ...payment.sourceKeys.sort()
+      ].join('|'))
+    }))
+    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+}
+
+function buildPaymentReceiptPage(interaction, payments, page) {
+  const authorName = interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
+  const author = { name: authorName, iconURL: interaction.user.displayAvatarURL() };
+  if (!payments.length) {
+    return {
+      embeds: [new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setAuthor(author)
+        .setTitle('Detailed Overview of Your Payments')
+        .setDescription("You don't have any payment history yet.\n\nOnce you receive a payout, your payment receipts will appear here.")
+        .setFooter({ text: 'Powered by Creators Elite', iconURL: 'https://cdn.discordapp.com/emojis/1504904179905200148.png' })],
+      components: []
+    };
+  }
+
+  const payment = payments[page];
+  const campaign = CAMPAIGNS[payment.campaignId];
+  const campaignName = campaign?.name || payment.campaignName || `Archived Campaign (${payment.campaignId})`;
+  const statusDetails = {
+    paid: { label: '✅ Paid', color: 0x57F287 },
+    pending: { label: '⏳ Payment Pending', color: 0xFEE75C },
+    waiting: { label: '⏳ Payment Pending', color: 0xFEE75C },
+    ready: { label: '🟡 Ready for Payment', color: 0xFEE75C },
+    issue: { label: '❌ Payment Error', color: 0xED4245 },
+    failed: { label: '❌ Payment Error', color: 0xED4245 },
+    rejected: { label: '❌ Payment Rejected', color: 0xED4245 }
+  }[String(payment.status || '').toLowerCase()] || { label: '⚪ Unknown', color: 0x99AAB5 };
+  const dateText = Number.isFinite(payment.timestamp)
+    ? new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric', year: 'numeric' }).format(new Date(payment.timestamp))
+    : 'Not recorded';
+  const ratePerThousand = Number.isFinite(payment.ratePerMillion) ? payment.ratePerMillion / 1000 : null;
+  const campaignEmoji = campaign?.emoji || payment.campaignEmoji || '🟥';
+  const reason = payment.reason ? `\n\n**Reason:** ${String(payment.reason).replace(/[\r\n]+/g, ' ').slice(0, 500)}` : '';
+  const clipCount = payment.clips > 1 ? `\n**Clips:** ${payment.clips}` : '';
+  const embed = new EmbedBuilder()
+    .setColor(statusDetails.color)
+    .setAuthor(author)
+    .setTitle('Detailed Overview of Your Payments')
+    .setDescription(
+      `${campaignEmoji} **${campaignName}**\n\n` +
+      `**Expected:** $${payment.amount.toFixed(2)}\n` +
+      `**Status:** ${statusDetails.label}\n` +
+      `**Date:** ${dateText}\n\n` +
+      `**Views Paid:** ${formatPaymentReceiptViews(payment.views)}\n` +
+      `**Rate:** ${ratePerThousand === null ? 'Not recorded' : `$${ratePerThousand.toFixed(2)} / 1K Views`}\n` +
+      `**Payment ID:** \`${payment.paymentReference}\`` + clipCount + reason
+    )
+    .setFooter({
+      text: `Powered by Creators Elite • Page ${page + 1}/${payments.length}`,
+      iconURL: 'https://cdn.discordapp.com/emojis/1504904179905200148.png'
+    });
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`payout_receipt_page:${page - 1}`).setLabel('Previous').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+    new ButtonBuilder().setCustomId(`payout_receipt_page:${page + 1}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page === payments.length - 1)
+  );
+  return { embeds: [embed], components: [row] };
+}
+
 client.login(process.env.TOKEN); 
