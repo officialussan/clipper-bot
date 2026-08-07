@@ -134,15 +134,42 @@ async function instagramApiGet(path, params = {}) {
 
 async function fetchInstagramTestMedia(limit = 10) {
   const identity = await fetchInstagramTestIdentity();
-  const data = await instagramApiGet(`${identity.instagramUserId}/media`, {
-    fields: 'id,caption,media_type,media_product_type,permalink,thumbnail_url,media_url,timestamp,username',
-    limit: Math.min(Math.max(Number(limit) || 10, 1), 25)
-  });
-  return { identity, media: Array.isArray(data?.data) ? data.data : [] };
+  const MAX_MEDIA_TO_INSPECT = 100;
+  const MAX_PAGES_TO_INSPECT = 10;
+  const PAGE_LIMIT = 25;
+  const media = [];
+  let pagesInspected = 0;
+  let after = null;
+  let partialError = null;
+  while (media.length < MAX_MEDIA_TO_INSPECT && pagesInspected < MAX_PAGES_TO_INSPECT) {
+    try {
+      const data = await instagramApiGet(`${identity.instagramUserId}/media`, {
+        fields: 'id,caption,media_type,media_product_type,permalink,thumbnail_url,media_url,timestamp,username',
+        limit: Math.min(Math.max(Number(limit) || PAGE_LIMIT, 1), PAGE_LIMIT),
+        ...(after ? { after } : {})
+      });
+      pagesInspected++;
+      media.push(...(Array.isArray(data?.data) ? data.data : []));
+      if (media.filter(isInstagramReel).length >= 5) break;
+      after = data?.paging?.cursors?.after || null;
+      if (!after || !(data?.data || []).length) break;
+    } catch (error) {
+      partialError = error.instagramApiError || getInstagramApiErrorDetails(error);
+      break;
+    }
+  }
+  return { identity, media: media.slice(0, MAX_MEDIA_TO_INSPECT), pagesInspected, partialError };
 }
 
 function isInstagramReel(media) {
-  return Boolean(media && (String(media.media_product_type || '').toUpperCase() === 'REELS' || String(media.permalink || '').includes('/reel/')));
+  return getInstagramMediaClassification(media).isReel;
+}
+
+function getInstagramMediaClassification(media) {
+  const mediaType = String(media?.media_type || 'UNKNOWN').toUpperCase();
+  const productType = String(media?.media_product_type || 'UNKNOWN').toUpperCase();
+  const permalink = String(media?.permalink || '');
+  return { mediaType, productType, isReel: productType === 'REELS' || productType === 'REEL' || /\/reels?\//i.test(permalink) };
 }
 
 function extractInstagramInsightValue(metric) {
@@ -3617,9 +3644,29 @@ client.on(Events.MessageCreate, async message => {
       instagramMediaTestCooldowns.set(message.author.id, now);
       const loadingMessage = await message.reply('⏳ Testing Instagram media access…');
       try {
-        const { identity, media } = await fetchInstagramTestMedia(10);
+        const { identity, media, pagesInspected, partialError } = await fetchInstagramTestMedia(25);
         const reels = media.filter(isInstagramReel).slice(0, 5);
+        const classifications = media.map(getInstagramMediaClassification);
+        const mediaTypeCounts = classifications.reduce((counts, item) => ({ ...counts, [item.mediaType]: (counts[item.mediaType] || 0) + 1 }), {});
+        const productTypeCounts = classifications.reduce((counts, item) => ({ ...counts, [item.productType]: (counts[item.productType] || 0) + 1 }), {});
+        const videoItems = media.filter(item => getInstagramMediaClassification(item).mediaType === 'VIDEO');
+        const reelPermalinks = media.filter(item => /\/reels?\//i.test(String(item.permalink || ''))).length;
+        console.log('[Instagram Media Diagnostic]', { username: identity.username, mediaInspected: media.length, pagesInspected, reelsFound: reels.length, videoItemsFound: videoItems.length, mediaTypeCounts, productTypeCounts });
         if (!reels.length) {
+          const summary = `Media inspected: ${media.length}\nPages inspected: ${pagesInspected}\nMedia types: ${Object.entries(mediaTypeCounts).map(([type, count]) => `${type}: ${count}`).join(', ') || 'None'}\nProduct types: ${Object.entries(productTypeCounts).map(([type, count]) => `${type}: ${count}`).join(', ') || 'None'}\nVideo posts found: ${videoItems.length}\nPermalinks containing /reel/: ${reelPermalinks}`;
+          if (!videoItems.length) {
+            await loadingMessage.edit(`Instagram media access works, but no API-visible video or Reel media was found among the inspected records.\n\n${summary}${partialError ? '\n\nA later page could not be retrieved.' : ''}`);
+            return;
+          }
+          const diagnosticEmbed = new EmbedBuilder().setColor(0xF1C40F).setTitle('Instagram Media API Diagnostic').setDescription(`Instagram media access works, but none of the inspected VIDEO records were identified as Reels.\n\n${summary}${partialError ? '\n\nA later page could not be retrieved.' : ''}`);
+          for (const item of videoItems.slice(0, 5)) {
+            const classification = getInstagramMediaClassification(item);
+            const title = getInstagramMediaTitle(item).replace(/[\[\]\\]/g, '\\$&');
+            const pathType = /\/reels?\//i.test(String(item.permalink || '')) ? 'Reel' : String(item.permalink || '').includes('/p/') ? 'Post' : 'Unknown';
+            diagnosticEmbed.addFields({ name: title, value: `${item.permalink ? `[Open Media](${item.permalink})\n` : ''}Media ID: ${item.id}\nMedia Type: ${classification.mediaType}\nProduct Type: ${classification.productType}\nPermalink Path: ${pathType}\nTimestamp: ${item.timestamp || 'Not returned'}`.slice(0, 1024) });
+          }
+          await loadingMessage.edit({ content: null, embeds: [diagnosticEmbed] });
+          return;
           await loadingMessage.edit('✅ Instagram media access works, but no recent Reels were found in the first 10 media items.');
           return;
         }
