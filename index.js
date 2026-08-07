@@ -367,6 +367,31 @@ async function fetchInstagramPublicReelMetadata(reelUrl) {
   return runApifyInstagramReelScraper(reelUrl);
 }
 
+async function fetchApifyInstagramReelMetadata(reelUrl) {
+  const parsed = parsePublicInstagramReelUrl(reelUrl);
+  if (!parsed) throw new Error('Invalid Instagram Reel URL.');
+
+  const items = await fetchInstagramPublicReelMetadata(parsed.canonicalUrl);
+  const item = items.find(candidate => {
+    const candidateUrl = parsePublicInstagramReelUrl(candidate?.inputUrl || candidate?.reelUrl || candidate?.url || candidate?.permalink);
+    return candidateUrl?.shortcode === parsed.shortcode || String(candidate?.shortcode || candidate?.shortCode || '') === parsed.shortcode;
+  }) || items[0];
+  if (!item) throw new Error('Instagram Reel data could not be retrieved.');
+
+  const reel = normalizeApifyInstagramReel(item, parsed.canonicalUrl);
+  return {
+    authorUsername: reel.username,
+    authorId: item.ownerId || item.owner?.id || null,
+    authorDisplayName: item.ownerFullName || reel.username,
+    title: reel.title,
+    views: reel.views,
+    viewMetricField: reel.viewMetricField,
+    thumbnailUrl: reel.thumbnailUrl,
+    publishedTimestamp: reel.publishedTimestamp,
+    canonicalUrl: reel.url
+  };
+}
+
 const clean = (str) =>
   str.replace(/[`*_|~]/g, '').trim();
 
@@ -816,7 +841,7 @@ function isTrackableReviewClip(clip) {
   return Boolean(
     clip &&
     clip.status === 'pending' &&
-    (clip.platform === 'tiktok' || clip.platform === 'youtube') &&
+    (clip.platform === 'tiktok' || clip.platform === 'youtube' || clip.platform === 'instagram') &&
     (clip.videoUrl || clip.url)
   );
 }
@@ -825,7 +850,7 @@ function isTrackableApprovedClip(clip) {
   return Boolean(
     clip &&
     isPayoutEligibleClip(clip) &&
-    (clip.platform === 'tiktok' || clip.platform === 'youtube') &&
+    (clip.platform === 'tiktok' || clip.platform === 'youtube' || clip.platform === 'instagram') &&
     (clip.videoUrl || clip.url)
   );
 }
@@ -1101,6 +1126,11 @@ function parseCanonicalVideoUrl(resolvedUrl) {
   const url = new URL(resolvedUrl);
   const host = url.hostname.toLowerCase();
 
+  const instagramReel = parsePublicInstagramReelUrl(resolvedUrl);
+  if (instagramReel) {
+    return { platform: 'instagram', videoId: instagramReel.shortcode, canonicalUrl: instagramReel.canonicalUrl };
+  }
+
   if (host === 'tiktok.com' || host.endsWith('.tiktok.com')) {
     const match = url.pathname.match(/\/video\/(\d+)/);
     if (!match) return null;
@@ -1135,6 +1165,8 @@ function normalizeClipVideoUrl(value) {
       const match = url.pathname.match(/\/video\/(\d+)/);
       return match ? `tiktok:${match[1]}` : null;
     }
+    const instagramReel = parsePublicInstagramReelUrl(value);
+    if (instagramReel) return `instagram:${instagramReel.shortcode}`;
   } catch {}
   return null;
 }
@@ -1144,7 +1176,10 @@ async function validateClipBeforeSubmission({ data, userId, campaignId, submitte
   if (!campaign) return { valid: false, message: '❌ Campaign not found.', metadata: null };
 
   try {
-    const expanded = await expandSocialUrl(submittedUrl);
+    const instagramReel = parsePublicInstagramReelUrl(submittedUrl);
+    const expanded = instagramReel
+      ? { resolvedUrl: instagramReel.canonicalUrl, platform: 'instagram' }
+      : await expandSocialUrl(submittedUrl);
     const parsed = parseCanonicalVideoUrl(expanded.resolvedUrl);
     if (!parsed) return { valid: false, message: '❌ This link is not a supported public TikTok or YouTube video.', metadata: null };
     if (!campaign.allowedPlatforms?.includes(parsed.platform)) {
@@ -3282,6 +3317,16 @@ async function getYouTubeViews(url) {
 
 async function fetchClipMetadata(clip) {
   const clipUrl = clip.videoUrl || clip.url;
+  if (clip.platform === 'instagram') {
+    const metadata = await fetchApifyInstagramReelMetadata(clipUrl);
+    return {
+      views: metadata.views,
+      title: metadata.title,
+      thumbnailUrl: metadata.thumbnailUrl,
+      authorName: metadata.authorUsername,
+      authorId: metadata.authorId || null
+    };
+  }
   if (clip.platform === 'tiktok') {
     const res = await axios.get(`https://www.tikwm.com/api/?url=${encodeURIComponent(clipUrl)}`, { timeout: 15000 });
     const item = res.data?.data || {};
@@ -3307,6 +3352,10 @@ async function fetchClipMetadata(clip) {
 }
 
 async function fetchSubmissionMetadata(platform, canonicalUrl, videoId) {
+  if (platform === 'instagram') {
+    return fetchApifyInstagramReelMetadata(canonicalUrl);
+  }
+
   if (platform === 'tiktok') {
     const response = await axios.get(
       `https://www.tikwm.com/api/?url=${encodeURIComponent(canonicalUrl)}`,
@@ -3358,7 +3407,7 @@ async function fetchSubmissionMetadata(platform, canonicalUrl, videoId) {
 }
 
 async function fetchClipViews(clip) {
-  if (clip.platform === 'tiktok' || clip.platform === 'youtube') return (await fetchClipMetadata(clip)).views;
+  if (clip.platform === 'tiktok' || clip.platform === 'youtube' || clip.platform === 'instagram') return (await fetchClipMetadata(clip)).views;
   return clip.rawViews || 0;
 }
 
