@@ -434,10 +434,15 @@ const CAMPAIGNS = {
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
     payoutThreshold: 17500,
     campaignBudget: 2400,
-    startDate: '2026-07-20',
+    startDate: '2026-08-03T07:00:00.000Z',
+    endDate: '2026-08-31T07:00:00.000Z',
     cycleWeeks: "1",
     budgetCycle: "weekly",
+    budgetCycleWeeks: 1,
+    budgetResetDayUtc: 1,
+    budgetResetHourUtc: 7,
     earningCycle: "monthly",
+    separateEarningLifecycle: true,
     viewCap: 8000000,
     ratePerMillion: 300,
     panelChannelId:'1492239981308018698',
@@ -489,10 +494,15 @@ Click the button below to start clipping and earning.`
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
     payoutThreshold: 17500,
     campaignBudget: 2100,
-    startDate: '2026-06-29',
-    cycleWeeks: "4",
-    budgetCycle: "monthly",
+    startDate: '2026-08-03T07:00:00.000Z',
+    endDate: '2026-08-31T07:00:00.000Z',
+    cycleWeeks: "1",
+    budgetCycle: "weekly",
+    budgetCycleWeeks: 1,
+    budgetResetDayUtc: 1,
+    budgetResetHourUtc: 7,
     earningCycle: "monthly",
+    separateEarningLifecycle: true,
     ratePerMillion: 300,
     viewCap: 7000000,
     panelChannelId:'1521565850505838672',
@@ -673,6 +683,83 @@ function loadData() {
       }
     }
     raw.storageMigrations.submissionBudgetCycleV1 = true;
+    migrationChanged = true;
+  }
+  if (!raw.storageMigrations.viewCapTrackingLifecycleV1) {
+    for (const collection of [raw.clips, raw.clipReviews]) {
+      for (const clip of Object.values(collection || {})) {
+        const legacyViews = Math.max(Number(clip.views) || 0, Number(clip.currentViews) || 0, Number(clip.approvalViews) || 0, Number(clip.submissionViews) || 0);
+        clip.publicViews = Math.max(Number(clip.publicViews) || 0, legacyViews);
+        if (clip.views === null || clip.views === undefined) clip.views = legacyViews;
+      }
+    }
+    finalizeExpiredBudgetCycleClips(raw);
+    for (const campaign of Object.values(CAMPAIGNS)) {
+      const cap = getCampaignViewCap(campaign);
+      const creditedViews = getCampaignCurrentCycleCreditedViews(campaign.id, { data: raw });
+      if (cap !== null && creditedViews > cap) {
+        console.warn('[Campaign View Cap] legacy current-cycle credited views exceed configured cap; history was preserved for manual review.', { campaignId: campaign.id, viewCap: cap, currentCreditedViews: creditedViews });
+      }
+    }
+    raw.storageMigrations.viewCapTrackingLifecycleV1 = true;
+    migrationChanged = true;
+  }
+  if (!raw.storageMigrations.elephantWeeklyBudgetMonthlyEarningsV1) {
+    const elephant = CAMPAIGNS.elephant;
+    const now = new Date();
+    const cycleKey = getCampaignBudgetCycleKey(elephant, now);
+    for (const collection of [raw.clips, raw.clipReviews]) {
+      for (const clip of Object.values(collection || {})) {
+        if (clip.campaignId !== 'elephant') continue;
+        const legacyCredited = Math.max(Number(clip.campaignCreditedViews) || 0, Number(clip.views) || 0, Number(clip.approvalViews) || 0);
+        clip.publicViews = Math.max(Number(clip.publicViews) || 0, Number(clip.currentViews) || 0, legacyCredited);
+        clip.campaignCreditedViews = legacyCredited;
+        if (isClipInCampaignEarningPeriod(clip, elephant, now)) {
+          if (clip.completedReason === 'budget_cycle_ended') {
+            delete clip.trackingStatus;
+            delete clip.completedAt;
+            delete clip.completedReason;
+          }
+          clip.budgetTracking ||= {
+            budgetCycleKey: cycleKey,
+            baselinePublicViews: clip.publicViews,
+            lastPublicViews: clip.publicViews,
+            creditedViewsThisCycle: 0,
+            pausedBaselineViews: null
+          };
+        }
+      }
+    }
+    raw.storageMigrations.elephantWeeklyBudgetMonthlyEarningsV1 = true;
+    migrationChanged = true;
+  }
+  if (!raw.storageMigrations.crowderWeeklyBudgetMonthlyEarningsV1) {
+    const crowder = CAMPAIGNS.crowder;
+    const now = new Date();
+    const cycleKey = getCampaignBudgetCycleKey(crowder, now);
+    for (const collection of [raw.clips, raw.clipReviews]) {
+      for (const clip of Object.values(collection || {})) {
+        if (clip.campaignId !== 'crowder') continue;
+        const legacyCredited = Math.max(Number(clip.campaignCreditedViews) || 0, Number(clip.views) || 0, Number(clip.approvalViews) || 0);
+        clip.publicViews = Math.max(Number(clip.publicViews) || 0, Number(clip.currentViews) || 0, legacyCredited);
+        clip.campaignCreditedViews = legacyCredited;
+        if (isClipInCampaignEarningPeriod(clip, crowder, now)) {
+          if (clip.completedReason === 'budget_cycle_ended') {
+            delete clip.trackingStatus;
+            delete clip.completedAt;
+            delete clip.completedReason;
+          }
+          clip.budgetTracking ||= {
+            budgetCycleKey: cycleKey,
+            baselinePublicViews: clip.publicViews,
+            lastPublicViews: clip.publicViews,
+            creditedViewsThisCycle: 0,
+            pausedBaselineViews: null
+          };
+        }
+      }
+    }
+    raw.storageMigrations.crowderWeeklyBudgetMonthlyEarningsV1 = true;
     migrationChanged = true;
   }
   if (migrationChanged) recovered = true;
@@ -878,6 +965,7 @@ function advanceClipNextCheckAt(clip, now = Date.now()) {
 function getSafeTrackedViews(clip, metadata) {
   const fetchedViews = Number(metadata?.views);
   const existingViews = Math.max(
+    Number(clip.publicViews) || 0,
     Number(clip.currentViews) || 0,
     Number(clip.views) || 0,
     Number(clip.submissionViews) || 0,
@@ -887,10 +975,34 @@ function getSafeTrackedViews(clip, metadata) {
   return Math.max(existingViews, fetchedViews);
 }
 
-function applyTrackedMetadata(clip, metadata) {
-  const trackedViews = getSafeTrackedViews(clip, metadata);
-  clip.currentViews = trackedViews;
-  clip.views = trackedViews;
+function applyTrackedMetadata(clip, metadata, data) {
+  const publicViews = getSafeTrackedViews(clip, metadata);
+  const campaign = CAMPAIGNS[clip.campaignId];
+  if (campaign?.separateEarningLifecycle) {
+    return applySeparateEarningCycleTracking(clip, metadata, data, publicViews, campaign);
+  }
+  const previousCreditedViews = getClipCreditedViews(clip);
+  const cap = getCampaignViewCap(campaign);
+  const otherCreditedViews = cap === null ? 0 : getCampaignCurrentCycleCreditedViews(clip.campaignId, { data, excludeClipId: clip.id });
+  const remainingForThisClip = cap === null ? Infinity : Math.max(cap - otherCreditedViews, 0);
+  const desiredCreditedViews = Math.max(previousCreditedViews, publicViews);
+  const creditedViews = cap === null
+    ? desiredCreditedViews
+    : Math.max(previousCreditedViews, Math.min(desiredCreditedViews, remainingForThisClip));
+
+  clip.publicViews = publicViews;
+  clip.currentViews = creditedViews;
+  clip.views = creditedViews;
+  if (cap !== null && process.env.DEBUG_VIEW_CAP_TRACKING === 'true') {
+    console.log('[Campaign View Cap]', { campaignId: clip.campaignId, budgetCycleIndex: getCampaignBudgetCycleIndex(campaign), viewCap: cap, currentCreditedViews: otherCreditedViews, remainingViews: remainingForThisClip, fulfilled: otherCreditedViews >= cap });
+  }
+  if (cap !== null && previousCreditedViews > remainingForThisClip && process.env.DEBUG_VIEW_CAP_TRACKING === 'true') {
+    console.warn('[Campaign View Cap] legacy credited views exceed remaining capacity', { clipId: clip.id, campaignId: clip.campaignId, previousCreditedViews, remainingForThisClip });
+  }
+  if (cap !== null && process.env.DEBUG_VIEW_CAP_TRACKING === 'true') {
+    const campaignTotalAfter = otherCreditedViews + creditedViews;
+    console.log('[Clip View Cap Update]', { clipId: clip.id, campaignId: clip.campaignId, previousCreditedViews, fetchedPublicViews: Number(metadata?.views) || null, creditedViewsAfter: creditedViews, creditedIncrease: creditedViews - previousCreditedViews, campaignTotalAfter, remainingAfter: Math.max(cap - campaignTotalAfter, 0) });
+  }
   if (metadata?.title) clip.title = metadata.title;
   if (metadata?.thumbnailUrl) clip.thumbnailUrl = metadata.thumbnailUrl;
   if (metadata?.authorName || metadata?.authorDisplayName || metadata?.authorUsername) {
@@ -901,11 +1013,56 @@ function applyTrackedMetadata(clip, metadata) {
   clip.lastTrackingError = null;
   clip.lastTrackingErrorAt = null;
   clip.trackingRetryAt = null;
-  return trackedViews;
+  return creditedViews;
 }
 
-function updatePendingReviewTracking(clip, metadata) {
-  const views = applyTrackedMetadata(clip, metadata);
+function applySeparateEarningCycleTracking(clip, metadata, data, publicViews, campaign) {
+  const cycleKey = getCampaignBudgetCycleKey(campaign);
+  const previousMonthlyViews = Math.max(Number(clip.campaignCreditedViews) || 0, Number(clip.views) || 0, Number(clip.approvalViews) || 0);
+  clip.budgetTracking ||= {};
+  const tracking = clip.budgetTracking;
+
+  if (tracking.budgetCycleKey !== cycleKey) {
+    tracking.budgetCycleKey = cycleKey;
+    tracking.baselinePublicViews = publicViews;
+    tracking.lastPublicViews = publicViews;
+    tracking.creditedViewsThisCycle = 0;
+    tracking.pausedBaselineViews = null;
+  } else {
+    const lastPublicViews = Math.max(Number(tracking.lastPublicViews) || 0, Number(tracking.baselinePublicViews) || 0);
+    const publicGrowth = Math.max(publicViews - lastPublicViews, 0);
+    const cap = getCampaignViewCap(campaign);
+    const otherWeeklyCredits = cap === null ? 0 : getCampaignCurrentWeeklyCreditedViews(campaign.id, { data, excludeClipId: clip.id });
+    const remainingViews = cap === null ? Infinity : Math.max(cap - otherWeeklyCredits, 0);
+    const creditedIncrease = Math.min(publicGrowth, remainingViews);
+    tracking.creditedViewsThisCycle = Math.max(Number(tracking.creditedViewsThisCycle) || 0, 0) + creditedIncrease;
+    tracking.lastPublicViews = publicViews;
+    if (cap !== null && process.env.DEBUG_VIEW_CAP_TRACKING === 'true') {
+      const weeklyTotalAfter = otherWeeklyCredits + tracking.creditedViewsThisCycle;
+      console.log('[Clip View Cap Update]', { clipId: clip.id, campaignId: clip.campaignId, previousCreditedViews: previousMonthlyViews, fetchedPublicViews: Number(metadata?.views) || null, creditedViewsAfter: previousMonthlyViews + creditedIncrease, creditedIncrease, campaignTotalAfter: weeklyTotalAfter, remainingAfter: Math.max(cap - weeklyTotalAfter, 0) });
+    }
+    clip.campaignCreditedViews = previousMonthlyViews + creditedIncrease;
+  }
+
+  clip.campaignCreditedViews ??= previousMonthlyViews;
+  clip.publicViews = publicViews;
+  clip.currentViews = clip.campaignCreditedViews;
+  clip.views = clip.campaignCreditedViews;
+  if (metadata?.title) clip.title = metadata.title;
+  if (metadata?.thumbnailUrl) clip.thumbnailUrl = metadata.thumbnailUrl;
+  if (metadata?.authorName || metadata?.authorDisplayName || metadata?.authorUsername) {
+    clip.platformAuthorName = metadata.authorName || metadata.authorUsername || metadata.authorDisplayName;
+  }
+  if (metadata?.authorId) clip.platformAuthorId = metadata.authorId;
+  clip.lastChecked = Date.now();
+  clip.lastTrackingError = null;
+  clip.lastTrackingErrorAt = null;
+  clip.trackingRetryAt = null;
+  return clip.campaignCreditedViews;
+}
+
+function updatePendingReviewTracking(clip, metadata, data) {
+  const views = applyTrackedMetadata(clip, metadata, data);
   const rate = Number(CAMPAIGNS[clip.campaignId]?.ratePerMillion) || 0;
   clip.estimatedEarnings = views / 1_000_000 * rate;
   clip.payoutEligible = false;
@@ -918,8 +1075,8 @@ function updatePendingReviewTracking(clip, metadata) {
   return clip;
 }
 
-function updateApprovedClipTracking(clip, metadata) {
-  const views = applyTrackedMetadata(clip, metadata);
+function updateApprovedClipTracking(clip, metadata, data) {
+  const views = applyTrackedMetadata(clip, metadata, data);
   const rate = Number(CAMPAIGNS[clip.campaignId]?.ratePerMillion) || 0;
   clip.totalMoneyMade = views / 1_000_000 * rate;
   clip.moneyMade = clip.totalMoneyMade;
@@ -1173,6 +1330,12 @@ function normalizeClipVideoUrl(value) {
 
 async function validateClipBeforeSubmission({ data, userId, campaignId, submittedUrl }) {
   const campaign = CAMPAIGNS[campaignId];
+  if (campaign?.separateEarningLifecycle && !isCampaignEarningActive(campaign)) {
+    return { valid: false, message: 'Campaign earning period has ended.', metadata: null };
+  }
+  if (campaign?.separateEarningLifecycle && isCampaignCurrentBudgetCycleFulfilled(campaignId, { data })) {
+    return { valid: false, message: 'Campaign is paused until the next weekly view-cap reset.', metadata: null };
+  }
   if (!campaign) return { valid: false, message: '❌ Campaign not found.', metadata: null };
 
   try {
@@ -2156,12 +2319,7 @@ function ensureCampaignStats(userRecord, campaignId) {
 
 function getApprovedClipViews(clip) {
   if (!clip) return 0;
-
-  return Math.max(
-    Number(clip.views) || 0,
-    Number(clip.currentViews) || 0,
-    Number(clip.approvalViews) || 0
-  );
+  return getClipCreditedViews(clip);
 }
 
 function getApprovedClipEarnings(clip, campaign) {
@@ -2171,6 +2329,8 @@ function getApprovedClipEarnings(clip, campaign) {
 }
 
 function getCampaignBudgetCycleWeeks(campaign) {
+  const explicitWeeks = Number(campaign?.budgetCycleWeeks);
+  if (Number.isFinite(explicitWeeks) && explicitWeeks > 0) return explicitWeeks;
   const configuredWeeks = Number(campaign?.cycleWeeks);
   if (Number.isFinite(configuredWeeks) && configuredWeeks > 0) return configuredWeeks;
   return String(campaign?.budgetCycle || 'weekly').toLowerCase() === 'monthly' ? 4 : 1;
@@ -2194,6 +2354,36 @@ function getCampaignBudgetPeriod(campaign, date = new Date()) {
   return { cycleIndex, periodStart, periodEnd };
 }
 
+function getCampaignEarningPeriod(campaign) {
+  const start = new Date(campaign?.startDate);
+  const end = new Date(campaign?.endDate);
+  return {
+    periodStart: Number.isNaN(start.getTime()) ? null : start,
+    periodEnd: Number.isNaN(end.getTime()) ? null : end
+  };
+}
+
+function isCampaignEarningActive(campaign, date = new Date()) {
+  const { periodStart, periodEnd } = getCampaignEarningPeriod(campaign);
+  if (!campaign?.separateEarningLifecycle) return true;
+  if (!periodStart || !periodEnd) return false;
+  const time = new Date(date).getTime();
+  return time >= periodStart.getTime() && time < periodEnd.getTime();
+}
+
+function isClipInCampaignEarningPeriod(clip, campaign, date = new Date()) {
+  if (!campaign?.separateEarningLifecycle) return isClipInCurrentBudgetCycle(clip, campaign, date);
+  const { periodStart, periodEnd } = getCampaignEarningPeriod(campaign);
+  const submittedAt = getClipSubmissionTimestamp(clip);
+  if (!periodStart || !periodEnd || !submittedAt) return false;
+  return submittedAt >= periodStart.getTime() && submittedAt < periodEnd.getTime() && isCampaignEarningActive(campaign, date);
+}
+
+function getCampaignBudgetCycleKey(campaign, date = new Date()) {
+  const { periodStart } = getCampaignBudgetPeriod(campaign, date);
+  return periodStart ? periodStart.toISOString() : null;
+}
+
 function getClipSubmissionTimestamp(clip) {
   const direct = Number(clip?.submittedTimestamp);
   if (Number.isFinite(direct) && direct > 0) return direct;
@@ -2209,6 +2399,111 @@ function getClipBudgetCycleIndex(clip, campaign) {
 function isClipInCurrentBudgetCycle(clip, campaign, now = new Date()) {
   const clipCycle = getClipBudgetCycleIndex(clip, campaign);
   return clipCycle !== null && Number(clipCycle) === Number(getCampaignBudgetCycleIndex(campaign, now));
+}
+
+function getCampaignViewCap(campaign) {
+  const value = Number(campaign?.viewCap);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
+}
+
+function campaignHasViewCap(campaign) {
+  return getCampaignViewCap(campaign) !== null;
+}
+
+function getClipCreditedViews(clip) {
+  return Math.max(Number(clip?.views) || 0, Number(clip?.approvalViews) || 0);
+}
+
+function getCurrentBudgetCycleEligibleClips(campaignId, options = {}) {
+  const data = options.data || loadData();
+  const campaign = CAMPAIGNS[campaignId];
+  if (!campaign) return [];
+  return getUniqueClipRecords([
+    ...Object.values(data.clips || {}),
+    ...Object.values(data.clipReviews || {})
+  ]).filter(clip =>
+    String(clip.campaignId) === String(campaignId) &&
+    isClipInCurrentBudgetCycle(clip, campaign) &&
+    clip.trackingStatus !== 'completed' &&
+    (isPayoutEligibleClip(clip) || Number(clip.payout?.paidViews) > 0 || Number(clip.payout?.paidMoney) > 0)
+  );
+}
+
+function getCampaignCurrentWeeklyCreditedViews(campaignId, options = {}) {
+  const data = options.data || loadData();
+  const campaign = CAMPAIGNS[campaignId];
+  if (!campaign) return 0;
+  const cycleKey = getCampaignBudgetCycleKey(campaign, options.date || new Date());
+  const excludeClipId = options.excludeClipId ? String(options.excludeClipId) : null;
+  return getUniqueClipRecords([
+    ...Object.values(data.clips || {}),
+    ...Object.values(data.clipReviews || {})
+  ]).filter(clip =>
+    String(clip.campaignId) === String(campaignId) &&
+    String(clip.id) !== excludeClipId &&
+    clip.trackingStatus !== 'completed' &&
+    isClipInCampaignEarningPeriod(clip, campaign, options.date || new Date()) &&
+    (clip.status === 'pending' || isPayoutEligibleClip(clip)) &&
+    clip.budgetTracking?.budgetCycleKey === cycleKey
+  ).reduce((total, clip) => total + Math.max(Number(clip.budgetTracking?.creditedViewsThisCycle) || 0, 0), 0);
+}
+
+function getCampaignCurrentCycleCreditedViews(campaignId, options = {}) {
+  if (CAMPAIGNS[campaignId]?.separateEarningLifecycle) {
+    return getCampaignCurrentWeeklyCreditedViews(campaignId, options);
+  }
+  const excludeClipId = options.excludeClipId ? String(options.excludeClipId) : null;
+  return getCurrentBudgetCycleEligibleClips(campaignId, options)
+    .filter(clip => String(clip.id) !== excludeClipId)
+    .reduce((total, clip) => total + getClipCreditedViews(clip), 0);
+}
+
+function isCampaignCurrentBudgetCycleFulfilled(campaignId, options = {}) {
+  const campaign = CAMPAIGNS[campaignId];
+  const cap = getCampaignViewCap(campaign);
+  return cap !== null && getCampaignCurrentCycleCreditedViews(campaignId, options) >= cap;
+}
+
+function finalizeExpiredBudgetCycleClips(data = loadData(), now = new Date()) {
+  let changed = false;
+  for (const collection of [data.clipReviews || {}, data.clips || {}]) {
+    for (const clip of Object.values(collection)) {
+      const campaign = CAMPAIGNS[clip?.campaignId];
+      if (!campaign) continue;
+      if (campaign.separateEarningLifecycle) {
+        const { periodStart, periodEnd } = getCampaignEarningPeriod(campaign);
+        const submittedAt = getClipSubmissionTimestamp(clip);
+        if (!periodStart || !periodEnd || !submittedAt || submittedAt < periodStart.getTime() || submittedAt >= periodEnd.getTime() || new Date(now).getTime() < periodEnd.getTime()) continue;
+        if (clip.trackingStatus !== 'completed') {
+          clip.trackingStatus = 'completed';
+          clip.completedAt ||= Date.now();
+          clip.completedReason ||= 'campaign_earning_period_ended';
+          changed = true;
+        }
+        continue;
+      }
+      const clipCycle = getClipBudgetCycleIndex(clip, campaign);
+      const currentCycle = getCampaignBudgetCycleIndex(campaign, now);
+      if (clipCycle === null || Number(clipCycle) >= Number(currentCycle)) continue;
+      if (clip.trackingStatus !== 'completed') {
+        clip.trackingStatus = 'completed';
+        clip.completedAt ||= Date.now();
+        clip.completedReason ||= 'budget_cycle_ended';
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+function shouldTrackClip(clip, campaign, data) {
+  if (!clip || !campaign || clip.trackingStatus === 'completed') return false;
+  if (clip.status !== 'pending' && !(clip.status === 'approved' && isPayoutEligibleClip(clip))) return false;
+  if (campaign.separateEarningLifecycle) {
+    if (!isClipInCampaignEarningPeriod(clip, campaign)) return false;
+  } else if (!isClipInCurrentBudgetCycle(clip, campaign)) return false;
+  if (campaignHasViewCap(campaign) && isCampaignCurrentBudgetCycleFulfilled(campaign.id, { data })) return false;
+  return true;
 }
 
 function getFiniteNonNegativeNumber(value) {
@@ -2234,7 +2529,7 @@ function getClipIdentityKey(clip) {
 }
 
 function getClipAccounting(clip, campaign) {
-  const totalViews = Math.max(getFiniteNonNegativeNumber(clip?.views), getFiniteNonNegativeNumber(clip?.currentViews), getFiniteNonNegativeNumber(clip?.approvalViews));
+  const totalViews = getClipCreditedViews(clip);
   const rawPaidViews = getFiniteNonNegativeNumber(clip?.payout?.paidViews);
   const paidViews = Math.min(rawPaidViews, totalViews);
   const paidMoney = getFiniteNonNegativeNumber(clip?.payout?.paidMoney);
@@ -2254,8 +2549,8 @@ function getUniqueClipRecords(clips, diagnosticContext = {}) {
     if (!key) continue;
     const existing = unique.get(key);
     if (!existing) { unique.set(key, { ...clip, payout: { ...(clip.payout || {}) }, _accountingIdentityKey: key }); continue; }
-    const existingViews = Math.max(getFiniteNonNegativeNumber(existing.views), getFiniteNonNegativeNumber(existing.currentViews), getFiniteNonNegativeNumber(existing.approvalViews));
-    const incomingViews = Math.max(getFiniteNonNegativeNumber(clip.views), getFiniteNonNegativeNumber(clip.currentViews), getFiniteNonNegativeNumber(clip.approvalViews));
+    const existingViews = getClipCreditedViews(existing);
+    const incomingViews = getClipCreditedViews(clip);
     const selected = incomingViews > existingViews ? clip : existing;
     const suppressed = selected === clip ? existing : clip;
     const conflicts = ['userId', 'campaignId', 'cycle', 'status'].some(field => String(existing[field] ?? '') !== String(clip[field] ?? '')) || Boolean(existing.payout?.history?.length) !== Boolean(clip.payout?.history?.length) || isPayoutEligibleClip(existing) !== isPayoutEligibleClip(clip);
@@ -2337,19 +2632,22 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
 
     // keep current-cycle filtering if that’s your intended stats window
     const clipCycle = getClipBudgetCycleIndex(c, campaign);
-    const matchCycle = Number(clipCycle) === Number(currentCycle);
+    const matchCycle = campaign.separateEarningLifecycle
+      ? isClipInCampaignEarningPeriod(c, campaign)
+      : Number(clipCycle) === Number(currentCycle);
 
     return matchUser && matchCampaign && matchCycle;
   });
 
   const approvedClips = userClips.filter(isPayoutEligibleClip);
-  const pendingClips = Object.values(data.clipReviews || {}).filter(c => String(c.userId) === String(targetUserId) && String(c.campaignId) === String(campaignId) && c.status === 'pending' && isClipInCurrentBudgetCycle(c, campaign));
-  const rejectedClips = getUniqueClipRecords([...Object.values(data.clipReviews || {}), ...Object.values(data.clips || {})]).filter(c => String(c.userId) === String(targetUserId) && String(c.campaignId) === String(campaignId) && c.status === 'rejected' && isClipInCurrentBudgetCycle(c, campaign));
+  const inStatsScope = clip => campaign.separateEarningLifecycle ? isClipInCampaignEarningPeriod(clip, campaign) : isClipInCurrentBudgetCycle(clip, campaign);
+  const pendingClips = Object.values(data.clipReviews || {}).filter(c => String(c.userId) === String(targetUserId) && String(c.campaignId) === String(campaignId) && c.status === 'pending' && inStatsScope(c));
+  const rejectedClips = getUniqueClipRecords([...Object.values(data.clipReviews || {}), ...Object.values(data.clips || {})]).filter(c => String(c.userId) === String(targetUserId) && String(c.campaignId) === String(campaignId) && c.status === 'rejected' && inStatsScope(c));
 
   const userCampaignClips = Object.values(data.clips || {}).filter(clip =>
     String(clip.userId) === String(targetUserId) &&
     String(clip.campaignId) === String(campaignId) &&
-    isClipInCurrentBudgetCycle(clip, campaign)
+    inStatsScope(clip)
   );
   const accounting = calculateClipCollectionAccounting(userCampaignClips, campaign, { scope: 'my_stats', campaignId, userId: targetUserId });
   const { totalViews, paidViews, unpaidViews, totalMoney, paidMoney, unpaidMoney } = accounting;
@@ -2362,6 +2660,9 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
   }
 
   const viewsNeeded = Math.max(payoutThreshold - unpaidViews, 0);
+  const weeklyUserViews = campaign.separateEarningLifecycle
+    ? userCampaignClips.reduce((sum, clip) => sum + (clip.budgetTracking?.budgetCycleKey === getCampaignBudgetCycleKey(campaign) ? Math.max(Number(clip.budgetTracking?.creditedViewsThisCycle) || 0, 0) : 0), 0)
+    : null;
 
   const payoutText =
     unpaidViews >= payoutThreshold
@@ -2376,7 +2677,8 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
     .setDescription(
       `<a:chart1:1504773558415523931> **Campaign Stats - ${campaignName}**\n\n` +
 
-      `<a:rocket1:1504872045849346140> **Total Views**\n${formatNumber(totalViews)}\n\n` +
+      `<a:rocket1:1504872045849346140> **${campaign.separateEarningLifecycle ? 'Monthly Earned Views' : 'Total Views'}**\n${formatNumber(totalViews)}\n\n` +
+      (weeklyUserViews === null ? '' : `<a:chart1:1504773558415523931> **Current Week Views**\n${formatNumber(weeklyUserViews)}\n\n`) +
       `<a:good1:1504871589332914176> **Paid Views**\n${formatNumber(paidViews)}\n\n` +
       `<a:flyin:1506234392920723546> **Unpaid Views**\n${formatNumber(unpaidViews)}\n\n` +
 
@@ -2608,20 +2910,35 @@ function getCampaignTotals(data, campaignId) {
 
   const campaignClips = Object.values(data.clips || {}).filter(clip =>
     String(clip.campaignId) === String(campaignId) &&
-    isClipInCurrentBudgetCycle(clip, campaign)
+    (campaign.separateEarningLifecycle
+      ? isClipInCampaignEarningPeriod(clip, campaign)
+      : isClipInCurrentBudgetCycle(clip, campaign))
   );
   const accounting = calculateClipCollectionAccounting(campaignClips, campaign, { scope: 'campaign_status', campaignId });
-  const configuredViewCap = Number(campaign.viewCap);
-  const cappedUnpaidViews = Number.isFinite(configuredViewCap) && configuredViewCap > 0
-    ? Math.min(accounting.unpaidViews, Math.max(configuredViewCap - accounting.paidViews, 0))
-    : accounting.unpaidViews;
+  if (campaign.separateEarningLifecycle) {
+    const weeklyViews = getCampaignCurrentWeeklyCreditedViews(campaignId, { data });
+    return {
+      users: accounting.users,
+      videos: accounting.videos,
+      views: weeklyViews,
+      paidViews: accounting.paidViews,
+      unpaidViews: accounting.unpaidViews,
+      paidMoney: accounting.paidMoney,
+      unpaidMoney: accounting.unpaidMoney,
+      payout: accounting.paidMoney + accounting.unpaidMoney
+    };
+  }
+  const viewCap = getCampaignViewCap(campaign);
+  const creditedViews = viewCap === null ? accounting.totalViews : Math.min(accounting.totalViews, viewCap);
+  const cappedPaidViews = Math.min(accounting.paidViews, creditedViews);
+  const cappedUnpaidViews = Math.max(creditedViews - cappedPaidViews, 0);
   const cappedUnpaidMoney = cappedUnpaidViews / 1_000_000 * (Number(campaign.ratePerMillion) || 0);
   return {
     users: accounting.users,
     videos: accounting.videos,
-    views: accounting.totalViews,
-    paidViews: accounting.paidViews,
-    unpaidViews: accounting.unpaidViews,
+    views: creditedViews,
+    paidViews: cappedPaidViews,
+    unpaidViews: cappedUnpaidViews,
     paidMoney: accounting.paidMoney,
     unpaidMoney: cappedUnpaidMoney,
     payout: accounting.paidMoney + cappedUnpaidMoney
@@ -2688,6 +3005,12 @@ async function updateServerStats(guild) {
 function buildCampaignStatusEmbed(campaign, data) {
   const { periodStart, periodEnd } = getCampaignBudgetPeriod(campaign);
   const totals = getCampaignTotals(data, campaign.id);
+  const viewCap = getCampaignViewCap(campaign);
+  const fulfilled = viewCap !== null && totals.views >= viewCap;
+  const statusText = campaign.separateEarningLifecycle
+    ? (fulfilled ? 'Paused — Weekly View Cap Reached' : 'Live')
+    : (fulfilled ? 'Fulfilled' : 'Active');
+  const viewsLabel = campaign.separateEarningLifecycle ? 'Weekly Views' : 'Total Views';
   console.log(`[Campaign Accounting] ${campaign.id}`, { users: totals.users, videos: totals.videos, paidViews: totals.paidViews, unpaidViews: totals.unpaidViews, totalViews: totals.views, payout: totals.payout });
 
   const cappedPayout = Math.min(
@@ -2709,7 +3032,7 @@ function buildCampaignStatusEmbed(campaign, data) {
     .setTitle(campaign.name)
     .setDescription(
       `<a:redalert:1504777207648620595> **Campaign Status**\n` +
-      `**Status:** Active\n\n` +
+      `**Status:** ${statusText}\n\n` +
 
       `📅 **Campaign Period**\n` +
       `${formatDateShort(periodStart)} - ${formatDateShort(periodEnd)}\n\n` +
@@ -2717,7 +3040,7 @@ function buildCampaignStatusEmbed(campaign, data) {
       `<a:rocket1:1504872045849346140> **Performance Metrics**\n` +
       `**Users:** ${totals.users}\n` +
       `**Videos:** ${totals.videos}\n` +
-      `**Total Views:** ${formatNumber(totals.views)}\n` +
+      `**${viewsLabel}:** ${viewCap === null ? formatNumber(totals.views) : `${formatNumber(totals.views)} / ${formatNumber(viewCap)}`}\n` +
       `**Paid Views:** ${formatNumber(totals.paidViews)}\n` +
       `**Unpaid Views:** ${formatNumber(totals.unpaidViews)}\n\n` +
 
@@ -2726,7 +3049,8 @@ function buildCampaignStatusEmbed(campaign, data) {
       `**Already Paid:** $${formatNumber(totals.paidMoney)}\n` +
       `**Current Unpaid:** $${formatNumber(totals.unpaidMoney)}\n` +
       `**Total Fulfilled:** $${formatNumber(cappedPayout)} (${fulfilledPercent.toFixed(1)}%)\n` +
-      `**Remaining:** $${formatNumber(remaining)}\n\n` +
+      `**Remaining:** $${formatNumber(remaining)}\n` +
+      (campaign.separateEarningLifecycle && fulfilled ? `**Next Reset:** ${formatDateShort(periodEnd)} at 07:00 UTC\n` : '\n') +
 
       `<a:warning:1504774411280973864> Once we hit the **${formatNumber(campaign.viewCap)} view cap**, any views after that won't be paid, so post early to secure your payout.\n\n` +
       `<:whiteCE:1504904179905200148> Powered by Creators Elite | ${new Date().toLocaleString()}`
@@ -3412,6 +3736,23 @@ async function fetchClipViews(clip) {
 }
 
 let trackingRunning = false;
+const campaignTrackingLocks = new Map();
+
+async function withCampaignTrackingLock(campaignId, task) {
+  const key = String(campaignId || 'unknown');
+  const previous = campaignTrackingLocks.get(key) || Promise.resolve();
+  let release;
+  const current = new Promise(resolve => { release = resolve; });
+  const queued = previous.then(() => current);
+  campaignTrackingLocks.set(key, queued);
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
+    if (campaignTrackingLocks.get(key) === queued) campaignTrackingLocks.delete(key);
+  }
+}
 
 async function autoTrackClipViews() {
   if (trackingRunning) return;
@@ -3421,7 +3762,7 @@ async function autoTrackClipViews() {
     const data = loadData();
     const guild = client.guilds.cache.first();
 
-    let changed = false;
+    let changed = finalizeExpiredBudgetCycleClips(data);
     const updatedCampaignIds = new Set();
     const updatedPayoutPairs = new Set();
     const approvedClipIds = new Set(Object.entries(data.clips || {})
@@ -3434,15 +3775,20 @@ async function autoTrackClipViews() {
         continue;
       }
       if (!isTrackableReviewClip(clip) || !isClipTrackingDue(clip)) continue;
+      const campaign = CAMPAIGNS[clip.campaignId];
+      if (!shouldTrackClip(clip, campaign, data)) continue;
       try {
-        const metadata = await fetchClipMetadata(clip);
-        updatePendingReviewTracking(clip, metadata);
-        data.clipReviews[clipId] = clip;
-        changed = true;
-        if (guild) {
-          try { await updateClipStaffMessage(guild, clip); }
-          catch (error) { console.error(`Could not update pending staff message ${clipId}:`, error.message); }
-        }
+        await withCampaignTrackingLock(clip.campaignId, async () => {
+          if (!shouldTrackClip(clip, campaign, data)) return;
+          const metadata = await fetchClipMetadata(clip);
+          updatePendingReviewTracking(clip, metadata, data);
+          data.clipReviews[clipId] = clip;
+          changed = true;
+          if (guild) {
+            try { await updateClipStaffMessage(guild, clip); }
+            catch (error) { console.error(`Could not update pending staff message ${clipId}:`, error.message); }
+          }
+        });
       } catch (error) {
         recordClipTrackingFailure(clip, error);
         data.clipReviews[clipId] = clip;
@@ -3454,17 +3800,22 @@ async function autoTrackClipViews() {
 
     for (const [clipId, clip] of Object.entries(data.clips || {})) {
       if (!isTrackableApprovedClip(clip) || !isClipTrackingDue(clip)) continue;
+      const campaign = CAMPAIGNS[clip.campaignId];
+      if (!shouldTrackClip(clip, campaign, data)) continue;
       try {
-        const metadata = await fetchClipMetadata(clip);
-        updateApprovedClipTracking(clip, metadata);
-        data.clips[clipId] = clip;
-        changed = true;
-        updatedCampaignIds.add(clip.campaignId);
-        updatedPayoutPairs.add(`${clip.campaignId}:${clip.userId}`);
-        if (guild) {
-          try { await updateClipStaffMessage(guild, clip); }
-          catch (error) { console.error(`Could not update approved staff message ${clipId}:`, error.message); }
-        }
+        await withCampaignTrackingLock(clip.campaignId, async () => {
+          if (!shouldTrackClip(clip, campaign, data)) return;
+          const metadata = await fetchClipMetadata(clip);
+          updateApprovedClipTracking(clip, metadata, data);
+          data.clips[clipId] = clip;
+          changed = true;
+          updatedCampaignIds.add(clip.campaignId);
+          updatedPayoutPairs.add(`${clip.campaignId}:${clip.userId}`);
+          if (guild) {
+            try { await updateClipStaffMessage(guild, clip); }
+            catch (error) { console.error(`Could not update approved staff message ${clipId}:`, error.message); }
+          }
+        });
       } catch (error) {
         recordClipTrackingFailure(clip, error);
         data.clips[clipId] = clip;
@@ -7423,7 +7774,8 @@ ${reason}
             const clipId = makeClipId();
             const submittedTimestamp = Date.now();
             const submissionBudgetCycle = getCampaignBudgetCycleIndex(campaign, new Date(submittedTimestamp));
-            const currentViews = Math.max(Number(metadata.views) || 0, 0);
+            const publicViews = Math.max(Number(metadata.views) || 0, 0);
+            const currentViews = campaign.separateEarningLifecycle ? 0 : publicViews;
             const estimatedEarnings = currentViews / 1000000 * (Number(campaign.ratePerMillion) || 0);
             const clip = {
                 id: clipId,
@@ -7442,9 +7794,18 @@ ${reason}
                 publishedTimestamp: metadata.publishedTimestamp || null,
                 title: metadata.title || validation.canonicalUrl,
                 thumbnailUrl: metadata.thumbnailUrl || null,
+                publicViews,
                 currentViews,
-                submissionViews: currentViews,
+                submissionViews: publicViews,
                 views: currentViews,
+                campaignCreditedViews: campaign.separateEarningLifecycle ? 0 : undefined,
+                budgetTracking: campaign.separateEarningLifecycle ? {
+                    budgetCycleKey: getCampaignBudgetCycleKey(campaign, new Date(submittedTimestamp)),
+                    baselinePublicViews: publicViews,
+                    lastPublicViews: publicViews,
+                    creditedViewsThisCycle: 0,
+                    pausedBaselineViews: null
+                } : undefined,
                 estimatedEarnings,
                 status: 'pending',
                 payoutEligible: false,
@@ -7961,7 +8322,8 @@ ${reason}
         clip.staffMessageId = interaction.message.id;
       }
 
-      let latestViews = Math.max(
+      let latestPublicViews = Math.max(
+        Number(clip.publicViews) || 0,
         Number(clip.currentViews) || 0,
         Number(clip.views) || 0,
         Number(clip.submissionViews) || 0
@@ -7969,7 +8331,14 @@ ${reason}
 
       try {
         const metadata = await fetchClipMetadata(clip);
-        latestViews = Math.max(latestViews, Number(metadata?.views) || 0);
+        if (Number.isFinite(Number(metadata?.views)) && Number(metadata.views) >= 0) {
+          latestPublicViews = Math.max(latestPublicViews, Number(metadata.views));
+        }
+
+        if (campaign.separateEarningLifecycle) {
+          applyTrackedMetadata(clip, metadata, data);
+          latestPublicViews = Math.max(latestPublicViews, Number(clip.publicViews) || 0);
+        }
 
         if (metadata?.title) clip.title = metadata.title;
         if (metadata?.thumbnailUrl) clip.thumbnailUrl = metadata.thumbnailUrl;
@@ -7980,10 +8349,21 @@ ${reason}
 
       const approvedAt = Date.now();
       const rate = Number(campaign.ratePerMillion) || 0;
+      const viewCap = getCampaignViewCap(campaign);
+      const otherCreditedViews = viewCap === null
+        ? 0
+        : getCampaignCurrentCycleCreditedViews(clip.campaignId, { data, excludeClipId: clip.id });
+      const latestViews = campaign.separateEarningLifecycle
+        ? Math.max(Number(clip.campaignCreditedViews) || 0, Number(clip.views) || 0)
+        : viewCap === null
+          ? latestPublicViews
+          : Math.min(latestPublicViews, Math.max(viewCap - otherCreditedViews, 0));
       clip.status = 'approved';
       clip.payoutEligible = true;
       clip.wasEverApproved = true;
       clip.approvedAt = approvedAt;
+      clip.publicViews = latestPublicViews;
+      if (campaign.separateEarningLifecycle) clip.campaignCreditedViews = latestViews;
       clip.currentViews = latestViews;
       clip.views = latestViews;
       clip.approvalViews = latestViews;
