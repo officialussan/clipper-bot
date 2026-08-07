@@ -2773,10 +2773,16 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
     .filter(clip => matchesUserCampaign(clip) && inStatsScope(clip));
   const currentReviewClips = Object.values(data.clipReviews || {})
     .filter(clip => matchesUserCampaign(clip) && inStatsScope(clip));
-  const approvedClips = currentRunClipRecords.filter(isPayoutEligibleClip);
-  const pendingClips = currentReviewClips.filter(clip => clip.status === 'pending');
-  const rejectedClips = getUniqueClipRecords([...currentReviewClips, ...currentRunClipRecords])
-    .filter(clip => clip.status === 'rejected');
+  const currentRunStatusRecords = getUniqueClipRecords([
+    ...currentReviewClips,
+    ...currentRunClipRecords
+  ], { scope: 'my_stats_status_counts', campaignId, userId: targetUserId });
+  // Status counts reflect the full review lifecycle. Financial accounting below
+  // intentionally remains limited to payout-eligible approved clip records.
+  const approvedClips = currentRunStatusRecords.filter(clip => clip.status === 'approved');
+  const pendingClips = currentRunStatusRecords.filter(clip => clip.status === 'pending');
+  const rejectedClips = currentRunStatusRecords.filter(clip => clip.status === 'rejected');
+  const approvedPayoutClips = currentRunClipRecords.filter(isPayoutEligibleClip);
 
   const userCampaignClips = currentRunClipRecords;
   const accounting = calculateClipCollectionAccounting(userCampaignClips, campaign, { scope: 'my_stats', campaignId, userId: targetUserId });
@@ -2826,7 +2832,7 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
 
   const viewsNeeded = Math.max(payoutThreshold - unpaidViews, 0);
   const weeklyUserViews = campaign.separateEarningLifecycle
-    ? approvedClips.reduce((sum, clip) => sum + (clip.budgetTracking?.budgetCycleKey === getCampaignBudgetCycleKey(campaign) ? Math.max(Number(clip.budgetTracking?.creditedViewsThisCycle) || 0, 0) : 0), 0)
+    ? approvedPayoutClips.reduce((sum, clip) => sum + (clip.budgetTracking?.budgetCycleKey === getCampaignBudgetCycleKey(campaign) ? Math.max(Number(clip.budgetTracking?.creditedViewsThisCycle) || 0, 0) : 0), 0)
     : null;
 
   const payoutEligible = payoutThreshold > 0 && unpaidViews >= payoutThreshold;
