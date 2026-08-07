@@ -356,7 +356,7 @@ function normalizeApifyInstagramReel(item, requestedUrl) {
     thumbnailUrl: thumbnailCandidate || null,
     views: viewMetric.value,
     viewMetricField: viewMetric.field,
-    likes: getFirstFiniteNonNegativeValue([source.likeCount, source.likesCount, source.likes]),
+    likes: getFirstFiniteNonNegativeValue([source.likesCount, source.likeCount, source.likes]),
     comments: getFirstFiniteNonNegativeValue([source.commentCount, source.commentsCount, source.comments]),
     publishedTimestamp: getApifyTimestampMs(source.timestamp || source.publishedTimestamp || source.publishedAt || source.takenAt),
     fetchedAt: Date.now(),
@@ -386,6 +386,7 @@ async function fetchApifyInstagramReelMetadata(reelUrl) {
     authorDisplayName: item.ownerFullName || reel.username,
     title: reel.title,
     views: reel.views,
+    likes: reel.likes,
     viewMetricField: reel.viewMetricField,
     thumbnailUrl: reel.thumbnailUrl,
     publishedTimestamp: reel.publishedTimestamp,
@@ -1001,7 +1002,28 @@ function getSafeTrackedViews(clip, metadata) {
   return Math.max(existingViews, fetchedViews);
 }
 
+function getClipLikes(clip) {
+  const candidates = [
+    clip?.likes,
+    clip?.likeCount,
+    clip?.likesCount,
+    clip?.currentLikes,
+    clip?.metadata?.likes,
+    clip?.metadata?.likeCount,
+    clip?.metadata?.likesCount
+  ];
+  for (const value of candidates) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric >= 0) return numeric;
+  }
+  return null;
+}
+
 function applyTrackedMetadata(clip, metadata, data) {
+  const fetchedLikes = Number(metadata?.likes);
+  if (Number.isFinite(fetchedLikes) && fetchedLikes >= 0) {
+    clip.likes = fetchedLikes;
+  }
   const publicViews = getSafeTrackedViews(clip, metadata);
   const campaign = CAMPAIGNS[clip.campaignId];
   if (campaign?.separateEarningLifecycle) {
@@ -3757,6 +3779,7 @@ async function fetchClipMetadata(clip) {
     const metadata = await fetchApifyInstagramReelMetadata(clipUrl);
     return {
       views: metadata.views,
+      likes: metadata.likes,
       title: metadata.title,
       thumbnailUrl: metadata.thumbnailUrl,
       authorName: metadata.authorUsername,
@@ -3766,7 +3789,13 @@ async function fetchClipMetadata(clip) {
   if (clip.platform === 'tiktok') {
     const res = await axios.get(`https://www.tikwm.com/api/?url=${encodeURIComponent(clipUrl)}`, { timeout: 15000 });
     const item = res.data?.data || {};
-    return { views: Number(item.play_count) || 0, title: item.title || '', thumbnailUrl: item.cover || item.origin_cover || null, authorName: item.author?.nickname || item.author?.unique_id || null };
+    return {
+      views: Number(item.play_count) || 0,
+      likes: getFirstFiniteNonNegativeValue([item.digg_count, item.like_count, item.likeCount, item.likes]),
+      title: item.title || '',
+      thumbnailUrl: item.cover || item.origin_cover || null,
+      authorName: item.author?.nickname || item.author?.unique_id || null
+    };
   }
 
   if (clip.platform !== 'youtube') return { views: Number(clip.currentViews) || 0, title: clip.title || '', thumbnailUrl: clip.thumbnailUrl || null, authorName: clip.platformAuthorName || null };
@@ -3784,7 +3813,13 @@ async function fetchClipMetadata(clip) {
 
   const item = res.data?.items?.[0] || {};
   const thumbs = item.snippet?.thumbnails || {};
-  return { views: Number(item.statistics?.viewCount) || 0, title: item.snippet?.title || '', thumbnailUrl: thumbs.maxres?.url || thumbs.standard?.url || thumbs.high?.url || thumbs.medium?.url || thumbs.default?.url || null, authorName: item.snippet?.channelTitle || null };
+  return {
+    views: Number(item.statistics?.viewCount) || 0,
+    likes: getFirstFiniteNonNegativeValue([item.statistics?.likeCount]),
+    title: item.snippet?.title || '',
+    thumbnailUrl: thumbs.maxres?.url || thumbs.standard?.url || thumbs.high?.url || thumbs.medium?.url || thumbs.default?.url || null,
+    authorName: item.snippet?.channelTitle || null
+  };
 }
 
 async function fetchSubmissionMetadata(platform, canonicalUrl, videoId) {
@@ -3809,6 +3844,7 @@ async function fetchSubmissionMetadata(platform, canonicalUrl, videoId) {
       authorDisplayName,
       title: data.title || '',
       views: Number(data.play_count) || 0,
+      likes: getFirstFiniteNonNegativeValue([data.digg_count, data.like_count, data.likeCount, data.likes]),
       thumbnailUrl: data.cover || data.origin_cover || null,
       publishedTimestamp: Number.isFinite(createdAt) && createdAt > 0 ? createdAt * 1000 : null
     };
@@ -3834,6 +3870,7 @@ async function fetchSubmissionMetadata(platform, canonicalUrl, videoId) {
       authorDisplayName: snippet.channelTitle || null,
       title: snippet.title || '',
       views: Number(item.statistics?.viewCount) || 0,
+      likes: getFirstFiniteNonNegativeValue([item.statistics?.likeCount]),
       thumbnailUrl: thumbnails.maxres?.url || thumbnails.standard?.url || thumbnails.high?.url || thumbnails.medium?.url || thumbnails.default?.url || null,
       publishedTimestamp: Number.isFinite(publishedTimestamp) ? publishedTimestamp : null
     };
@@ -7719,6 +7756,7 @@ ${reason}
             const submittedTimestamp = Date.now();
             const submissionBudgetCycle = getCampaignBudgetCycleIndex(campaign, new Date(submittedTimestamp));
             const publicViews = Math.max(Number(metadata.views) || 0, 0);
+            const fetchedLikes = Number(metadata?.likes);
             const currentViews = campaign.separateEarningLifecycle ? 0 : publicViews;
             const estimatedEarnings = currentViews / 1000000 * (Number(campaign.ratePerMillion) || 0);
             const clip = {
@@ -7738,6 +7776,7 @@ ${reason}
                 publishedTimestamp: metadata.publishedTimestamp || null,
                 title: metadata.title || validation.canonicalUrl,
                 thumbnailUrl: metadata.thumbnailUrl || null,
+                ...(Number.isFinite(fetchedLikes) && fetchedLikes >= 0 ? { likes: fetchedLikes } : {}),
                 publicViews,
                 currentViews,
                 submissionViews: publicViews,
@@ -9613,8 +9652,9 @@ function buildUserClipsPage({ data, userId, page = 0, perPage = 2, displayName }
     const globalIndex = startIndex + index + 1;
     const platformName = clip.platform ? clip.platform.charAt(0).toUpperCase() + clip.platform.slice(1) : 'Video';
     const timeAgoText = clip.updatedAt ? 'Updated recently' : 'No recent updates';
+    const likes = getClipLikes(clip);
     descriptionText += `${getStatusEmoji(clip.status)} **${globalIndex}. @${clip.username || 'user'}: [${platformName} Link](${clip.link || '#'})**\n`;
-    descriptionText += `↳ **${formatNumber(clip.views || 0)}** paid views · **${clip.likes || 0}** likes · **$${formatNumber(clip.totalMoneyMade || 0)}** earned\n`;
+    descriptionText += `↳ **Views:** ${formatNumber(clip.views || 0)} · **Likes:** ${likes === null ? 'Not available' : formatNumber(likes)} · **$${formatNumber(clip.totalMoneyMade || 0)}** earned\n`;
     descriptionText += `*${timeAgoText}*\n\n`;
   });
   descriptionText += '**Status Legend**\n';
