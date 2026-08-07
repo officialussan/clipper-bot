@@ -9803,10 +9803,10 @@ async function sendDemographicApprovalDM(userId, submission) {
         name: 'Creators Elite',
         iconURL: 'https://cdn.discordapp.com/emojis/1504904179905200148.png'
       })
-      .setTitle('Your application got approved 🟩')
+      .setTitle('Your application got approved <a:appr:1534931253952909453>')
       .setDescription(
         `Your account ${username} has been verified and marked as part of a **${tier}** country demographic.\n\n` +
-        'You can now join campaigns that require this audience type.\n\n' +
+        'Your campaign earnings will depend on the audience type.\n\n' +
         '**Note:** This tier is based on your current audience demographics and may be adjusted later if we find it is incorrect.\n\n' +
         `If you believe your assigned tier is wrong, please open a ticket in <#${GET_HELP_CHANNEL_ID}> so our support team can review it.`
       )
