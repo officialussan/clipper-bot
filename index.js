@@ -3665,6 +3665,95 @@ async function addMissingPayoutChannels() {
     console.log("✅ Missing payout channels created.");
 }
 
+function getCampaignConnectAccountLink(campaignId, environment = process.env) {
+  const key = `${String(campaignId || '').toUpperCase()}_CONNECT_ACCOUNT_LINK`;
+  const value = environment?.[key];
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
+function buildCampaignConnectAccountRow(campaignId, options = {}) {
+  const url = getCampaignConnectAccountLink(campaignId, options.environment);
+  if (!url) return null;
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setLabel(options.label || 'Connect Account')
+      .setEmoji('🔗')
+      .setStyle(ButtonStyle.Link)
+      .setURL(url)
+  );
+}
+
+function buildCampaignJoinSuccessEmbed(interaction, campaign, options = {}) {
+  const displayName = interaction?.member?.displayName || interaction?.user?.globalName || interaction?.user?.username || 'Creator';
+  const alreadyJoined = options.alreadyJoined === true;
+  const connectAvailable = options.connectAvailable !== false;
+  const description = alreadyJoined
+    ? `You're already part of the **${campaign.name}**. Your campaign access and roles have been checked.\n\n` +
+      (connectAvailable ? 'Before submitting clips, make sure at least one social account is connected and verified using the button below. 👇' : 'The account connection channel is currently unavailable. Please contact staff.')
+    : `You've successfully joined the **${campaign.name}**!\n\nYou're now part of the campaign and have access to the campaign channels.\n\n` +
+      (connectAvailable ? 'Before submitting clips, connect at least one social media account using the button below. 👇' : 'Campaign joined successfully, but the account connection channel is currently unavailable. Please contact staff.');
+  return new EmbedBuilder()
+    .setColor(0x57F287)
+    .setAuthor({ name: 'Creators Elite', iconURL: interaction?.guild?.iconURL?.() || undefined })
+    .setTitle(`Let's Get Clipping, ${displayName} 🔥`)
+    .setDescription(description)
+    .setFooter({ text: 'Creators Elite' })
+    .setTimestamp();
+}
+
+function getCampaignJoinBlockReason(campaign, data, now = new Date()) {
+  if (!campaign) return 'Campaign not found.';
+  const permanentlyFinished = data?.campaignStatus?.[campaign.id]?.status === 'finished' ||
+    data?.campaigns?.[campaign.id]?.status === 'finished' ||
+    campaign.status === 'finished';
+  if (permanentlyFinished) return 'This campaign has permanently finished and is no longer accepting members.';
+  if (campaign.separateEarningLifecycle && !isCampaignEarningActive(campaign, now)) {
+    return 'This campaign earning period has ended and is no longer accepting members.';
+  }
+  // A weekly view-cap pause does not block campaign membership; it only pauses
+  // new clip submissions/tracking under the existing cap rules.
+  return null;
+}
+
+function applyCampaignMembership(userRecord, campaign, joinedAt = Date.now()) {
+  userRecord.campaigns ||= [];
+  const alreadyJoined = userRecord.campaigns.includes(campaign.id);
+  if (!alreadyJoined) userRecord.campaigns.push(campaign.id);
+  userRecord.campaignMemberships ||= {};
+  userRecord.campaignMemberships[campaign.id] ||= {
+    joinedAt,
+    joinedRunKey: typeof getCampaignEarningRunKey === 'function' ? getCampaignEarningRunKey(campaign) : null
+  };
+  userRecord.campaignAccounts ||= {};
+  userRecord.campaignAccounts[campaign.id] ||= {};
+  return { alreadyJoined };
+}
+
+async function assignCampaignJoinRoles(guild, member, campaign, options = {}) {
+  const campaignRole = campaign?.roleId ? guild?.roles?.cache?.get(campaign.roleId) : null;
+  if (!campaignRole) return { ok: false, error: 'The campaign role is not configured correctly. Please contact staff.' };
+  const clipperRoleId = options.clipperRoleId ?? CLIPPER_ROLE_ID;
+  const clipperRole = clipperRoleId ? guild?.roles?.cache?.get(clipperRoleId) : null;
+  if (clipperRoleId && !clipperRole) return { ok: false, error: 'The Clipper role is not configured correctly. Please contact staff.' };
+
+  const addedRoles = [];
+  try {
+    if (!member.roles.cache.has(campaignRole.id)) {
+      await member.roles.add(campaignRole);
+      addedRoles.push(campaignRole);
+    }
+    if (clipperRole && !member.roles.cache.has(clipperRole.id)) {
+      await member.roles.add(clipperRole);
+      addedRoles.push(clipperRole);
+    }
+    return { ok: true, campaignRoleAdded: addedRoles.includes(campaignRole), clipperRoleAdded: addedRoles.includes(clipperRole) };
+  } catch (error) {
+    for (const role of addedRoles.reverse()) await member.roles.remove(role).catch(() => {});
+    console.error('[Campaign Join] Could not assign roles:', error.message);
+    return { ok: false, error: 'I could not assign the campaign roles. Please contact staff.' };
+  }
+}
+
 function buildCampaignPanelButtons(campaign, data) {
   const totals = getCampaignTotals(data, campaign.id);
 
@@ -3899,6 +3988,11 @@ function renderCampaignAssignedAccounts(userRecord, campaignId) {
   }).join('\n');
 }
 
+function getVerifiedCampaignPlatforms(userRecord, campaignId) {
+  const accounts = userRecord?.campaignAccounts?.[campaignId] || {};
+  return Object.keys(accounts).filter(platform => accounts[platform]?.verified === true);
+}
+
 function makeCampaignAccountRequestId() {
   return `car_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 }
@@ -3929,6 +4023,65 @@ function renderCampaignAccountStaffContent(request) {
     `🆔 **Username Link:** [@${cleanUsername}](${profileUrl})\n` + // Becomes a blue clickable hyperlink!
     `⏳ **Status:** \`${request.status.toUpperCase()}\``
   );
+}
+
+function escapeDiscordMarkdown(value) {
+  return String(value ?? '').replace(/([\\`*_{}\[\]()<>#+\-.!|~])/g, '\\$1');
+}
+
+function buildCampaignAccountApprovedEmbed(request) {
+  const campaign = CAMPAIGNS[request?.campaignId];
+  const campaignName = campaign?.name || request?.campaignName || 'Campaign';
+  const platform = formatPlatform(request?.platform || 'Unknown');
+  const username = `@${escapeDiscordMarkdown(normalizeUsername(request?.username || 'Unknown'))}`;
+  return new EmbedBuilder()
+    .setColor(0x57F287)
+    .setAuthor({ name: 'Creators Elite' })
+    .setTitle('Account Verified ✅')
+    .setDescription(
+      `**${escapeDiscordMarkdown(campaignName)}**\n\n` +
+      `Your **${escapeDiscordMarkdown(platform)}** account **${username}** has been successfully verified.\n\n` +
+      'You can now submit eligible clips from this account for this campaign.'
+    )
+    .addFields(
+      { name: '🌐 Platform', value: platform, inline: true },
+      { name: '👤 Account', value: username, inline: true },
+      { name: '✅ Status', value: 'Verified', inline: true }
+    )
+    .setFooter({
+      text: 'Creators Elite • Account Verification',
+      iconURL: 'https://cdn.discordapp.com/emojis/1504904179905200148.png'
+    })
+    .setTimestamp();
+}
+
+function buildCampaignAccountRejectedEmbed(request, reason) {
+  const campaign = CAMPAIGNS[request?.campaignId];
+  const campaignName = campaign?.name || request?.campaignName || 'Campaign';
+  const platform = formatPlatform(request?.platform || 'Unknown');
+  const username = `@${escapeDiscordMarkdown(normalizeUsername(request?.username || 'Unknown'))}`;
+  const safeReason = escapeDiscordMarkdown(reason || 'No reason was provided.');
+  return new EmbedBuilder()
+    .setColor(0xED4245)
+    .setAuthor({ name: 'Creators Elite' })
+    .setTitle('Account Verification Rejected ❌')
+    .setDescription(
+      `**${escapeDiscordMarkdown(campaignName)}**\n\n` +
+      `Your **${escapeDiscordMarkdown(platform)}** account **${username}** could not be verified.\n\n` +
+      'Review the reason below and connect another account or correct the issue before trying again.\n\n' +
+      'You are still part of the campaign and can connect another account.'
+    )
+    .addFields(
+      { name: '🌐 Platform', value: platform, inline: true },
+      { name: '👤 Account', value: username, inline: true },
+      { name: '❌ Status', value: 'Rejected', inline: true },
+      { name: '📌 Reason', value: safeReason, inline: false }
+    )
+    .setFooter({
+      text: 'Creators Elite • Account Verification',
+      iconURL: 'https://cdn.discordapp.com/emojis/1504904179905200148.png'
+    })
+    .setTimestamp();
 }
 
 function buildCampaignAccountStaffButtons(id, status) {
@@ -5195,6 +5348,11 @@ client.on(Events.MessageCreate, async message => {
         );
         return;
       }
+
+      const panelData = loadData();
+      panelData.campaignConnectChannels ||= {};
+      panelData.campaignConnectChannels[campaignId] = message.channel.id;
+      saveData(panelData);
 
       await message.delete().catch(() => {});
 
@@ -7740,12 +7898,10 @@ ${reason}
      
       await updateCampaignAccountStaffMessage(interaction.guild, request);
      
-      await member.send(
-        `✅ **Campaign Approved**\n\n` +
-        `You have been approved for **${request.campaignName}**.\n\n` +
-        `Your **${formatPlatform(request.platform)}** account **@${request.username}** has been verified and added to the campaign.\n\n` +
-        `You can now access the campaign channels and start submitting clips.`
-      ).catch(() => {});
+      await member.send({
+        embeds: [buildCampaignAccountApprovedEmbed(request)],
+        components: []
+      }).catch(() => {});
 
       await interaction.reply({
         content: `✅ Approved **${formatPlatform(request.platform)}** account **@${request.username}** for **${request.campaignName}**.`,
@@ -7820,16 +7976,20 @@ ${reason}
         await interaction.reply({ content: `❌ Account request rejected with reason: "${reason}"`, flags: MessageFlags.Ephemeral });
         }
 
-        // Send DM notification to user with the custom reason
+        // Send creator-facing account decision without changing campaign membership.
         const targetMember = await interaction.guild.members.fetch(request.userId).catch(() => null);
         if (targetMember) {
-            const dmEmbed = new EmbedBuilder()
-                .setTitle('❌ Account Verification Rejected')
-                .setDescription(`Your account request (@${request.username}) for **${request.campaignName}** was rejected by staff.`)
-                .addFields({ name: '📌 Reason', value: reason })
-                .setColor('#EF4444');
-
-            await targetMember.send({ embeds: [dmEmbed] }).catch(() => {});
+            const campaign = CAMPAIGNS[request.campaignId];
+            const connectAccountRow = buildCampaignConnectAccountRow(
+                interaction.guild.id,
+                campaign || { id: request.campaignId },
+                data,
+                { label: 'Connect Another Account' }
+            );
+            await targetMember.send({
+                embeds: [buildCampaignAccountRejectedEmbed(request, reason)],
+                components: connectAccountRow ? [connectAccountRow] : []
+            }).catch(() => {});
         }
 
         return interaction.followUp({ content: `❌ Rejected account request for <@${request.userId}>. Reason: "${reason}"`, flags: MessageFlags.Ephemeral });
@@ -7951,13 +8111,13 @@ ${reason}
 
       const userRecord = ensureUser(data, member);
       const accounts = userRecord.campaignAccounts?.[campaignId] || {};
-      const availablePlatforms = Object.keys(accounts).filter(
-        platform => accounts[platform]?.verified
-      );
+      const availablePlatforms = getVerifiedCampaignPlatforms(userRecord, campaignId);
 
       if (availablePlatforms.length === 0) {
+        const connectButtonRow = buildCampaignConnectAccountRow(interaction.guild.id, campaign, data);
         await interaction.reply({
-          content: '❌ You do not have any verified campaign account set for this campaign yet.',
+          content: '❌ You need to connect and verify at least one campaign account before submitting clips.',
+          components: connectButtonRow ? [connectButtonRow] : [],
           flags: MessageFlags.Ephemeral
         });
         return;
@@ -8077,8 +8237,10 @@ ${reason}
         const campaignAccount = userRecord.campaignAccounts?.[campaignId]?.[platform];
     
         if (!campaignAccount || !campaignAccount.verified) {
+            const connectButtonRow = buildCampaignConnectAccountRow(interaction.guild.id, campaign, data);
             await interaction.reply({
-                content: `❌ No verified ${formatPlatform(platform)} account found for this campaign.`,
+                content: `❌ No verified ${formatPlatform(platform)} account was found for this campaign. Connect and verify an account before submitting clips.`,
+                components: connectButtonRow ? [connectButtonRow] : [],
                 flags: MessageFlags.Ephemeral
             });
             return;
@@ -8590,6 +8752,10 @@ ${reason}
       const userRecord = ensureUser(data, member);
 
       userRecord.campaigns = (userRecord.campaigns || []).filter(id => id !== campaignId);
+
+      if (userRecord.campaignMemberships?.[campaignId]) {
+        delete userRecord.campaignMemberships[campaignId];
+      }
 
       if (userRecord.campaignAccounts?.[campaignId]) {
         delete userRecord.campaignAccounts[campaignId];
@@ -9177,10 +9343,6 @@ ${reason}
        ensureCampaignAccount(userRecord, campaignId, platform, username);
        ensureCampaignPlatformStats(userRecord, campaignId, platform, username);
 
-       if (!userRecord.campaigns.includes(campaignId)) {
-          userRecord.campaigns.push(campaignId);
-       }
-
        saveData(data);
 
        await interaction.reply({
@@ -9255,27 +9417,57 @@ ${reason}
       const campaignId = interaction.customId.split(':')[1];
       const campaign = CAMPAIGNS[campaignId];
 
-      if (!campaign) {
+      if (!interaction.guild) {
         await interaction.reply({
-          content: '❌ Campaign not found.',
+          content: '❌ Campaigns can only be joined from the Creators Elite server.',
           flags: MessageFlags.Ephemeral
         });
         return;
       }
 
-      const select = new StringSelectMenuBuilder()
-        .setCustomId(`campaign_connect_platform:${campaign.id}`)
-        .setPlaceholder('Choose platform')
-        .addOptions(
-          campaign.allowedPlatforms.map(platform => ({
-            label: formatPlatform(platform),
-            value: platform
-          }))
-        );
+      const data = loadData();
+      const blockReason = getCampaignJoinBlockReason(campaign, data);
+      if (blockReason) {
+        await interaction.reply({
+          content: `❌ ${blockReason}`,
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
+      const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+      if (!member) {
+        await interaction.reply({ content: '❌ Could not load your server profile.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const userRecord = ensureUser(data, member);
+      const alreadyJoined = Array.isArray(userRecord.campaigns) && userRecord.campaigns.includes(campaignId);
+      const roleResult = await assignCampaignJoinRoles(interaction.guild, member, campaign);
+      if (!roleResult.ok) {
+        console.warn('[Campaign Join]', { campaignId, userId: interaction.user.id, roleError: roleResult.error });
+        await interaction.reply({ content: `⚠️ ${roleResult.error}`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      applyCampaignMembership(userRecord, campaign);
+      saveData(data);
+
+      const connectChannelId = getCampaignConnectAccountChannelId(campaign, data);
+      const connectChannel = connectChannelId
+        ? await interaction.guild.channels.fetch(connectChannelId).catch(() => null)
+        : null;
+      const connectButtonRow = connectChannel
+        ? buildCampaignConnectAccountRow(interaction.guild.id, campaign, data)
+        : null;
+      if (!connectButtonRow) console.warn(`[Campaign Join] Missing connect account channel for ${campaignId}`);
 
       await interaction.reply({
-        content: `Choose platform for **${campaign.name}**`,
-        components: [new ActionRowBuilder().addComponents(select)],
+        embeds: [buildCampaignJoinSuccessEmbed(interaction, campaign, {
+          alreadyJoined,
+          connectAvailable: Boolean(connectButtonRow)
+        })],
+        components: connectButtonRow ? [connectButtonRow] : [],
         flags: MessageFlags.Ephemeral
       });
 
@@ -10283,16 +10475,26 @@ function buildPaymentReceiptPage(interaction, payments, page) {
 if (require.main === module) client.login(process.env.TOKEN);
 
 module.exports.__clipLifecycleTest = {
+  applyCampaignMembership,
   applyApprovalSnapshotAccounting,
   applyTrackedMetadata,
+  assignCampaignJoinRoles,
+  buildCampaignConnectAccountRow,
+  buildCampaignAccountApprovedEmbed,
+  buildCampaignAccountRejectedEmbed,
+  buildCampaignJoinSuccessEmbed,
   buildClipStaffEmbed,
   buildClipStaffButtons,
   finalizeOutOfRunClips,
   getClipTrackingAudit,
+  getCampaignConnectAccountUrl,
+  getCampaignJoinBlockReason,
   getInitialSubmissionViewState,
   getSafeTrackedViews,
   initializeClipTrackingFields,
   repairApprovalSnapshotInvariants,
+  getVerifiedCampaignPlatforms,
+  ensureCampaignAccount,
   shouldTrackClip,
   updateApprovedClipTracking,
   updatePendingReviewTracking,

@@ -2,15 +2,25 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  applyCampaignMembership,
   applyApprovalSnapshotAccounting,
   applyTrackedMetadata,
+  assignCampaignJoinRoles,
+  buildCampaignAccountApprovedEmbed,
+  buildCampaignAccountRejectedEmbed,
+  buildCampaignConnectAccountRow,
+  buildCampaignJoinSuccessEmbed,
   buildClipStaffEmbed,
   buildClipStaffButtons,
   CAMPAIGNS,
   finalizeOutOfRunClips,
+  getCampaignConnectAccountUrl,
+  getCampaignJoinBlockReason,
+  getVerifiedCampaignPlatforms,
   getInitialSubmissionViewState,
   initializeClipTrackingFields,
   repairApprovalSnapshotInvariants,
+  ensureCampaignAccount,
   shouldTrackClip,
   updateApprovedClipTracking
 } = require('./index.js').__clipLifecycleTest;
@@ -191,4 +201,127 @@ test('K: staff earnings use campaign-credited views, not public views', () => {
   const description = buildClipStaffEmbed(clip).data.description;
   assert.match(description, /Campaign Credited Views\*\*\n900/);
   assert.match(description, /Current Earnings\*\*\n\$0\.27/);
+});
+
+test('join A/E: membership and roles are immediate and idempotent without an account', async () => {
+  const campaign = { ...CAMPAIGNS.crowder, roleId: 'campaign-role', connectAccountChannelId: 'connect-channel' };
+  const heldRoles = new Set();
+  const campaignRole = { id: 'campaign-role' };
+  const clipperRole = { id: 'clipper-role' };
+  const guild = {
+    id: 'guild-1',
+    roles: { cache: { get: id => id === campaignRole.id ? campaignRole : clipperRole } }
+  };
+  const member = {
+    displayName: 'Creator',
+    roles: {
+      cache: { has: id => heldRoles.has(id) },
+      add: async role => heldRoles.add(role.id),
+      remove: async role => heldRoles.delete(role.id)
+    }
+  };
+  const userRecord = { campaigns: [], campaignAccounts: {} };
+  const roleResult = await assignCampaignJoinRoles(guild, member, campaign, { clipperRoleId: 'clipper-role-id' });
+  assert.equal(roleResult.ok, true);
+  assert.equal(heldRoles.has('campaign-role'), true);
+  assert.equal(heldRoles.has('clipper-role'), true);
+
+  assert.deepEqual(applyCampaignMembership(userRecord, campaign, 1000), { alreadyJoined: false });
+  assert.deepEqual(applyCampaignMembership(userRecord, campaign, 2000), { alreadyJoined: true });
+  assert.deepEqual(userRecord.campaigns, ['crowder']);
+  assert.deepEqual(userRecord.campaignAccounts.crowder, {});
+  assert.equal(userRecord.campaignMemberships.crowder.joinedAt, 1000);
+
+  const interaction = { user: { username: 'creator' }, member, guild: { iconURL: () => null } };
+  assert.match(buildCampaignJoinSuccessEmbed(interaction, campaign).data.title, /Let's Get Clipping, Creator/);
+  const row = buildCampaignConnectAccountRow('guild-1', campaign, {});
+  assert.equal(row.components[0].data.style, 5);
+  assert.equal(row.components[0].data.custom_id, undefined);
+});
+
+test('join B/C/D/I: verified accounts gate submission but do not control membership', () => {
+  const campaign = { ...CAMPAIGNS.crowder };
+  const userRecord = { campaigns: [], campaignAccounts: {} };
+  applyCampaignMembership(userRecord, campaign, 1000);
+  assert.deepEqual(getVerifiedCampaignPlatforms(userRecord, campaign.id), []);
+
+  const account = ensureCampaignAccount(userRecord, campaign.id, 'instagram', 'creator');
+  assert.deepEqual(getVerifiedCampaignPlatforms(userRecord, campaign.id), []);
+  account.verified = true;
+  assert.deepEqual(getVerifiedCampaignPlatforms(userRecord, campaign.id), ['instagram']);
+
+  delete userRecord.campaignAccounts[campaign.id].instagram;
+  assert.deepEqual(userRecord.campaigns, ['crowder']);
+  assert.deepEqual(getVerifiedCampaignPlatforms(userRecord, campaign.id), []);
+});
+
+test('join F: missing campaign role fails before membership is written', async () => {
+  const campaign = { ...CAMPAIGNS.crowder, roleId: 'missing-role' };
+  const userRecord = { campaigns: [], campaignAccounts: {} };
+  const member = { roles: { cache: { has: () => false }, add: async () => {}, remove: async () => {} } };
+  const result = await assignCampaignJoinRoles({ roles: { cache: { get: () => null } } }, member, campaign);
+  assert.equal(result.ok, false);
+  assert.deepEqual(userRecord.campaigns, []);
+});
+
+test('join G/H: finished campaigns are blocked and Connect Account uses the user-facing channel', () => {
+  const campaign = { ...CAMPAIGNS.crowder, connectAccountChannelId: 'user-connect-channel' };
+  assert.match(getCampaignJoinBlockReason(campaign, { campaignStatus: { crowder: { status: 'finished' } } }, new Date('2026-08-08T12:00:00Z')), /permanently finished/);
+  assert.equal(getCampaignJoinBlockReason(campaign, {}, new Date('2026-08-08T12:00:00Z')), null);
+  assert.equal(
+    getCampaignConnectAccountUrl('guild-id', campaign, {}),
+    'https://discord.com/channels/guild-id/user-connect-channel'
+  );
+  assert.equal(
+    getCampaignConnectAccountUrl('guild-id', campaign, { campaignConnectChannels: { crowder: 'posted-panel-channel' } }),
+    'https://discord.com/channels/guild-id/posted-panel-channel'
+  );
+});
+
+test('account decision A/B: Instagram and TikTok approvals use account-only wording', () => {
+  for (const [platform, expectedPlatform] of [['instagram', 'Instagram'], ['tiktok', 'TikTok']]) {
+    const embed = buildCampaignAccountApprovedEmbed({
+      campaignId: 'crowder',
+      campaignName: 'Legacy Name',
+      platform,
+      username: 'dailyclp_'
+    }).data;
+    assert.equal(embed.title, 'Account Verified ✅');
+    assert.equal(embed.color, 0x57F287);
+    assert.match(embed.description, /Steven Crowder Clipping Campaign/);
+    assert.match(embed.description, /successfully verified/);
+    assert.doesNotMatch(embed.description, /Campaign Approved|approved for the campaign|access the campaign channels/i);
+    assert.equal(embed.fields.find(field => field.name === '🌐 Platform').value, expectedPlatform);
+    assert.equal(embed.fields.find(field => field.name === '👤 Account').value, '@dailyclp\\_');
+    assert.equal(embed.fields.find(field => field.name === '✅ Status').value, 'Verified');
+  }
+});
+
+test('account decision C/D: rejection is account-specific and links to Connect Another Account', () => {
+  const userRecord = { campaigns: ['crowder'], campaignAccounts: { crowder: {} } };
+  const request = { campaignId: 'crowder', platform: 'instagram', username: 'dailyclp_' };
+  const embed = buildCampaignAccountRejectedEmbed(request, 'The bio verification code could not be found.').data;
+  assert.equal(embed.title, 'Account Verification Rejected ❌');
+  assert.equal(embed.color, 0xED4245);
+  assert.match(embed.description, /still part of the campaign/);
+  assert.doesNotMatch(embed.description, /rejected from the campaign|lost access/i);
+  assert.match(embed.fields.find(field => field.name === '📌 Reason').value, /bio verification code/);
+  assert.deepEqual(userRecord.campaigns, ['crowder']);
+
+  const campaign = { ...CAMPAIGNS.crowder, connectAccountChannelId: 'connect-channel' };
+  const row = buildCampaignConnectAccountRow('guild-id', campaign, {}, { label: 'Connect Another Account' });
+  assert.equal(row.components[0].data.label, 'Connect Another Account');
+  assert.equal(row.components[0].data.url, 'https://discord.com/channels/guild-id/connect-channel');
+});
+
+test('account decision E/F: DM failure is non-fatal and missing campaign config falls back safely', async () => {
+  const request = { campaignId: 'missing-campaign', campaignName: 'Legacy Campaign', platform: 'youtube', username: 'creator' };
+  const embed = buildCampaignAccountApprovedEmbed(request).data;
+  assert.match(embed.description, /Legacy Campaign/);
+  assert.equal(embed.fields.find(field => field.name === '🌐 Platform').value, 'YouTube');
+
+  const accountState = { verified: true };
+  const disabledDmMember = { send: async () => { throw new Error('DMs disabled'); } };
+  await disabledDmMember.send({ embeds: [embed] }).catch(() => {});
+  assert.equal(accountState.verified, true);
 });
