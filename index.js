@@ -3691,15 +3691,18 @@ function buildCampaignJoinSuccessEmbed(interaction, campaign, options = {}) {
   const connectAvailable = options.connectAvailable !== false;
   const description = alreadyJoined
     ? `You're already part of the **${campaign.name}**. Your campaign access and roles have been checked.\n\n` +
-      (connectAvailable ? 'Before submitting clips, make sure at least one social account is connected and verified using the button below. 👇' : 'The account connection channel is currently unavailable. Please contact staff.')
+      (connectAvailable ? 'Before submitting clips, make sure at least one social account is connected and verified using the button below. ⤵️' : 'The account connection channel is currently unavailable. Please contact staff.')
     : `You've successfully joined the **${campaign.name}**!\n\nYou're now part of the campaign and have access to the campaign channels.\n\n` +
-      (connectAvailable ? 'Before submitting clips, connect at least one social media account using the button below. 👇' : 'Campaign joined successfully, but the account connection channel is currently unavailable. Please contact staff.');
+      (connectAvailable ? 'Before submitting clips, connect at least one social media account using the button below. ⤵️' : 'Campaign joined successfully, but the account connection channel is currently unavailable. Please contact staff.');
   return new EmbedBuilder()
     .setColor(0x57F287)
     .setAuthor({ name: 'Creators Elite', iconURL: interaction?.guild?.iconURL?.() || undefined })
-    .setTitle(`Let's Get Clipping, ${displayName} 🔥`)
+    .setTitle(`Let's Get Clipping, ${displayName} <a:fire1:1504871649491554487>`)
     .setDescription(description)
-    .setFooter({ text: 'Creators Elite' })
+    .setFooter({ 
+      text: 'Creators Elite',
+      iconURL: 'https://cdn.discordapp.com/emojis/1504904179905200148.png'
+    })
     .setTimestamp();
 }
 
