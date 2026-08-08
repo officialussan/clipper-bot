@@ -21,8 +21,10 @@ const {
   initializeClipTrackingFields,
   repairApprovalSnapshotInvariants,
   ensureCampaignAccount,
+  removeCampaignAccount,
   shouldTrackClip,
-  updateApprovedClipTracking
+  updateApprovedClipTracking,
+  validateAccountSubmission
 } = require('./index.js').__clipLifecycleTest;
 
 const currentSubmittedTimestamp = Date.parse('2026-08-07T12:00:00.000Z');
@@ -323,4 +325,208 @@ test('account decision E/F: DM failure is non-fatal and missing campaign config 
   const disabledDmMember = { send: async () => { throw new Error('DMs disabled'); } };
   await disabledDmMember.send({ embeds: [embed] }).catch(() => {});
   assert.equal(accountState.verified, true);
+});
+
+test('account removal A/C/D/E/F: shared removal preserves membership and all historical accounting', () => {
+  const data = {
+    users: {
+      'user-1': {
+        campaigns: ['crowder'],
+        campaignAccounts: {
+          crowder: {
+            instagram: { username: 'dailyclp_', verified: true }
+          }
+        },
+        campaignStats: {
+          crowder: {
+            instagram: {
+              username: 'dailyclp_',
+              videosPosted: 4,
+              videosApproved: 3,
+              totalViews: 125000,
+              moneyMade: 48.5
+            }
+          }
+        },
+        paymentReceipts: [{ id: 'receipt-1', amount: 48.5, status: 'paid' }]
+      }
+    },
+    campaignAccountRequests: {
+      approved: {
+        id: 'approved',
+        userId: 'user-1',
+        campaignId: 'crowder',
+        platform: 'instagram',
+        username: '@DailyClp_',
+        status: 'approved'
+      },
+      rejected: {
+        id: 'rejected',
+        userId: 'user-1',
+        campaignId: 'crowder',
+        platform: 'instagram',
+        username: 'dailyclp_',
+        status: 'rejected'
+      }
+    },
+    clips: {
+      approved: {
+        id: 'approved',
+        userId: 'user-1',
+        campaignId: 'crowder',
+        platform: 'instagram',
+        status: 'approved',
+        trackingStatus: 'active',
+        publicViews: 150000,
+        submissionViews: 100000,
+        approvalViews: 110000,
+        campaignCreditedViews: 50000,
+        payout: { paidViews: 25000, paidMoney: 25, history: [{ views: 25000, amount: 25 }] }
+      },
+      pending: {
+        id: 'pending',
+        userId: 'user-1',
+        campaignId: 'crowder',
+        platform: 'instagram',
+        status: 'pending'
+      }
+    },
+    clipReviews: { pending: { clipId: 'pending', status: 'pending' } },
+    payoutTrackers: { crowder: { paidViews: 25000, unpaidViews: 25000 } }
+  };
+  const preserved = structuredClone({
+    campaigns: data.users['user-1'].campaigns,
+    campaignStats: data.users['user-1'].campaignStats,
+    paymentReceipts: data.users['user-1'].paymentReceipts,
+    clips: data.clips,
+    clipReviews: data.clipReviews,
+    payoutTrackers: data.payoutTrackers
+  });
+
+  const result = removeCampaignAccount({
+    data,
+    userId: 'user-1',
+    campaignId: 'crowder',
+    platform: 'instagram',
+    removedBy: 'staff-1',
+    removedAt: 123456789
+  });
+
+  assert.deepEqual(result, { removed: true, username: 'dailyclp_', requestsMarkedRemoved: 1 });
+  assert.equal(data.users['user-1'].campaignAccounts.crowder, undefined);
+  assert.deepEqual(data.users['user-1'].campaigns, preserved.campaigns);
+  assert.deepEqual(data.users['user-1'].campaignStats, preserved.campaignStats);
+  assert.deepEqual(data.users['user-1'].paymentReceipts, preserved.paymentReceipts);
+  assert.deepEqual(data.clips, preserved.clips);
+  assert.deepEqual(data.clipReviews, preserved.clipReviews);
+  assert.deepEqual(data.payoutTrackers, preserved.payoutTrackers);
+  assert.deepEqual(
+    {
+      status: data.campaignAccountRequests.approved.status,
+      removedAt: data.campaignAccountRequests.approved.removedAt,
+      removedBy: data.campaignAccountRequests.approved.removedBy
+    },
+    { status: 'removed', removedAt: 123456789, removedBy: 'staff-1' }
+  );
+  assert.equal(data.campaignAccountRequests.rejected.status, 'rejected');
+});
+
+test('account removal B: a removed handle can start a fresh verification request', () => {
+  const data = {
+    users: {
+      'user-1': {
+        campaigns: ['crowder'],
+        campaignAccounts: { crowder: { instagram: { username: 'dailyclp_', verified: true } } }
+      }
+    },
+    campaignAccountRequests: {
+      old: {
+        userId: 'user-1',
+        campaignId: 'crowder',
+        platform: 'instagram',
+        username: 'dailyclp_',
+        status: 'approved'
+      }
+    }
+  };
+
+  removeCampaignAccount({
+    data,
+    userId: 'user-1',
+    campaignId: 'crowder',
+    platform: 'instagram',
+    removedBy: 'staff-1'
+  });
+
+  assert.equal(validateAccountSubmission('user-1', 'crowder', 'instagram', '@DailyClp_', data).isValid, true);
+
+  data.campaignAccountRequests.fresh = {
+    userId: 'user-1',
+    campaignId: 'crowder',
+    platform: 'instagram',
+    username: 'dailyclp_',
+    status: 'pending'
+  };
+  assert.equal(validateAccountSubmission('user-1', 'crowder', 'instagram', 'dailyclp_', data).isValid, false);
+});
+
+test('account removal G: another creator is blocked while ownership is actively linked', () => {
+  const data = {
+    users: {
+      owner: {
+        campaignAccounts: { crowder: { instagram: { username: 'dailyclp_', verified: true } } }
+      },
+      other: { campaignAccounts: {} }
+    },
+    campaignAccountRequests: {
+      approved: {
+        userId: 'owner',
+        campaignId: 'crowder',
+        platform: 'instagram',
+        username: 'dailyclp_',
+        status: 'approved'
+      }
+    }
+  };
+
+  const activeResult = validateAccountSubmission('other', 'crowder', 'instagram', 'dailyclp_', data);
+  assert.equal(activeResult.isValid, false);
+  assert.match(activeResult.message, /another creator/);
+
+  removeCampaignAccount({
+    data,
+    userId: 'owner',
+    campaignId: 'crowder',
+    platform: 'instagram',
+    removedBy: 'staff-1'
+  });
+  assert.equal(validateAccountSubmission('other', 'crowder', 'instagram', 'dailyclp_', data).isValid, true);
+});
+
+test('account removal: unlinking one platform leaves other verified accounts available', () => {
+  const data = {
+    users: {
+      'user-1': {
+        campaigns: ['crowder'],
+        campaignAccounts: {
+          crowder: {
+            instagram: { username: 'dailyclp_', verified: true },
+            tiktok: { username: 'dailyclp', verified: true }
+          }
+        }
+      }
+    },
+    campaignAccountRequests: {}
+  };
+
+  removeCampaignAccount({
+    data,
+    userId: 'user-1',
+    campaignId: 'crowder',
+    platform: 'instagram',
+    removedBy: 'user-1'
+  });
+
+  assert.deepEqual(data.users['user-1'].campaigns, ['crowder']);
+  assert.deepEqual(getVerifiedCampaignPlatforms(data.users['user-1'], 'crowder'), ['tiktok']);
 });

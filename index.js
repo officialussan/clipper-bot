@@ -2009,13 +2009,45 @@ async function sendClipForStaffReview(guild, clip) {
     }
 }
 
-function validateAccountSubmission(userId, campaignId, platform, username) {
-  const data = loadData();
+const ACTIVE_ACCOUNT_REQUEST_STATUSES = new Set([
+  'pending',
+  'waiting_confirm',
+  'ready_for_review',
+  'verifying',
+  'bio_updated',
+  'approved'
+]);
+
+const TERMINAL_ACCOUNT_REQUEST_STATUSES = new Set([
+  'rejected',
+  'removed',
+  'unlinked',
+  'revoked'
+]);
+
+function isApprovedAccountRequestStillLinked(data, request) {
+  if (String(request?.status || '').toLowerCase() !== 'approved') return false;
+  const linkedAccount = data?.users?.[request.userId]?.campaignAccounts?.[request.campaignId]?.[request.platform];
+  return Boolean(
+    linkedAccount &&
+    linkedAccount.verified === true &&
+    normalizeSocialKey(request.platform, linkedAccount.username) === normalizeSocialKey(request.platform, request.username)
+  );
+}
+
+function validateAccountSubmission(userId, campaignId, platform, username, dataOverride = null) {
+  const data = dataOverride || loadData();
   const currentKey = normalizeSocialKey(platform, username);
 
   // 1. FIND ANY EXISTING ACTIVE OR PENDING REQUEST FOR THIS EXACT HANDLE
   const conflictingRequest = Object.values(data.campaignAccountRequests || {}).find(
-    req => normalizeSocialKey(req.platform, req.username) === currentKey && req.status !== 'rejected'
+    req => {
+      const status = String(req?.status || '').toLowerCase();
+      if (TERMINAL_ACCOUNT_REQUEST_STATUSES.has(status)) return false;
+      if (!ACTIVE_ACCOUNT_REQUEST_STATUSES.has(status)) return false;
+      if (normalizeSocialKey(req.platform, req.username) !== currentKey) return false;
+      return status !== 'approved' || isApprovedAccountRequestStillLinked(data, req);
+    }
   );
 
   if (conflictingRequest) {
@@ -3949,6 +3981,45 @@ function ensureCampaignAccount(userRecord, campaignId, platform, username = '') 
   }
 
   return userRecord.campaignAccounts[campaignId][platform];
+}
+
+function removeCampaignAccount({ data, userId, campaignId, platform, removedBy, removedAt = Date.now() }) {
+  const userRecord = data?.users?.[userId];
+  const account = userRecord?.campaignAccounts?.[campaignId]?.[platform];
+
+  if (!account) {
+    return { removed: false, username: null, requestsMarkedRemoved: 0 };
+  }
+
+  const username = account.username;
+  delete userRecord.campaignAccounts[campaignId][platform];
+
+  if (Object.keys(userRecord.campaignAccounts[campaignId]).length === 0) {
+    delete userRecord.campaignAccounts[campaignId];
+  }
+
+  const normalizedUsername = normalizeSocialKey(platform, username);
+  let requestsMarkedRemoved = 0;
+
+  for (const request of Object.values(data.campaignAccountRequests || {})) {
+    const status = String(request?.status || '').toLowerCase();
+    const matchesRemovedAccount =
+      String(request?.userId) === String(userId) &&
+      String(request?.campaignId) === String(campaignId) &&
+      String(request?.platform).toLowerCase() === String(platform).toLowerCase() &&
+      normalizeSocialKey(request.platform, request.username) === normalizedUsername;
+
+    if (!matchesRemovedAccount || TERMINAL_ACCOUNT_REQUEST_STATUSES.has(status)) {
+      continue;
+    }
+
+    request.status = 'removed';
+    request.removedAt = removedAt;
+    request.removedBy = removedBy;
+    requestsMarkedRemoved += 1;
+  }
+
+  return { removed: true, username, requestsMarkedRemoved };
 }
 
 function ensureCampaignPlatformStats(userRecord, campaignId, platform, username = '') {
@@ -7531,7 +7602,8 @@ ${reason}
         interaction.user.id, 
         campaignId, 
         platform, 
-        username
+        username,
+        data
       );
 
       if (!validation.isValid) {
@@ -7546,12 +7618,10 @@ ${reason}
 
       // 1. Scan all existing users in the database to check handles safely
       for (const [userId, record] of Object.entries(data.users || {})) {
-        // If your database structure saves campaign accounts as an array or inside campaignStats:
-        const accountsObj = record.campaignAccounts?.[campaignId]?.[platform] || record.campaignStats?.[campaignId]?.[platform];
+        // Historical campaignStats do not represent an actively linked account.
+        const accountsObj = record.campaignAccounts?.[campaignId]?.[platform];
         
         if (accountsObj) {
-          // If it's stored as a single object but you plan to switch to an array, 
-          // or if you check a unified database list, match your schema string:
           const savedName = String(accountsObj.username || '').trim().toLowerCase().replace(/^@/, '');
           
           if (savedName === cleanInputUsername) {
@@ -7564,14 +7634,16 @@ ${reason}
         }
       }
 
-      // 2. Scan active pending staff request items so users cannot spam the same handle twice concurrently
+      // 2. Scan active staff request items so users cannot submit the same handle twice concurrently
       const activeRequests = Object.values(data.campaignAccountRequests || {});
-      const duplicatePending = activeRequests.find(req => 
-        req.campaignId === campaignId &&
-        req.platform === platform &&
-        req.username.trim().toLowerCase().replace(/^@/, '') === cleanInputUsername &&
-        req.status === 'pending'
-      );
+      const duplicatePending = activeRequests.find(req => {
+        const status = String(req?.status || '').toLowerCase();
+        return req.campaignId === campaignId &&
+          req.platform === platform &&
+          normalizeSocialKey(req.platform, req.username) === normalizeSocialKey(platform, cleanInputUsername) &&
+          ACTIVE_ACCOUNT_REQUEST_STATUSES.has(status) &&
+          (status !== 'approved' || isApprovedAccountRequestStillLinked(data, req));
+      });
 
       // Rule Check A: Stolen account
       if (handleExistsGlobally && claimedBySomeoneElse) {
@@ -8015,14 +8087,6 @@ ${reason}
         });
       }
 
-      // Rule 2: Baseline safety check (User must leave at least one account)
-      if (platforms.length === 1) {
-        return interaction.reply({
-          content: `⚠️ **Action Denied:** You only have one account linked to this campaign (\`${formatPlatform(platforms[0])}: @${accounts[platforms[0]].username}\`). To protect your stats, you must leave at least one active account. If you want to stop entirely, use the **Leave Campaign** option instead.`,
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
       // Build the selection menu out of their active linked accounts
       const select = new StringSelectMenuBuilder()
         .setCustomId(`campaign_connect_remove_select:${campaignId}`) // 🔗 Targets your existing select menu handler!
@@ -8055,36 +8119,23 @@ ${reason}
         return;
       }
 
-      const userRecord = ensureUser(data, member);
+      const removal = removeCampaignAccount({
+        data,
+        userId: interaction.user.id,
+        campaignId,
+        platform,
+        removedBy: interaction.user.id
+      });
 
-      const username = userRecord.campaignAccounts?.[campaignId]?.[platform]?.username;
-      if (!username) {
+      if (!removal.removed) {
         await interaction.reply({ content: '❌ Campaign account not found.', flags: MessageFlags.Ephemeral });
         return;
-      }
-
-      delete userRecord.campaignAccounts[campaignId][platform];
-
-      if (userRecord.campaignStats?.[campaignId]?.[platform]) {
-        delete userRecord.campaignStats[campaignId][platform];
-      }
-
-      if (data.clips) {
-        for (const [clipId, clip] of Object.entries(data.clips)) {
-          if (
-            clip.userId === interaction.user.id &&
-            clip.campaignId === campaignId &&
-            clip.platform === platform
-          ) {
-            delete data.clips[clipId];
-          }
-        }
       }
 
       saveData(data);
 
       await interaction.reply({
-        content: `✅ Removed **${formatPlatform(platform)}** account **@${username}** from this campaign.`,
+        content: `✅ Removed **${formatPlatform(platform)}** account **@${removal.username}** from this campaign.`,
         flags: MessageFlags.Ephemeral
       });
 
@@ -10085,18 +10136,18 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({ content: '❌ Selected account was not found in database.', flags: MessageFlags.Ephemeral });
     }
 
-    const username = userRecord.campaignAccounts[campaignId][platform].username;
-
-    // Remove entry
-    delete userRecord.campaignAccounts[campaignId][platform];
-    if (Object.keys(userRecord.campaignAccounts[campaignId]).length === 0) {
-        delete userRecord.campaignAccounts[campaignId];
-    }
+    const removal = removeCampaignAccount({
+        data,
+        userId,
+        campaignId,
+        platform,
+        removedBy: interaction.user.id
+    });
 
     saveData(data);
 
     return interaction.reply({
-        content: `✅ Successfully removed **@${username}** (<@${userId}>) from campaign \`${campaignId}\` on **${formatPlatform(platform)}**.`,
+        content: `✅ Successfully removed **@${removal.username}** (<@${userId}>) from campaign \`${campaignId}\` on **${formatPlatform(platform)}**.`,
         flags: MessageFlags.Ephemeral
     });
 });
@@ -10488,6 +10539,8 @@ module.exports.__clipLifecycleTest = {
   repairApprovalSnapshotInvariants,
   getVerifiedCampaignPlatforms,
   ensureCampaignAccount,
+  removeCampaignAccount,
+  validateAccountSubmission,
   shouldTrackClip,
   updateApprovedClipTracking,
   updatePendingReviewTracking,
