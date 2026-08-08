@@ -451,6 +451,7 @@ const CAMPAIGNS = {
     panelMessageId:'1528713090651394209',
     roleId: process.env.ELEPHANT_ROLE_ID,
     entryChannelId: process.env.ELEPHANT_ENTRY_CHANNEL_ID,
+    connectAccountChannelId: '1521567104552276058',
     source: 'monsterlab',
     monsterCampaignId: "fbFMAJpxpQkZ0Honf7z4",
     status: 'active',
@@ -511,6 +512,7 @@ Click the button below to start clipping and earning.`
     panelMessageId:'1523670266213957763',
     roleId: process.env.CROWDER_ROLE_ID,
     entryChannelId: process.env.CROWDER_ENTRY_CHANNEL_ID,
+    connectAccountChannelId: '1521566652796240046',
     source: 'monsterlab',
     monsterCampaignId: "Qgl6rzYPcDIVxqZ23kXI",
     status: 'active',
@@ -3665,14 +3667,14 @@ async function addMissingPayoutChannels() {
     console.log("✅ Missing payout channels created.");
 }
 
-function getCampaignConnectAccountLink(campaignId, environment = process.env) {
-  const key = `${String(campaignId || '').toUpperCase()}_CONNECT_ACCOUNT_LINK`;
-  const value = environment?.[key];
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+function getCampaignConnectAccountLink(guildId, campaign) {
+  const channelId = campaign?.connectAccountChannelId;
+  if (!guildId || !channelId) return null;
+  return `https://discord.com/channels/${guildId}/${channelId}`;
 }
 
-function buildCampaignConnectAccountRow(campaignId, options = {}) {
-  const url = getCampaignConnectAccountLink(campaignId, options.environment);
+function buildCampaignConnectAccountRow(guildId, campaign, options = {}) {
+  const url = getCampaignConnectAccountLink(guildId, campaign);
   if (!url) return null;
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -5348,11 +5350,6 @@ client.on(Events.MessageCreate, async message => {
         );
         return;
       }
-
-      const panelData = loadData();
-      panelData.campaignConnectChannels ||= {};
-      panelData.campaignConnectChannels[campaignId] = message.channel.id;
-      saveData(panelData);
 
       await message.delete().catch(() => {});
 
@@ -7983,7 +7980,6 @@ ${reason}
             const connectAccountRow = buildCampaignConnectAccountRow(
                 interaction.guild.id,
                 campaign || { id: request.campaignId },
-                data,
                 { label: 'Connect Another Account' }
             );
             await targetMember.send({
@@ -8114,7 +8110,7 @@ ${reason}
       const availablePlatforms = getVerifiedCampaignPlatforms(userRecord, campaignId);
 
       if (availablePlatforms.length === 0) {
-        const connectButtonRow = buildCampaignConnectAccountRow(interaction.guild.id, campaign, data);
+        const connectButtonRow = buildCampaignConnectAccountRow(interaction.guild.id, campaign);
         await interaction.reply({
           content: '❌ You need to connect and verify at least one campaign account before submitting clips.',
           components: connectButtonRow ? [connectButtonRow] : [],
@@ -8237,7 +8233,7 @@ ${reason}
         const campaignAccount = userRecord.campaignAccounts?.[campaignId]?.[platform];
     
         if (!campaignAccount || !campaignAccount.verified) {
-            const connectButtonRow = buildCampaignConnectAccountRow(interaction.guild.id, campaign, data);
+            const connectButtonRow = buildCampaignConnectAccountRow(interaction.guild.id, campaign);
             await interaction.reply({
                 content: `❌ No verified ${formatPlatform(platform)} account was found for this campaign. Connect and verify an account before submitting clips.`,
                 components: connectButtonRow ? [connectButtonRow] : [],
@@ -9453,14 +9449,8 @@ ${reason}
       applyCampaignMembership(userRecord, campaign);
       saveData(data);
 
-      const connectChannelId = getCampaignConnectAccountChannelId(campaign, data);
-      const connectChannel = connectChannelId
-        ? await interaction.guild.channels.fetch(connectChannelId).catch(() => null)
-        : null;
-      const connectButtonRow = connectChannel
-        ? buildCampaignConnectAccountRow(interaction.guild.id, campaign, data)
-        : null;
-      if (!connectButtonRow) console.warn(`[Campaign Join] Missing connect account channel for ${campaignId}`);
+      const connectButtonRow = buildCampaignConnectAccountRow(interaction.guild.id, campaign);
+      if (!connectButtonRow) console.warn(`[Campaign Join] Missing connectAccountChannelId for campaign: ${campaignId}`);
 
       await interaction.reply({
         embeds: [buildCampaignJoinSuccessEmbed(interaction, campaign, {
@@ -10487,7 +10477,7 @@ module.exports.__clipLifecycleTest = {
   buildClipStaffButtons,
   finalizeOutOfRunClips,
   getClipTrackingAudit,
-  getCampaignConnectAccountUrl,
+  getCampaignConnectAccountLink,
   getCampaignJoinBlockReason,
   getInitialSubmissionViewState,
   getSafeTrackedViews,

@@ -14,7 +14,7 @@ const {
   buildClipStaffButtons,
   CAMPAIGNS,
   finalizeOutOfRunClips,
-  getCampaignConnectAccountUrl,
+  getCampaignConnectAccountLink,
   getCampaignJoinBlockReason,
   getVerifiedCampaignPlatforms,
   getInitialSubmissionViewState,
@@ -266,16 +266,15 @@ test('join F: missing campaign role fails before membership is written', async (
 
 test('join G/H: finished campaigns are blocked and Connect Account uses the user-facing channel', () => {
   const campaign = { ...CAMPAIGNS.crowder, connectAccountChannelId: 'user-connect-channel' };
+  assert.equal(CAMPAIGNS.crowder.connectAccountChannelId, '1521566652796240046');
+  assert.equal(CAMPAIGNS.elephant.connectAccountChannelId, '1521567104552276058');
   assert.match(getCampaignJoinBlockReason(campaign, { campaignStatus: { crowder: { status: 'finished' } } }, new Date('2026-08-08T12:00:00Z')), /permanently finished/);
   assert.equal(getCampaignJoinBlockReason(campaign, {}, new Date('2026-08-08T12:00:00Z')), null);
   assert.equal(
-    getCampaignConnectAccountUrl('guild-id', campaign, {}),
+    getCampaignConnectAccountLink('guild-id', campaign),
     'https://discord.com/channels/guild-id/user-connect-channel'
   );
-  assert.equal(
-    getCampaignConnectAccountUrl('guild-id', campaign, { campaignConnectChannels: { crowder: 'posted-panel-channel' } }),
-    'https://discord.com/channels/guild-id/posted-panel-channel'
-  );
+  assert.equal(getCampaignConnectAccountLink('guild-id', { id: 'missing' }), null);
 });
 
 test('account decision A/B: Instagram and TikTok approvals use account-only wording', () => {
@@ -309,7 +308,7 @@ test('account decision C/D: rejection is account-specific and links to Connect A
   assert.deepEqual(userRecord.campaigns, ['crowder']);
 
   const campaign = { ...CAMPAIGNS.crowder, connectAccountChannelId: 'connect-channel' };
-  const row = buildCampaignConnectAccountRow('guild-id', campaign, {}, { label: 'Connect Another Account' });
+  const row = buildCampaignConnectAccountRow('guild-id', campaign, { label: 'Connect Another Account' });
   assert.equal(row.components[0].data.label, 'Connect Another Account');
   assert.equal(row.components[0].data.url, 'https://discord.com/channels/guild-id/connect-channel');
 });
