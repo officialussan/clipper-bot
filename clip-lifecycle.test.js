@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { ButtonStyle } = require('discord.js');
 
 const {
   applyCampaignMembership,
@@ -11,6 +12,8 @@ const {
   buildCampaignConnectAccountRow,
   buildCampaignJoinSuccessEmbed,
   buildCampaignPanelButtons,
+  buildCampaignSubmitClipButton,
+  buildCampaignSubmissionPanelComponents,
   buildCampaignStatsEmbed,
   buildCampaignStatusEmbed,
   buildClipStaffEmbed,
@@ -19,7 +22,9 @@ const {
   finalizeOutOfRunClips,
   getCampaignConnectAccountLink,
   getCampaignJoinBlockReason,
+  getCampaignOperationalState,
   getCampaignPanelFulfilledPercent,
+  getCampaignSubmissionBlockMessage,
   getCampaignCurrentRunAccounting,
   getCampaignCurrentWeekAccounting,
   getVerifiedCampaignPlatforms,
@@ -823,4 +828,66 @@ test('campaign panel Fulfilled button uses canonical weekly view-cap percentage'
   const fulfilledButton = buildCampaignPanelButtons(CAMPAIGNS.elephant, elephantFull)[0].components[2];
   assert.equal(fulfilledButton.data.label, 'Fulfilled: 100.0%');
   assert.equal(fulfilledButton.data.disabled, true);
+});
+
+test('Submit Clip button follows canonical live, weekly-paused, and finished campaign state', () => {
+  const currentWeek = new Date('2026-08-09T12:00:00.000Z');
+  const mondayReset = new Date('2026-08-10T07:00:00.000Z');
+  const monthlyEnd = new Date('2026-08-31T07:00:00.000Z');
+  const elephantLive = { clips: { clip: makeWeeklyAccountingClip('elephant', 'creator-a', 7_900_000) }, clipReviews: {} };
+  const elephantFull = { clips: { clip: makeWeeklyAccountingClip('elephant', 'creator-a', 8_000_000) }, clipReviews: {} };
+  const crowderFull = { clips: { clip: makeWeeklyAccountingClip('crowder', 'creator-a', 7_000_000) }, clipReviews: {} };
+
+  const liveState = getCampaignOperationalState(elephantLive, CAMPAIGNS.elephant, currentWeek);
+  const liveButton = buildCampaignSubmitClipButton(CAMPAIGNS.elephant, elephantLive, currentWeek).data;
+  assert.equal(liveState.state, 'live');
+  assert.equal(liveButton.label, 'Submit Clip');
+  assert.equal(liveButton.emoji.name, '💰');
+  assert.equal(liveButton.style, ButtonStyle.Success);
+  assert.equal(liveButton.disabled, false);
+
+  const elephantPausedState = getCampaignOperationalState(elephantFull, CAMPAIGNS.elephant, currentWeek);
+  const elephantPausedButton = buildCampaignSubmissionPanelComponents(CAMPAIGNS.elephant, elephantFull, currentWeek)[0].components[0].data;
+  assert.equal(elephantPausedState.state, 'weekly_paused');
+  assert.equal(elephantPausedButton.label, 'Submissions Paused');
+  assert.equal(elephantPausedButton.emoji.name, '⛔');
+  assert.equal(elephantPausedButton.style, ButtonStyle.Danger);
+  assert.equal(elephantPausedButton.disabled, true);
+  assert.equal(
+    getCampaignSubmissionBlockMessage(elephantPausedState),
+    '❌ Submissions are temporarily paused because this campaign has reached its weekly view cap. Submissions reopen after the next weekly reset.'
+  );
+
+  const crowderPausedButton = buildCampaignSubmitClipButton(CAMPAIGNS.crowder, crowderFull, currentWeek).data;
+  assert.equal(getCampaignOperationalState(crowderFull, CAMPAIGNS.crowder, currentWeek).state, 'weekly_paused');
+  assert.equal(crowderPausedButton.label, 'Submissions Paused');
+  assert.equal(crowderPausedButton.style, ButtonStyle.Danger);
+  assert.equal(crowderPausedButton.disabled, true);
+
+  const resetButton = buildCampaignSubmitClipButton(CAMPAIGNS.elephant, elephantFull, mondayReset).data;
+  assert.equal(getCampaignOperationalState(elephantFull, CAMPAIGNS.elephant, mondayReset).state, 'live');
+  assert.equal(resetButton.label, 'Submit Clip');
+  assert.equal(resetButton.style, ButtonStyle.Success);
+  assert.equal(resetButton.disabled, false);
+
+  const staffFinishedData = {
+    ...elephantFull,
+    campaignStatus: { elephant: { status: 'finished' } }
+  };
+  const staffFinishedState = getCampaignOperationalState(staffFinishedData, CAMPAIGNS.elephant, currentWeek);
+  const staffFinishedButton = buildCampaignSubmitClipButton(CAMPAIGNS.elephant, staffFinishedData, currentWeek).data;
+  assert.equal(staffFinishedState.state, 'finished');
+  assert.equal(staffFinishedButton.label, 'Campaign Finished');
+  assert.equal(staffFinishedButton.emoji.name, '🏁');
+  assert.equal(staffFinishedButton.style, ButtonStyle.Danger);
+  assert.equal(staffFinishedButton.disabled, true);
+  assert.equal(
+    getCampaignSubmissionBlockMessage(staffFinishedState),
+    '❌ This campaign has finished and is no longer accepting submissions.'
+  );
+
+  const monthlyFinishedButton = buildCampaignSubmitClipButton(CAMPAIGNS.elephant, elephantFull, monthlyEnd).data;
+  assert.equal(getCampaignOperationalState(elephantFull, CAMPAIGNS.elephant, monthlyEnd).state, 'finished');
+  assert.equal(monthlyFinishedButton.label, 'Campaign Finished');
+  assert.equal(monthlyFinishedButton.disabled, true);
 });

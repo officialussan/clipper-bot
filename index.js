@@ -1667,13 +1667,10 @@ function normalizeClipVideoUrl(value) {
 
 async function validateClipBeforeSubmission({ data, userId, campaignId, submittedUrl }) {
   const campaign = CAMPAIGNS[campaignId];
-  if (campaign?.separateEarningLifecycle && !isCampaignEarningActive(campaign)) {
-    return { valid: false, message: 'Campaign earning period has ended.', metadata: null };
-  }
-  if (campaign?.separateEarningLifecycle && isCampaignCurrentBudgetCycleFulfilled(campaignId, { data })) {
-    return { valid: false, message: 'Campaign is paused until the next weekly view-cap reset.', metadata: null };
-  }
   if (!campaign) return { valid: false, message: '❌ Campaign not found.', metadata: null };
+  const campaignState = getCampaignOperationalState(data, campaign);
+  const submissionBlockMessage = getCampaignSubmissionBlockMessage(campaignState);
+  if (submissionBlockMessage) return { valid: false, message: submissionBlockMessage, metadata: null };
 
   try {
     const instagramReel = parsePublicInstagramReelUrl(submittedUrl);
@@ -4378,6 +4375,83 @@ function getCampaignJoinBlockReason(campaign, data, now = new Date()) {
   return null;
 }
 
+function getCampaignOperationalState(data, campaign, now = new Date()) {
+  if (!campaign) return { state: 'finished', weeklyAccounting: null };
+  const time = new Date(now).getTime();
+  const earningEnd = getCampaignEarningEnd(campaign);
+  const permanentlyFinished = data?.campaignStatus?.[campaign.id]?.status === 'finished' ||
+    data?.campaigns?.[campaign.id]?.status === 'finished' ||
+    campaign.status === 'finished';
+  if (permanentlyFinished || (campaign.separateEarningLifecycle && Number.isFinite(earningEnd) && time >= earningEnd)) {
+    return { state: 'finished', weeklyAccounting: null };
+  }
+  const weeklyAccounting = getCampaignCurrentWeekAccounting(data, campaign.id, now);
+  if (weeklyAccounting?.capReached) return { state: 'weekly_paused', weeklyAccounting };
+  return { state: 'live', weeklyAccounting };
+}
+
+function buildCampaignSubmitClipButton(campaign, data, now = new Date()) {
+  const { state } = getCampaignOperationalState(data, campaign, now);
+  const button = new ButtonBuilder().setCustomId(`submit_clip:${campaign.id}`);
+  if (state === 'finished') {
+    return button
+      .setLabel('Campaign Finished')
+      .setEmoji('🏁')
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(true);
+  }
+  if (state === 'weekly_paused') {
+    return button
+      .setLabel('Submissions Paused')
+      .setEmoji('⛔')
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(true);
+  }
+  return button
+    .setLabel('Submit Clip')
+    .setEmoji('⬆️')
+    .setStyle(ButtonStyle.Success)
+    .setDisabled(false);
+}
+
+function getCampaignSubmissionBlockMessage(campaignState) {
+  if (campaignState.state === 'finished') {
+    return '❌ This campaign has finished and is no longer accepting submissions.';
+  }
+  if (campaignState.state === 'weekly_paused') {
+    return '❌ Submissions are temporarily paused because this campaign has reached its weekly view cap. Submissions reopen after the next weekly reset.';
+  }
+  return null;
+}
+
+function buildCampaignSubmissionPanelComponents(campaign, data, now = new Date()) {
+  const row1 = new ActionRowBuilder().addComponents(
+    buildCampaignSubmitClipButton(campaign, data, now),
+    new ButtonBuilder()
+      .setCustomId(`campaign_stats:${campaign.id}`)
+      .setLabel('👥My Stats')
+      .setStyle(ButtonStyle.Secondary)
+  );
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`remove_clip:${campaign.id}`)
+      .setLabel('🗑️Remove Clip')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`manage_account:${campaign.id}`)
+      .setLabel('⚙️Manage Account')
+      .setStyle(ButtonStyle.Secondary)
+  );
+  const row3 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`leave_campaign:${campaign.id}`)
+      .setLabel('Leave Campaign')
+      .setEmoji('1504774239679676416')
+      .setStyle(ButtonStyle.Danger)
+  );
+  return [row1, row2, row3];
+}
+
 function applyCampaignMembership(userRecord, campaign, joinedAt = Date.now()) {
   userRecord.campaigns ||= [];
   const alreadyJoined = userRecord.campaigns.includes(campaign.id);
@@ -4504,6 +4578,12 @@ Only moderators should use these buttons.`,
 async function updateCampaignPanelMessage(guild, campaignId) {
   const campaign = CAMPAIGNS[campaignId];
 
+  try {
+    await updateCampaignSubmissionPanelMessage(guild, campaignId);
+  } catch (error) {
+    console.error(`Could not refresh submission panel ${campaignId}:`, error.message);
+  }
+
   console.log('Updating campaign panel...');
   console.log(campaign.panelChannelId);
   console.log(campaign.panelMessageId);
@@ -4540,6 +4620,55 @@ async function updateCampaignPanelMessage(guild, campaignId) {
 
 }
 
+function messageHasCampaignSubmitButton(message, campaignId) {
+  return (message?.components || []).some(row =>
+    (row.components || []).some(component => component.customId === `submit_clip:${campaignId}`)
+  );
+}
+
+async function updateCampaignSubmissionPanelMessage(guild, campaignId) {
+  const campaign = CAMPAIGNS[campaignId];
+  if (!campaign || !guild) return false;
+  const data = loadData();
+  const storedPanel = data.campaignSubmissionPanels?.[campaignId] || null;
+  const channelId = storedPanel?.channelId || campaign.entryChannelId;
+  if (!channelId) return false;
+  const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
+  if (!channel?.messages) return false;
+
+  let panelMessage = null;
+  if (storedPanel?.messageId) {
+    panelMessage = await channel.messages.fetch(storedPanel.messageId).catch(() => null);
+  }
+  if (!panelMessage) {
+    const recentMessages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+    panelMessage = recentMessages?.find(message =>
+      message.author?.id === client.user?.id && messageHasCampaignSubmitButton(message, campaignId)
+    ) || null;
+  }
+  if (!panelMessage) return false;
+
+  await panelMessage.edit({
+    components: buildCampaignSubmissionPanelComponents(campaign, data)
+  });
+
+  if (
+    storedPanel?.guildId !== guild.id ||
+    storedPanel?.channelId !== channel.id ||
+    storedPanel?.messageId !== panelMessage.id
+  ) {
+    data.campaignSubmissionPanels ||= {};
+    data.campaignSubmissionPanels[campaignId] = {
+      guildId: guild.id,
+      channelId: channel.id,
+      messageId: panelMessage.id,
+      updatedAt: Date.now()
+    };
+    saveData(data);
+  }
+  return true;
+}
+
 async function refreshAllCampaignPanelMessages(guild) {
   for (const campaignId of Object.keys(CAMPAIGNS)) {
     try {
@@ -4552,11 +4681,17 @@ async function refreshAllCampaignPanelMessages(guild) {
 
 function scheduleNextWeeklyCampaignPanelRefresh(guildId) {
   const now = new Date();
-  const nextResetAt = Math.min(...Object.values(CAMPAIGNS)
+  const nowMs = now.getTime();
+  const refreshBoundaries = Object.values(CAMPAIGNS)
     .filter(campaign => campaign.separateEarningLifecycle)
-    .map(campaign => getCampaignBudgetPeriod(campaign, now).periodEnd.getTime()));
-  if (!Number.isFinite(nextResetAt)) return;
-  const delay = Math.max(nextResetAt - now.getTime() + 1000, 1000);
+    .flatMap(campaign => [
+      getCampaignBudgetPeriod(campaign, now).periodEnd.getTime(),
+      getCampaignEarningEnd(campaign)
+    ])
+    .filter(boundary => Number.isFinite(boundary) && boundary > nowMs);
+  const nextRefreshAt = Math.min(...refreshBoundaries);
+  if (!Number.isFinite(nextRefreshAt)) return;
+  const delay = Math.max(nextRefreshAt - nowMs + 1000, 1000);
   setTimeout(async () => {
     const guild = client.guilds.cache.get(guildId);
     if (guild) await refreshAllCampaignPanelMessages(guild);
@@ -6170,40 +6305,19 @@ client.on(Events.MessageCreate, async message => {
           `<:whiteCE:1504904179905200148> **Powered by Creators Elite**`
         );
 
-      const row1 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`submit_clip:${campaignId}`)
-          .setLabel('⬆️Submit Clip')
-          .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-          .setCustomId(`campaign_stats:${campaignId}`)
-          .setLabel('👥My Stats')
-          .setStyle(ButtonStyle.Secondary)
-      );
-
-      const row2 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`remove_clip:${campaignId}`)
-          .setLabel('🗑️Remove Clip')
-          .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-          .setCustomId(`manage_account:${campaignId}`)
-          .setLabel('⚙️Manage Account')
-          .setStyle(ButtonStyle.Secondary)
-      );   
-
-      const row3 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`leave_campaign:${campaignId}`)
-          .setLabel('Leave Campaign')
-          .setEmoji('1504774239679676416')
-          .setStyle(ButtonStyle.Danger)
-      );
-
-      await message.channel.send({
+      const panelData = loadData();
+      const panelMessage = await message.channel.send({
         embeds: [embed],
-        components: [row1, row2, row3]
+        components: buildCampaignSubmissionPanelComponents(campaign, panelData)
       });
+      panelData.campaignSubmissionPanels ||= {};
+      panelData.campaignSubmissionPanels[campaignId] = {
+        guildId: message.guild.id,
+        channelId: message.channel.id,
+        messageId: panelMessage.id,
+        updatedAt: Date.now()
+      };
+      saveData(panelData);
 
       return;
     } 
@@ -8822,6 +8936,15 @@ ${reason}
       }
 
       const data = loadData();
+      const campaignState = getCampaignOperationalState(data, campaign);
+      const submissionBlockMessage = getCampaignSubmissionBlockMessage(campaignState);
+      if (submissionBlockMessage) {
+        if (interaction.message && messageHasCampaignSubmitButton(interaction.message, campaignId)) {
+          await interaction.message.edit({ components: buildCampaignSubmissionPanelComponents(campaign, data) }).catch(() => {});
+        }
+        await interaction.reply({ content: submissionBlockMessage, flags: MessageFlags.Ephemeral });
+        return;
+      }
       const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
 
       if (!member) {
@@ -8888,6 +9011,17 @@ ${reason}
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('submit_clip_platform_select:')) {
       const campaignId = interaction.customId.split(':')[1];
       const platform = interaction.values[0];
+      const campaign = CAMPAIGNS[campaignId];
+      if (!campaign) {
+        await interaction.reply({ content: '❌ Campaign not found.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const data = loadData();
+      const submissionBlockMessage = getCampaignSubmissionBlockMessage(getCampaignOperationalState(data, campaign));
+      if (submissionBlockMessage) {
+        await interaction.reply({ content: submissionBlockMessage, flags: MessageFlags.Ephemeral });
+        return;
+      }
 
       const modal = new ModalBuilder()
         .setCustomId(`submit_clip_modal:${campaignId}:${platform}`)
@@ -8918,8 +9052,10 @@ ${reason}
             return;
         }
 
-        if (campaign.status === 'finished') {
-            await interaction.reply({ content: '❌ This campaign has already been closed.', flags: MessageFlags.Ephemeral });
+        const data = loadData();
+        const submissionBlockMessage = getCampaignSubmissionBlockMessage(getCampaignOperationalState(data, campaign));
+        if (submissionBlockMessage) {
+            await interaction.reply({ content: submissionBlockMessage, flags: MessageFlags.Ephemeral });
             return;
         }
 
@@ -8945,7 +9081,6 @@ ${reason}
             return;
         }
 
-        const data = loadData();
         const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
 
         if (!member) {
@@ -11202,6 +11337,8 @@ module.exports.__clipLifecycleTest = {
   buildCampaignAccountRejectedEmbed,
   buildCampaignJoinSuccessEmbed,
   buildCampaignPanelButtons,
+  buildCampaignSubmitClipButton,
+  buildCampaignSubmissionPanelComponents,
   buildCampaignStatsEmbed,
   buildCampaignStatusEmbed,
   buildClipStaffEmbed,
@@ -11210,7 +11347,9 @@ module.exports.__clipLifecycleTest = {
   getClipTrackingAudit,
   getCampaignConnectAccountLink,
   getCampaignJoinBlockReason,
+  getCampaignOperationalState,
   getCampaignPanelFulfilledPercent,
+  getCampaignSubmissionBlockMessage,
   getCampaignCurrentRunAccounting,
   getCampaignCurrentWeekAccounting,
   getUserCurrentRunAccounting,
