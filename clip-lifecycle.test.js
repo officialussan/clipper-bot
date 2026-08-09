@@ -10,13 +10,20 @@ const {
   buildCampaignAccountRejectedEmbed,
   buildCampaignConnectAccountRow,
   buildCampaignJoinSuccessEmbed,
+  buildCampaignStatsEmbed,
+  buildCampaignStatusEmbed,
   buildClipStaffEmbed,
   buildClipStaffButtons,
   CAMPAIGNS,
   finalizeOutOfRunClips,
   getCampaignConnectAccountLink,
   getCampaignJoinBlockReason,
+  getCampaignCurrentRunAccounting,
+  getCampaignCurrentWeekAccounting,
   getVerifiedCampaignPlatforms,
+  getUserCurrentRunAccounting,
+  getUserCurrentWeekAccounting,
+  getWeeklyAccountingAudit,
   getInitialSubmissionViewState,
   initializeClipTrackingFields,
   repairApprovalSnapshotInvariants,
@@ -529,4 +536,161 @@ test('account removal: unlinking one platform leaves other verified accounts ava
 
   assert.deepEqual(data.users['user-1'].campaigns, ['crowder']);
   assert.deepEqual(getVerifiedCampaignPlatforms(data.users['user-1'], 'crowder'), ['tiktok']);
+});
+
+function makeWeeklyAccountingClip(campaignId, userId, creditedViews, overrides = {}) {
+  const campaign = CAMPAIGNS[campaignId];
+  const submittedTimestamp = Date.parse('2026-08-04T12:00:00.000Z');
+  return {
+    id: `${campaignId}-${userId}-${overrides.platform || 'instagram'}`,
+    userId,
+    campaignId,
+    platform: overrides.platform || 'instagram',
+    videoId: `${campaignId}-${userId}-${overrides.platform || 'instagram'}`,
+    status: 'approved',
+    payoutEligible: true,
+    wasEverApproved: true,
+    submittedTimestamp,
+    submittedAt: new Date(submittedTimestamp).toISOString(),
+    earningRunKey: `${campaign.id}:${campaign.startDate}:${campaign.endDate}`,
+    trackingStatus: 'active',
+    publicViews: creditedViews,
+    currentViews: creditedViews,
+    submissionViews: 0,
+    approvalViews: 0,
+    campaignCreditedViews: creditedViews,
+    views: creditedViews,
+    budgetTracking: {
+      budgetCycleKey: '2026-08-03T07:00:00.000Z',
+      baselinePublicViews: 0,
+      lastPublicViews: creditedViews,
+      creditedViewsThisCycle: creditedViews,
+      lastCreditedAt: submittedTimestamp
+    },
+    payout: { paidViews: 0, paidMoney: 0, history: [] },
+    ...overrides
+  };
+}
+
+test('weekly accounting A/B/C: first-week user and campaign totals share one ledger and budget formula', () => {
+  const creator = makeWeeklyAccountingClip('elephant', 'creator-a', 4_200_000);
+  const others = makeWeeklyAccountingClip('elephant', 'creator-b', 100_000, { platform: 'tiktok' });
+  const data = { clips: { creator, others }, clipReviews: {} };
+  const now = new Date('2026-08-09T12:00:00.000Z');
+
+  const userWeek = getUserCurrentWeekAccounting(data, 'elephant', 'creator-a', now);
+  const userRun = getUserCurrentRunAccounting(data, 'elephant', 'creator-a');
+  const campaignWeek = getCampaignCurrentWeekAccounting(data, 'elephant', now);
+
+  assert.equal(userRun.totalViews, 4_200_000);
+  assert.equal(userWeek.creditedViews, 4_200_000);
+  assert.equal(campaignWeek.creditedViews, 4_300_000);
+  assert.equal(campaignWeek.creditedMoney, 1290);
+  assert.equal(campaignWeek.remainingBudget, 1110);
+  assert.equal(campaignWeek.capReached, false);
+});
+
+test('weekly accounting D: Elephant clamps fulfilled money at the 8M weekly cap', () => {
+  const data = { clips: { capped: makeWeeklyAccountingClip('elephant', 'creator-a', 8_000_000) }, clipReviews: {} };
+  const accounting = getCampaignCurrentWeekAccounting(data, 'elephant', new Date('2026-08-09T12:00:00.000Z'));
+
+  assert.equal(accounting.creditedViews, 8_000_000);
+  assert.equal(accounting.creditedMoney, 2400);
+  assert.equal(accounting.remainingBudget, 0);
+  assert.equal(accounting.capReached, true);
+});
+
+test('weekly accounting E: previous-run paid history is excluded from current My Stats', () => {
+  const current = makeWeeklyAccountingClip('elephant', 'creator-a', 4_200_000);
+  const previous = {
+    ...makeWeeklyAccountingClip('elephant', 'creator-a', 3_500_000, { platform: 'tiktok' }),
+    submittedTimestamp: Date.parse('2026-07-20T12:00:00.000Z'),
+    submittedAt: '2026-07-20T12:00:00.000Z',
+    earningRunKey: 'elephant:previous-run',
+    payout: { paidViews: 3_500_000, paidMoney: 1050, history: [{ date: '2026-07-31T12:00:00.000Z', views: 3_500_000, amount: 1050 }] }
+  };
+  const data = { clips: { current, previous }, clipReviews: {} };
+
+  const run = getUserCurrentRunAccounting(data, 'elephant', 'creator-a');
+  const stats = buildCampaignStatsEmbed(data, {}, 'elephant', CAMPAIGNS.elephant.name, 'creator-a').data.description;
+  assert.equal(run.totalViews, 4_200_000);
+  assert.equal(run.paidViews, 0);
+  assert.equal(run.unpaidViews, 4_200_000);
+  assert.match(stats, /Monthly Earned Views[^]*4\.2M/);
+  assert.match(stats, /Current Week Views[^]*4\.2M/);
+  assert.match(stats, /Paid Views[^]*\n0/);
+});
+
+test('weekly accounting F: reads are restart-safe and do not mutate persisted weekly state', () => {
+  const clip = makeWeeklyAccountingClip('crowder', 'creator-a', 2_500_000);
+  const data = { clips: { clip }, clipReviews: {} };
+  const before = structuredClone(data);
+  const now = new Date('2026-08-09T12:00:00.000Z');
+
+  assert.equal(getCampaignCurrentWeekAccounting(data, 'crowder', now).creditedViews, 2_500_000);
+  assert.equal(getCampaignCurrentWeekAccounting(data, 'crowder', now).creditedViews, 2_500_000);
+  assert.deepEqual(data, before);
+});
+
+test('weekly accounting G: Monday boundary starts at zero, preserves monthly credits, and uses the last persisted snapshot', () => {
+  const clip = makeWeeklyAccountingClip('elephant', 'creator-a', 4_200_000);
+  const data = { clips: { clip }, clipReviews: {} };
+  const monday = new Date('2026-08-10T07:00:00.000Z');
+
+  assert.equal(getCampaignCurrentWeekAccounting(data, 'elephant', monday).creditedViews, 0);
+  assert.equal(getCampaignCurrentRunAccounting(data, 'elephant').totalViews, 4_200_000);
+
+  applyTrackedMetadata(clip, { views: 4_200_000, accountingTimestamp: monday.getTime() }, data);
+  assert.equal(clip.budgetTracking.budgetCycleKey, '2026-08-10T07:00:00.000Z');
+  assert.equal(clip.budgetTracking.baselinePublicViews, 4_200_000);
+  assert.equal(clip.budgetTracking.creditedViewsThisCycle, 0);
+  assert.equal(clip.budgetTracking.history[0].creditedViews, 4_200_000);
+
+  applyTrackedMetadata(clip, { views: 4_300_000, accountingTimestamp: Date.parse('2026-08-10T08:00:00.000Z') }, data);
+  assert.equal(clip.budgetTracking.creditedViewsThisCycle, 100_000);
+  assert.equal(clip.campaignCreditedViews, 4_300_000);
+});
+
+test('weekly audit flags the known late-baseline first-week mismatch without rewriting history', () => {
+  const clip = makeWeeklyAccountingClip('elephant', 'creator-a', 9_000_000, {
+    budgetTracking: {
+      budgetCycleKey: '2026-08-03T07:00:00.000Z',
+      baselinePublicViews: 4_700_000,
+      lastPublicViews: 9_000_000,
+      creditedViewsThisCycle: 4_300_000
+    },
+    payout: { paidViews: 3_500_000, paidMoney: 1050, history: [] }
+  });
+  const data = { clips: { clip }, clipReviews: {} };
+  const before = structuredClone(data);
+  const audit = getWeeklyAccountingAudit(data, 'elephant', new Date('2026-08-09T12:00:00.000Z'));
+
+  assert.equal(audit.currentRunCreditedViews, 9_000_000);
+  assert.equal(audit.campaignCurrentWeekCreditedViews, 4_300_000);
+  assert.equal(audit.weeklyFulfilledMoney, 1290);
+  assert.equal(audit.weeklyRemainingMoney, 1110);
+  assert.ok(audit.flags.includes('FIRST_WEEK_MONTHLY_WEEK_MISMATCH'));
+  assert.ok(audit.flags.includes('CAP_OVERFLOW'));
+  assert.ok(audit.flags.includes('LATE_BASELINE_RESET'));
+  assert.deepEqual(data, before);
+});
+
+test('Campaign Status separates earning and weekly periods and uses weekly fulfilled accounting', () => {
+  const data = {
+    clips: {
+      creator: makeWeeklyAccountingClip('elephant', 'creator-a', 4_200_000),
+      others: makeWeeklyAccountingClip('elephant', 'creator-b', 100_000, { platform: 'tiktok' })
+    },
+    clipReviews: {}
+  };
+  const description = buildCampaignStatusEmbed(CAMPAIGNS.elephant, data).data.description;
+
+  assert.match(description, /Earning Period/);
+  assert.match(description, /Aug 3 - Aug 31/);
+  assert.match(description, /Current Weekly Budget Period/);
+  assert.match(description, /Aug 3 - Aug 10/);
+  assert.match(description, /Weekly Views:\*\* 4\.3M \/ 8\.0M/);
+  assert.match(description, /Weekly Fulfilled:\*\* \$1\.3K \(53\.8%\)/);
+  assert.match(description, /Weekly Remaining:\*\* \$1\.1K/);
+  assert.doesNotMatch(description, /Total Fulfilled/);
 });
