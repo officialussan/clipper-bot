@@ -3668,7 +3668,7 @@ function buildApprovedClipUserEmbed(clip) {
     .setAuthor({
       name: clip.campaignName || "Creators Elite"
     })
-    .setTitle("Your video has been approved ✅")
+    .setTitle("Your video has been approved <a:appr:1534931253952909453>")
     .setDescription(`[${titleText}](${clip.videoUrl || clip.url})`)
     .addFields(
       {
@@ -3712,7 +3712,7 @@ function buildRejectedClipUserEmbed(clip, reason) {
   const embed = new EmbedBuilder()
     .setColor(0xED4245)
     .setAuthor({ name: campaign?.name || clip.campaignName || 'Creators Elite' })
-    .setTitle('Your video has been rejected ❌')
+    .setTitle('Your video has been rejected <a:chart1:1504773558415523931>')
     .setDescription(clipUrl ? `[${title}](${clipUrl})` : title)
     .addFields(
       { name: '<a:cancel:1506235594303606794> Reason', value: reason || 'Not provided', inline: false },
@@ -3724,7 +3724,7 @@ function buildRejectedClipUserEmbed(clip, reason) {
   if (rejectionStage === 'pre_approval') {
     embed.addFields({ name: '<a:chart2:1504773558415523932> Estimated Earnings Before Rejection', value: `$${earnings.toFixed(2)} — not payable`, inline: false });
   } else {
-    embed.addFields({ name: '<a:Cash1:1504871843419521115> Tracked Earnings Before Removal', value: `$${earnings.toFixed(2)}`, inline: false });
+    embed.addFields({ name: '<a:warning:1504774411280973864> You have 12 hours to submit an appeal.', value: 'create a ticket in <#1492888887452762313>', inline: false });
     if (paidMoney > 0) embed.addFields({ name: '<a:appr:1534931253952909453> Historical Paid', value: `$${paidMoney.toFixed(2)}`, inline: false });
   }
   if (clip.thumbnailUrl) embed.setThumbnail(clip.thumbnailUrl);
