@@ -4417,16 +4417,20 @@ async function assignCampaignJoinRoles(guild, member, campaign, options = {}) {
   }
 }
 
-function buildCampaignPanelButtons(campaign, data) {
-  const totals = getCampaignTotals(data, campaign.id);
-
-  const cappedPayout = Math.min(
-    Number(totals.payout) || 0,
-    Number(campaign.campaignBudget) || 0
+function getCampaignPanelFulfilledPercent(campaign, data, now = new Date()) {
+  const weeklyAccounting = getCampaignCurrentWeekAccounting(data, campaign.id, now);
+  const weeklyCap = getCampaignViewCap(campaign) || 0;
+  const creditedViews = Math.min(
+    Math.max(Number(weeklyAccounting?.creditedViews) || 0, 0),
+    weeklyCap
   );
-  const fulfilledPercent = Number(campaign.campaignBudget) > 0
-    ? Math.min(cappedPayout / Number(campaign.campaignBudget) * 100, 100)
+  return weeklyCap > 0
+    ? Math.min(creditedViews / weeklyCap * 100, 100)
     : 0;
+}
+
+function buildCampaignPanelButtons(campaign, data) {
+  const fulfilledPercent = getCampaignPanelFulfilledPercent(campaign, data);
 
   // 🟢 FIX: Dynamic fallbacks to check both the state tree and the raw campaign object properties safely
   const isFinished =
@@ -4434,7 +4438,7 @@ function buildCampaignPanelButtons(campaign, data) {
     data.campaigns?.[campaign.id]?.status === 'finished' ||
     campaign.status === 'finished';
 
-  console.log(`📊 Campaign UI Build [${campaign.name || campaign.id}] - Payout Total: $${totals.payout} | Finished: ${isFinished}`);
+  console.log(`📊 Campaign UI Build [${campaign.name || campaign.id}] - Weekly Fulfilled: ${fulfilledPercent.toFixed(1)}% | Finished: ${isFinished}`);
 
   const components = [
     new ButtonBuilder()
@@ -4534,6 +4538,30 @@ async function updateCampaignPanelMessage(guild, campaignId) {
   
   console.log('Panel updated successfully');
 
+}
+
+async function refreshAllCampaignPanelMessages(guild) {
+  for (const campaignId of Object.keys(CAMPAIGNS)) {
+    try {
+      await updateCampaignPanelMessage(guild, campaignId);
+    } catch (error) {
+      console.error(`Could not refresh campaign panel ${campaignId}:`, error.message);
+    }
+  }
+}
+
+function scheduleNextWeeklyCampaignPanelRefresh(guildId) {
+  const now = new Date();
+  const nextResetAt = Math.min(...Object.values(CAMPAIGNS)
+    .filter(campaign => campaign.separateEarningLifecycle)
+    .map(campaign => getCampaignBudgetPeriod(campaign, now).periodEnd.getTime()));
+  if (!Number.isFinite(nextResetAt)) return;
+  const delay = Math.max(nextResetAt - now.getTime() + 1000, 1000);
+  setTimeout(async () => {
+    const guild = client.guilds.cache.get(guildId);
+    if (guild) await refreshAllCampaignPanelMessages(guild);
+    scheduleNextWeeklyCampaignPanelRefresh(guildId);
+  }, delay);
 }
 
 async function updateLeaderboardMessage(guild) {
@@ -6284,14 +6312,7 @@ client.on(Events.MessageCreate, async message => {
       const campaign = CAMPAIGNS[campaignId];
 
       const panelData = loadData();
-      const totals = getCampaignTotals(panelData, campaign.id);
-
-      const cappedViews = Math.min(totals.views, campaign.viewCap || totals.views);
-      const payout = (cappedViews / 1000000) * (campaign.ratePerMillion || 0);
-
-      const fulfilledPercent = campaign.campaignBudget
-        ? ((payout / campaign.campaignBudget) * 100).toFixed(1)
-        : '0.0';
+      const fulfilledPercent = getCampaignPanelFulfilledPercent(campaign, panelData).toFixed(1);
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -10610,6 +10631,8 @@ client.once('ready', async () => {
     if (mainGuild) {
         // Execute initial load
         await updateServerStats(mainGuild);
+        await refreshAllCampaignPanelMessages(mainGuild);
+        scheduleNextWeeklyCampaignPanelRefresh(targetGuildId);
 
         // Run the timer every 5 minutes passing the cached mainGuild variable layout
         setInterval(async () => {
@@ -11178,6 +11201,7 @@ module.exports.__clipLifecycleTest = {
   buildCampaignAccountApprovedEmbed,
   buildCampaignAccountRejectedEmbed,
   buildCampaignJoinSuccessEmbed,
+  buildCampaignPanelButtons,
   buildCampaignStatsEmbed,
   buildCampaignStatusEmbed,
   buildClipStaffEmbed,
@@ -11186,6 +11210,7 @@ module.exports.__clipLifecycleTest = {
   getClipTrackingAudit,
   getCampaignConnectAccountLink,
   getCampaignJoinBlockReason,
+  getCampaignPanelFulfilledPercent,
   getCampaignCurrentRunAccounting,
   getCampaignCurrentWeekAccounting,
   getUserCurrentRunAccounting,

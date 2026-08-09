@@ -10,6 +10,7 @@ const {
   buildCampaignAccountRejectedEmbed,
   buildCampaignConnectAccountRow,
   buildCampaignJoinSuccessEmbed,
+  buildCampaignPanelButtons,
   buildCampaignStatsEmbed,
   buildCampaignStatusEmbed,
   buildClipStaffEmbed,
@@ -18,6 +19,7 @@ const {
   finalizeOutOfRunClips,
   getCampaignConnectAccountLink,
   getCampaignJoinBlockReason,
+  getCampaignPanelFulfilledPercent,
   getCampaignCurrentRunAccounting,
   getCampaignCurrentWeekAccounting,
   getVerifiedCampaignPlatforms,
@@ -802,4 +804,23 @@ test('Campaign Status separates earning and weekly periods and uses weekly fulfi
   assert.match(description, /Weekly Fulfilled:\*\* \$1\.3K \(53\.8%\)/);
   assert.match(description, /Weekly Remaining:\*\* \$1\.1K/);
   assert.doesNotMatch(description, /Total Fulfilled/);
+});
+
+test('campaign panel Fulfilled button uses canonical weekly view-cap percentage', () => {
+  const currentWeek = new Date('2026-08-09T12:00:00.000Z');
+  const nextWeek = new Date('2026-08-10T07:00:00.000Z');
+  const elephantFull = { clips: { clip: makeWeeklyAccountingClip('elephant', 'creator-a', 8_000_000) }, clipReviews: {} };
+  const elephantHalf = { clips: { clip: makeWeeklyAccountingClip('elephant', 'creator-a', 4_000_000) }, clipReviews: {} };
+  const crowderFull = { clips: { clip: makeWeeklyAccountingClip('crowder', 'creator-a', 7_000_000) }, clipReviews: {} };
+  const crowderHalf = { clips: { clip: makeWeeklyAccountingClip('crowder', 'creator-a', 3_500_000) }, clipReviews: {} };
+
+  assert.equal(getCampaignPanelFulfilledPercent(CAMPAIGNS.elephant, elephantFull, currentWeek), 100);
+  assert.equal(getCampaignPanelFulfilledPercent(CAMPAIGNS.elephant, elephantHalf, currentWeek), 50);
+  assert.equal(getCampaignPanelFulfilledPercent(CAMPAIGNS.crowder, crowderFull, currentWeek), 100);
+  assert.equal(getCampaignPanelFulfilledPercent(CAMPAIGNS.crowder, crowderHalf, currentWeek), 50);
+  assert.equal(getCampaignPanelFulfilledPercent(CAMPAIGNS.elephant, elephantFull, nextWeek), 0);
+
+  const fulfilledButton = buildCampaignPanelButtons(CAMPAIGNS.elephant, elephantFull)[0].components[2];
+  assert.equal(fulfilledButton.data.label, 'Fulfilled: 100.0%');
+  assert.equal(fulfilledButton.data.disabled, true);
 });
