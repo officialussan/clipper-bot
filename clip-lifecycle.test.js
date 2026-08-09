@@ -27,6 +27,7 @@ const {
   getInitialSubmissionViewState,
   initializeClipTrackingFields,
   repairApprovalSnapshotInvariants,
+  repairAugustFirstWeekLegacyWeeklyAccounting,
   ensureCampaignAccount,
   removeCampaignAccount,
   shouldTrackClip,
@@ -673,6 +674,114 @@ test('weekly audit flags the known late-baseline first-week mismatch without rew
   assert.ok(audit.flags.includes('CAP_OVERFLOW'));
   assert.ok(audit.flags.includes('LATE_BASELINE_RESET'));
   assert.deepEqual(data, before);
+});
+
+test('August Week 1 migration reconstructs pre-upgrade clips by setting trusted credit without double counting', () => {
+  const clipA = makeWeeklyAccountingClip('elephant', 'creator-a', 3_000_000, {
+    id: 'legacy-a',
+    videoId: 'legacy-a',
+    submittedTimestamp: Date.parse('2026-08-04T10:00:00.000Z'),
+    submittedAt: '2026-08-04T10:00:00.000Z',
+    approvedAt: Date.parse('2026-08-04T12:00:00.000Z'),
+    publicViews: 3_500_000,
+    currentViews: 3_500_000,
+    submissionViews: 500_000,
+    approvalViews: 600_000,
+    budgetTracking: {
+      budgetCycleKey: '2026-08-03T07:00:00.000Z',
+      baselinePublicViews: 3_000_000,
+      lastPublicViews: 3_500_000,
+      creditedViewsThisCycle: 500_000,
+      initializedAt: Date.parse('2026-08-07T12:00:00.000Z')
+    }
+  });
+  const clipB = makeWeeklyAccountingClip('elephant', 'creator-b', 2_000_000, {
+    id: 'legacy-b',
+    videoId: 'legacy-b',
+    submittedTimestamp: Date.parse('2026-08-05T10:00:00.000Z'),
+    submittedAt: '2026-08-05T10:00:00.000Z',
+    approvedAt: Date.parse('2026-08-05T12:00:00.000Z'),
+    budgetTracking: {
+      budgetCycleKey: '2026-08-03T07:00:00.000Z',
+      baselinePublicViews: 1_000_000,
+      lastPublicViews: 2_000_000,
+      creditedViewsThisCycle: 1_000_000,
+      initializedAt: Date.parse('2026-08-07T12:00:00.000Z')
+    }
+  });
+  const clipC = makeWeeklyAccountingClip('elephant', 'creator-c', 1_000_000, {
+    id: 'post-upgrade-c',
+    videoId: 'post-upgrade-c',
+    submittedTimestamp: Date.parse('2026-08-08T10:00:00.000Z'),
+    submittedAt: '2026-08-08T10:00:00.000Z',
+    approvedAt: Date.parse('2026-08-08T12:00:00.000Z'),
+    budgetTracking: {
+      budgetCycleKey: '2026-08-03T07:00:00.000Z',
+      baselinePublicViews: 0,
+      lastPublicViews: 1_000_000,
+      creditedViewsThisCycle: 1_000_000,
+      initializedAt: Date.parse('2026-08-08T10:00:00.000Z'),
+      runLedgerCompleteFor: `${CAMPAIGNS.elephant.id}:${CAMPAIGNS.elephant.startDate}:${CAMPAIGNS.elephant.endDate}`
+    }
+  });
+  const data = { clips: { clipA, clipB, clipC }, clipReviews: {}, storageMigrations: {} };
+  const preservedSnapshots = structuredClone({
+    a: { submissionViews: clipA.submissionViews, approvalViews: clipA.approvalViews, publicViews: clipA.publicViews, currentViews: clipA.currentViews, payout: clipA.payout },
+    b: { submissionViews: clipB.submissionViews, approvalViews: clipB.approvalViews, publicViews: clipB.publicViews, currentViews: clipB.currentViews, payout: clipB.payout }
+  });
+
+  const report = repairAugustFirstWeekLegacyWeeklyAccounting(data, new Date('2026-08-09T12:00:00.000Z'));
+
+  assert.equal(report.qualifyingClipCount, 3);
+  assert.equal(report.inferredPreUpgradeClipCount, 2);
+  assert.equal(report.preUpgradeCreditedViews, 5_000_000);
+  assert.equal(report.preUpgradeStoredWeeklyViews, 1_500_000);
+  assert.equal(report.preUpgradeMissingWeeklyViews, 3_500_000);
+  assert.equal(report.postUpgradeCreditedViews, 1_000_000);
+  assert.equal(report.postUpgradeStoredWeeklyViews, 1_000_000);
+  assert.equal(report.week1StoredTotalBefore, 2_500_000);
+  assert.equal(report.legitimateTotalBeforeCap, 6_000_000);
+  assert.equal(report.displayedTotalAfterCap, 6_000_000);
+  assert.equal(clipA.budgetTracking.creditedViewsThisCycle, 3_000_000);
+  assert.equal(clipB.budgetTracking.creditedViewsThisCycle, 2_000_000);
+  assert.equal(clipC.budgetTracking.creditedViewsThisCycle, 1_000_000);
+  assert.equal(getCampaignCurrentWeekAccounting(data, 'elephant', new Date('2026-08-09T12:00:00.000Z')).creditedViews, 6_000_000);
+  assert.equal(getCampaignCurrentRunAccounting(data, 'elephant').totalViews, 6_000_000);
+  assert.deepEqual(
+    { a: { submissionViews: clipA.submissionViews, approvalViews: clipA.approvalViews, publicViews: clipA.publicViews, currentViews: clipA.currentViews, payout: clipA.payout }, b: { submissionViews: clipB.submissionViews, approvalViews: clipB.approvalViews, publicViews: clipB.publicViews, currentViews: clipB.currentViews, payout: clipB.payout } },
+    preservedSnapshots
+  );
+
+  const afterFirstRun = structuredClone(data);
+  assert.equal(repairAugustFirstWeekLegacyWeeklyAccounting(data, new Date('2026-08-09T13:00:00.000Z')), report);
+  assert.deepEqual(data, afterFirstRun);
+});
+
+test('August Week 1 migration applies Elephant cap using timestamp order and canonical consumers agree', () => {
+  const clipA = makeWeeklyAccountingClip('elephant', 'creator-a', 5_000_000, {
+    id: 'cap-a', videoId: 'cap-a', submittedTimestamp: Date.parse('2026-08-04T10:00:00.000Z'), submittedAt: '2026-08-04T10:00:00.000Z', approvedAt: Date.parse('2026-08-04T12:00:00.000Z'),
+    budgetTracking: { budgetCycleKey: '2026-08-03T07:00:00.000Z', baselinePublicViews: 4_500_000, lastPublicViews: 5_000_000, creditedViewsThisCycle: 500_000 }
+  });
+  const clipB = makeWeeklyAccountingClip('elephant', 'creator-b', 4_000_000, {
+    id: 'cap-b', videoId: 'cap-b', submittedTimestamp: Date.parse('2026-08-05T10:00:00.000Z'), submittedAt: '2026-08-05T10:00:00.000Z', approvedAt: Date.parse('2026-08-05T12:00:00.000Z'),
+    budgetTracking: { budgetCycleKey: '2026-08-03T07:00:00.000Z', baselinePublicViews: 3_500_000, lastPublicViews: 4_000_000, creditedViewsThisCycle: 500_000 }
+  });
+  const clipC = makeWeeklyAccountingClip('elephant', 'creator-c', 1_000_000, {
+    id: 'cap-c', videoId: 'cap-c', submittedTimestamp: Date.parse('2026-08-08T10:00:00.000Z'), submittedAt: '2026-08-08T10:00:00.000Z', approvedAt: Date.parse('2026-08-08T12:00:00.000Z')
+  });
+  const data = { clips: { clipA, clipB, clipC }, clipReviews: {}, storageMigrations: {} };
+
+  const report = repairAugustFirstWeekLegacyWeeklyAccounting(data, new Date('2026-08-09T12:00:00.000Z'));
+  const week = getCampaignCurrentWeekAccounting(data, 'elephant', new Date('2026-08-09T12:00:00.000Z'));
+  const run = getCampaignCurrentRunAccounting(data, 'elephant');
+
+  assert.equal(report.legitimateTotalBeforeCap, 10_000_000);
+  assert.equal(report.displayedTotalAfterCap, 8_000_000);
+  assert.equal(week.creditedViews, 8_000_000);
+  assert.equal(week.creditedMoney, 2400);
+  assert.equal(week.remainingBudget, 0);
+  assert.equal(run.totalViews, 8_000_000);
+  assert.equal(report.clips.reduce((sum, clip) => sum + clip.currentWeekCreditedViewsAfter, 0), 8_000_000);
 });
 
 test('Campaign Status separates earning and weekly periods and uses weekly fulfilled accounting', () => {
