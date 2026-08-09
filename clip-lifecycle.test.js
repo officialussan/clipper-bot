@@ -277,7 +277,7 @@ test('clip rejection DM: approved rejection preserves payout history and links t
   assert.deepEqual(clip.payout, payoutBefore);
   assert.doesNotMatch(rendered, /Current Earnings|Estimated Earnings|Payment Eligibility|Historical Paid/i);
   assert.equal(rejectionDm.helpConfigured, true);
-  assert.equal(button.label, 'Appeal / Get Help');
+  assert.equal(button.label, 'Appeal This Rejection');
   assert.equal(button.emoji.name, '🎫');
   assert.equal(button.style, ButtonStyle.Link);
   assert.equal(button.url, 'https://discord.com/channels/guild-1/help-1');

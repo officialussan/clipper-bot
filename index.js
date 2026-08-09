@@ -3748,11 +3748,11 @@ function buildRejectedClipUserEmbed(clip, reason, options = {}) {
     .setDescription(clipUrl ? `[${title}](${clipUrl})` : title)
     .addFields(
       { name: '📌 Rejection Reason', value: reason || clip.rejectReason || 'Not provided', inline: false },
-      { name: '<a:chart_increasing:1334030554630197290> Current Views', value: formatNumber(views), inline: true },
+      { name: '📈 Current Views', value: formatNumber(views), inline: true },
       { name: '🌐 Platform', value: formatPlatform(clip.platform), inline: true },
-      { name: '<a:chart_increasing:1334030554630197290> Appeal This Decision', value: appealText, inline: false },
+      { name: '⚠️ Appeal This Decision', value: appealText, inline: false },
       {
-        name: '<a:Loadin:1506234461459714100> Appeal Deadline',
+        name: '⏳ Appeal Deadline',
         value: deadlineUnix ? `<t:${deadlineUnix}:F>\n(<t:${deadlineUnix}:R>)` : 'Please contact staff for the appeal deadline.',
         inline: false
       }
@@ -3768,7 +3768,7 @@ function buildRejectedClipUserDm(clip, reason, guildId, helpChannelId = GET_HELP
   const components = helpLink
     ? [new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setLabel('Appeal / Get Help')
+          .setLabel('Appeal This Rejection')
           .setEmoji('🎫')
           .setStyle(ButtonStyle.Link)
           .setURL(helpLink)
