@@ -3697,35 +3697,90 @@ function buildApprovedClipUserEmbed(clip) {
   return embed;
 }
 
-function buildRejectedClipUserEmbed(clip, reason) {
+const CLIP_APPEAL_WINDOW_MS = 12 * 60 * 60 * 1000;
+
+function ensureClipAppealDeadline(clip, now = Date.now()) {
+  const existingRejectedAt = Number(clip?.rejectedAt);
+  const createsNewRejectionEvent = !Number.isFinite(existingRejectedAt) || existingRejectedAt <= 0;
+  if (createsNewRejectionEvent) {
+    clip.rejectedAt = Number(now);
+  }
+  const existingDeadline = Number(clip?.appealDeadline);
+  if (createsNewRejectionEvent || !Number.isFinite(existingDeadline) || existingDeadline <= 0) {
+    clip.appealDeadline = Number(clip.rejectedAt) + CLIP_APPEAL_WINDOW_MS;
+  }
+  return { rejectedAt: Number(clip.rejectedAt), appealDeadline: Number(clip.appealDeadline) };
+}
+
+function clearClipAppealWindow(clip) {
+  clip.rejectedAt = null;
+  clip.appealDeadline = null;
+}
+
+function isClipAppealWindowOpen(clip, now = Date.now()) {
+  const deadline = Number(clip?.appealDeadline) || 0;
+  return deadline > 0 && Number(now) <= deadline;
+}
+
+function getClipAppealHelpLink(guildId, helpChannelId = GET_HELP_CHANNEL_ID) {
+  const normalizedGuildId = String(guildId || '').trim();
+  const normalizedChannelId = String(helpChannelId || '').trim();
+  if (!normalizedGuildId || !normalizedChannelId) return null;
+  return `https://discord.com/channels/${normalizedGuildId}/${normalizedChannelId}`;
+}
+
+function buildRejectedClipUserEmbed(clip, reason, options = {}) {
   const campaign = CAMPAIGNS[clip.campaignId];
   const title = String(clip.title || clip.videoTitle || clip.caption || 'View Clip')
     .replace(/\\/g, '\\\\').replace(/\[/g, '\\[').replace(/\]/g, '\\]');
   const clipUrl = clip.videoUrl || clip.url || null;
-  const rejectionStage = getClipRejectionStage(clip, null);
   const views = getSafeTrackedViews(clip, null);
-  const earnings = Number(clip.totalMoneyMade ?? clip.moneyMade ?? clip.estimatedEarnings ?? 0) || 0;
-  const paidMoney = Number(clip.payout?.paidMoney) || 0;
+  const deadline = Number(clip.appealDeadline);
+  const deadlineUnix = Number.isFinite(deadline) && deadline > 0 ? Math.floor(deadline / 1000) : null;
+  const helpAvailable = options.helpAvailable !== false;
+  const appealText = helpAvailable
+    ? 'If you believe this rejection was made by mistake, you have **12 hours** to appeal. Open a ticket in **Get Help** and include this clip when contacting staff.'
+    : 'If you believe this rejection was made by mistake, you have **12 hours** to appeal. Please contact staff through the server\'s Get Help section.';
   const embed = new EmbedBuilder()
     .setColor(0xED4245)
     .setAuthor({ name: campaign?.name || clip.campaignName || 'Creators Elite' })
-    .setTitle('Your video has been rejected <a:chart1:1504773558415523931>')
+    .setTitle('Your video has been rejected <a:cancel:1506235594303606794>')
     .setDescription(clipUrl ? `[${title}](${clipUrl})` : title)
     .addFields(
-      { name: '<a:cancel:1506235594303606794> Reason', value: reason || 'Not provided', inline: false },
-      { name: '<a:chart1:1504773558415523931> Latest Recorded Views', value: formatNumber(views), inline: true },
-      { name: '🌐 Platform', value: formatPlatform(clip.platform), inline: true }
+      { name: '📌 Rejection Reason', value: reason || clip.rejectReason || 'Not provided', inline: false },
+      { name: '<a:chart_increasing:1334030554630197290> Current Views', value: formatNumber(views), inline: true },
+      { name: '🌐 Platform', value: formatPlatform(clip.platform), inline: true },
+      { name: '<a:chart_increasing:1334030554630197290> Appeal This Decision', value: appealText, inline: false },
+      {
+        name: '<a:Loadin:1506234461459714100> Appeal Deadline',
+        value: deadlineUnix ? `<t:${deadlineUnix}:F>\n(<t:${deadlineUnix}:R>)` : 'Please contact staff for the appeal deadline.',
+        inline: false
+      }
     )
-    .setFooter({ text: 'Creators Elite • Thank you for clipping ❤️', iconURL: 'https://cdn.discordapp.com/emojis/1504904179905200148.png' })
-    .setTimestamp();
-  if (rejectionStage === 'pre_approval') {
-    embed.addFields({ name: '<a:chart2:1504773558415523932> Estimated Earnings Before Rejection', value: `$${earnings.toFixed(2)} — not payable`, inline: false });
-  } else {
-    embed.addFields({ name: '<a:warning:1504774411280973864> You have 12 hours to submit an appeal.', value: 'create a ticket in <#1492888887452762313>', inline: false });
-    if (paidMoney > 0) embed.addFields({ name: '<a:appr:1534931253952909453> Historical Paid', value: `$${paidMoney.toFixed(2)}`, inline: false });
-  }
+    .setFooter({ text: 'Creators Elite • Clip Review', iconURL: 'https://cdn.discordapp.com/emojis/1504904179905200148.png' })
+    .setTimestamp(Number(clip.rejectedAt) || Date.now());
   if (clip.thumbnailUrl) embed.setThumbnail(clip.thumbnailUrl);
   return embed;
+}
+
+function buildRejectedClipUserDm(clip, reason, guildId, helpChannelId = GET_HELP_CHANNEL_ID) {
+  const helpLink = getClipAppealHelpLink(guildId, helpChannelId);
+  const components = helpLink
+    ? [new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setLabel('Appeal / Get Help')
+          .setEmoji('🎫')
+          .setStyle(ButtonStyle.Link)
+          .setURL(helpLink)
+      )]
+    : [];
+  return {
+    helpConfigured: Boolean(helpLink),
+    payload: {
+      embeds: [buildRejectedClipUserEmbed(clip, reason, { helpAvailable: Boolean(helpLink) })],
+      components
+    }
+  };
 }
  
 function makeSocialRequestId() {
@@ -4409,7 +4464,7 @@ function buildCampaignSubmitClipButton(campaign, data, now = new Date()) {
   }
   return button
     .setLabel('Submit Clip')
-    .setEmoji('⬆️')
+    .setEmoji('💰')
     .setStyle(ButtonStyle.Success)
     .setDisabled(false);
 }
@@ -10032,7 +10087,7 @@ ${reason}
       clip.wasEverApproved = rejectionStage === 'post_approval';
       clip.rejectionStage = rejectionStage;
       clip.rejectReason = reason;
-      clip.rejectedAt = Date.now();
+      ensureClipAppealDeadline(clip);
       clip.rejectedBy = interaction.user.id;
       clip.trackingRetryAt = null;
 
@@ -10068,7 +10123,15 @@ ${reason}
       const member = await interaction.guild.members.fetch(clip.userId).catch(() => null);
 
       if (member) {
-        await member.send({ embeds: [buildRejectedClipUserEmbed(clip, reason)] }).catch(() => {});
+        const rejectionDm = buildRejectedClipUserDm(clip, reason, interaction.guild.id);
+        if (!rejectionDm.helpConfigured) {
+          console.warn('[Clip Rejection]\nGet Help channel not configured.');
+        }
+        try {
+          await member.send(rejectionDm.payload);
+        } catch (error) {
+          console.error(`[Clip Rejection] Could not DM rejected clip ${clipId} to ${clip.userId}:`, error.message);
+        }
       }
 
       await interaction.editReply({
@@ -10102,7 +10165,7 @@ ${reason}
         const restoredAt = Date.now();
         clip.rejectionStage = null;
         clip.rejectReason = null;
-        clip.rejectedAt = null;
+        clearClipAppealWindow(clip);
         clip.rejectedBy = null;
         clip.restoredAt = restoredAt;
         clip.restoredBy = interaction.user.id;
@@ -11343,6 +11406,10 @@ module.exports.__clipLifecycleTest = {
   buildCampaignStatusEmbed,
   buildClipStaffEmbed,
   buildClipStaffButtons,
+  buildRejectedClipUserDm,
+  buildRejectedClipUserEmbed,
+  clearClipAppealWindow,
+  ensureClipAppealDeadline,
   finalizeOutOfRunClips,
   getClipTrackingAudit,
   getCampaignConnectAccountLink,
@@ -11356,8 +11423,10 @@ module.exports.__clipLifecycleTest = {
   getUserCurrentWeekAccounting,
   getWeeklyAccountingAudit,
   getInitialSubmissionViewState,
+  getClipAppealHelpLink,
   getSafeTrackedViews,
   initializeClipTrackingFields,
+  isClipAppealWindowOpen,
   repairApprovalSnapshotInvariants,
   repairAugustFirstWeekLegacyWeeklyAccounting,
   getVerifiedCampaignPlatforms,

@@ -18,7 +18,11 @@ const {
   buildCampaignStatusEmbed,
   buildClipStaffEmbed,
   buildClipStaffButtons,
+  buildRejectedClipUserDm,
+  buildRejectedClipUserEmbed,
   CAMPAIGNS,
+  clearClipAppealWindow,
+  ensureClipAppealDeadline,
   finalizeOutOfRunClips,
   getCampaignConnectAccountLink,
   getCampaignJoinBlockReason,
@@ -27,12 +31,14 @@ const {
   getCampaignSubmissionBlockMessage,
   getCampaignCurrentRunAccounting,
   getCampaignCurrentWeekAccounting,
+  getClipAppealHelpLink,
   getVerifiedCampaignPlatforms,
   getUserCurrentRunAccounting,
   getUserCurrentWeekAccounting,
   getWeeklyAccountingAudit,
   getInitialSubmissionViewState,
   initializeClipTrackingFields,
+  isClipAppealWindowOpen,
   repairApprovalSnapshotInvariants,
   repairAugustFirstWeekLegacyWeeklyAccounting,
   ensureCampaignAccount,
@@ -218,6 +224,84 @@ test('K: staff earnings use campaign-credited views, not public views', () => {
   const description = buildClipStaffEmbed(clip).data.description;
   assert.match(description, /Campaign Credited Views\*\*\n900/);
   assert.match(description, /Current Earnings\*\*\n\$0\.27/);
+});
+
+test('clip rejection DM: pending rejection stores a real 12-hour appeal window without earnings fields', () => {
+  const rejectedAt = Date.parse('2026-08-09T10:30:00.000Z');
+  const clip = makeCurrentCrowderClip({
+    status: 'rejected',
+    rejectionStage: 'pre_approval',
+    title: "Elon isn't always right, but he's spot on here.",
+    thumbnailUrl: 'https://example.com/thumbnail.jpg',
+    totalMoneyMade: 999,
+    estimatedEarnings: 888,
+    payout: { paidViews: 123_000, paidMoney: 45.67, history: [{ amount: 45.67 }] },
+    rejectedAt: null,
+    appealDeadline: null
+  });
+
+  const appealWindow = ensureClipAppealDeadline(clip, rejectedAt);
+  const preservedWindow = ensureClipAppealDeadline(clip, rejectedAt + 60_000);
+  const rejectionDm = buildRejectedClipUserDm(clip, 'Does not meet the campaign editing criteria.', 'guild-1', 'help-1');
+  const embed = rejectionDm.payload.embeds[0].data;
+  const rendered = JSON.stringify(embed);
+  const expectedDeadline = rejectedAt + (12 * 60 * 60 * 1000);
+
+  assert.deepEqual(appealWindow, { rejectedAt, appealDeadline: expectedDeadline });
+  assert.deepEqual(preservedWindow, appealWindow);
+  assert.doesNotMatch(rendered, /Current Earnings|Estimated Earnings|Payment Eligibility|Historical Paid/i);
+  assert.match(rendered, /Does not meet the campaign editing criteria/);
+  assert.match(rendered, /Appeal This Decision/);
+  assert.match(rendered, /\*\*12 hours\*\*/);
+  assert.match(rendered, new RegExp(`<t:${Math.floor(expectedDeadline / 1000)}:F>`));
+  assert.match(rendered, new RegExp(`<t:${Math.floor(expectedDeadline / 1000)}:R>`));
+  assert.equal(embed.thumbnail.url, 'https://example.com/thumbnail.jpg');
+  assert.equal(isClipAppealWindowOpen(clip, expectedDeadline), true);
+  assert.equal(isClipAppealWindowOpen(clip, expectedDeadline + 1), false);
+});
+
+test('clip rejection DM: approved rejection preserves payout history and links to canonical Get Help channel', () => {
+  const rejectedAt = Date.parse('2026-08-09T10:30:00.000Z');
+  const clip = makeCurrentCrowderClip({
+    status: 'rejected',
+    rejectionStage: 'post_approval',
+    rejectedAt,
+    appealDeadline: rejectedAt + (12 * 60 * 60 * 1000),
+    payout: { paidViews: 3_500_000, paidMoney: 1050, history: [{ amount: 1050 }] }
+  });
+  const payoutBefore = structuredClone(clip.payout);
+  const rejectionDm = buildRejectedClipUserDm(clip, 'Wrong campaign.', 'guild-1', 'help-1');
+  const rendered = JSON.stringify(rejectionDm.payload.embeds[0].data);
+  const button = rejectionDm.payload.components[0].components[0].data;
+
+  assert.deepEqual(clip.payout, payoutBefore);
+  assert.doesNotMatch(rendered, /Current Earnings|Estimated Earnings|Payment Eligibility|Historical Paid/i);
+  assert.equal(rejectionDm.helpConfigured, true);
+  assert.equal(button.label, 'Appeal / Get Help');
+  assert.equal(button.emoji.name, '🎫');
+  assert.equal(button.style, ButtonStyle.Link);
+  assert.equal(button.url, 'https://discord.com/channels/guild-1/help-1');
+  assert.equal(getClipAppealHelpLink('guild-1', 'help-1'), button.url);
+});
+
+test('clip rejection DM: missing Get Help config falls back safely and restore permits a fresh deadline', () => {
+  const firstRejectedAt = Date.parse('2026-08-09T10:30:00.000Z');
+  const secondRejectedAt = Date.parse('2026-08-10T15:00:00.000Z');
+  const clip = makeCurrentCrowderClip({ rejectedAt: null, appealDeadline: null });
+  ensureClipAppealDeadline(clip, firstRejectedAt);
+
+  const rejectionDm = buildRejectedClipUserDm(clip, 'Low quality.', 'guild-1', null);
+  const rendered = JSON.stringify(rejectionDm.payload.embeds[0].data);
+  assert.equal(rejectionDm.helpConfigured, false);
+  assert.deepEqual(rejectionDm.payload.components, []);
+  assert.match(rendered, /Please contact staff through the server's Get Help section\./);
+
+  clearClipAppealWindow(clip);
+  const nextWindow = ensureClipAppealDeadline(clip, secondRejectedAt);
+  assert.deepEqual(nextWindow, {
+    rejectedAt: secondRejectedAt,
+    appealDeadline: secondRejectedAt + (12 * 60 * 60 * 1000)
+  });
 });
 
 test('join A/E: membership and roles are immediate and idempotent without an account', async () => {
