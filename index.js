@@ -467,31 +467,21 @@ const CAMPAIGNS = {
     
     panelText: `# <a:fire1:1504871649491554487> **Earn Money Posting Clips – Elephant Clipping Campaign**
 
-Earn money by posting high-retention clips and edits from Elephant content across short-form platforms. Your goal is simple: create engaging clips, generate views, and grow your pages while earning from performance.
-
-All you have to do is **register for the campaign below** and follow the guidelines to start earning.
+Create and post engaging clips and edits that follow the campaign rules to earn
+based on performance.
 
 ## <a:chart1:1504773558415523931> Campaign Overview
 
-• **Content:** You can only post content from the <#1521232893370826802>
-
-• **Platforms:** <:tiktok1:1504871476485029979> TikTok, <:ig1:1504871708664922162> Instagram Reels & <:ytshort:1504774704123220099> YouTube Shorts
-
-• **Requirement:** All uploaded videos must follow the campaign rules → <#1492248546156609778>
-
-• **Editing Style:** Deliver value, maintain strong retention, and present SWA positively.
-
-• **Campaign Goal:** Post informative clips from prominent conservative figures. Focus on politics, policy, and social issues.
-
-• **Strict Rule:** Low-quality, spam, or misleading edits may result in removal from the campaign.
+• **Clips:** Any clips and edits that follow the campaign rules → <#1492248546156609778>
+• **Platforms:** TikTok, Instagram Reels & YouTube Shorts
+• **Country Tier:** Tier 1 countries only
+• **Minimum Video Duration:** 10 seconds
 
 ## <a:Cash1:1504871843419521115> Payment Details
 
-> **Weekly Budget:** $2,400  
-> **Rate:** $300 per 1M eligible views  
-> **Eligible Views:** Tier 1 countries only  
-> **Payout Schedule:** Monthly  
-> **Payment Method:** Crypto
+> **Payout Schedule:** Monthly
+> **Rate:** $300 per 1M eligible views
+> **Weekly Budget:** $2,400
 > **Minimum Payout:** $10
 
 ## <a:arrow1:1504776324051374130> Join the Campaign
@@ -531,32 +521,21 @@ Click the button below to start clipping and earning.`
     panelText: `
 # <a:fire1:1504871649491554487> Earn Money Posting Clips – Steven Crowder Clipping Campaign
 
-Earn money by posting high-retention clips and edits from Steven Crowder content across short-form platforms. Your goal is simple: Create engaging content, generate views, grow your pages, and earn based on performance.
-
-All you have to do is **register for the campaign below** and follow the guidelines to start earning.
+Create and post engaging clips and edits that follow the campaign rules to earn
+based on performance.
 
 ## <a:chart1:1504773558415523931> Campaign Overview
 
-• **Content:** Clips and edits from official Steven Crowder content focused primarily on Steven Crowder
-
-• **Platforms:** <:tiktok1:1504871476485029979> TikTok, <:ig1:1504871708664922162> Instagram Reels & <:ytshort:1504774704123220099> YouTube Shorts
-
-• **Requirement:** All uploads must follow the official campaign rules → <#1492184654864842963>
-
-• **Editing Style:** Strong hooks, high retention, clear context, and clean presentation
-
-• **Campaign Goal:** Create engaging clips around Crowder’s commentary, debates, reactions, and discussion moments
-
-• **Content Standard:** Low-quality, spam, misleading, or heavily manipulated edits may result in removal from the campaign
-
+• **Clips:** Any clips and edits that follow the campaign rules → <#1492184654864842963>
+• **Platforms:** TikTok, Instagram Reels & YouTube Shorts
+• **Country Tier:** Tier 1
+• **Minimum Video Duration:** 10 seconds
 
 ## <a:Cash1:1504871843419521115> Payment Details
 
-> **Campaign Budget:** $2,100
-> **Rate:** $300 per 1M eligible views
-> **Eligible Traffic:** Tier 1 countries only
 > **Payout Schedule:** Monthly
-> **Payment Method:** Crypto
+> **Rate:** $300 per 1M eligible views
+> **Weekly Budget:** $2,100
 > **Minimum Payout:** $10
 
 ## <a:arrow1:1504776324051374130> Join the Campaign
@@ -585,9 +564,9 @@ Click the button below to start clipping and earning.`
     roleId: process.env.ICE_ROLE_ID,
     entryChannelId: process.env.ICE_ENTRY_CHANNEL_ID,
     launchAt: null,
-    panelChannelId: null,
-    panelMessageId: null,
-    rulesChannelId: null,
+    panelChannelId: 1535996383209988158,
+    panelMessageId: 1536305479116914739,
+    rulesChannelId: 1535996676056023152,
     status: 'pending_launch',
     panelText: `# <a:fire1:1504871649491554487> Earn Money Posting Clips & Edits – ICE
 
