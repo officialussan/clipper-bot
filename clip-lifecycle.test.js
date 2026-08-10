@@ -39,6 +39,7 @@ const {
   createGlobalSocialVerificationRequest,
   finalizeStraightCampaignIfFulfilled,
   fetchInstagramPublicProfile,
+  findAllCampaignSubmissionPanelMessages,
   findCampaignSubmissionPanelMessage,
   ensureClipAppealDeadline,
   finalizeOutOfRunClips,
@@ -58,6 +59,7 @@ const {
   getCampaignCurrentRunAccounting,
   getCampaignCurrentWeekAccounting,
   getCampaignSubmissionAccounts,
+  getCampaignSubmitButtonFromMessage,
   getStraightCampaignAccounting,
   getClipAppealHelpLink,
   getVerifiedCampaignPlatforms,
@@ -73,9 +75,6 @@ const {
   joinCampaignMember,
   repairApprovalSnapshotInvariants,
   repairAugustFirstWeekLegacyWeeklyAccounting,
-  reconcileAllWeeklyCampaignStates,
-  reconcileWeeklyCampaignState,
-  refreshAllCampaignPanelMessages,
   ensureCampaignAccount,
   removeCampaignAccount,
   removeGlobalSocialAccount,
@@ -89,6 +88,7 @@ const {
   validateCampaignVideoDuration,
   shouldTrackClip,
   updateApprovedClipTracking,
+  updateCampaignSubmissionPanelMessage,
   validateAccountSubmission,
   verifyGlobalSocialVerificationRequest
 } = require('./index.js').__clipLifecycleTest;
@@ -788,109 +788,6 @@ test('weekly accounting G: Monday boundary starts at zero, preserves monthly cre
   assert.equal(clip.campaignCreditedViews, 4_300_000);
 });
 
-test('weekly reset reconciliation clears an old Elephant cap without erasing monthly history or paused-period growth', () => {
-  const clip = makeWeeklyAccountingClip('elephant', 'creator-a', 8_000_000);
-  const data = {
-    clips: { clip },
-    clipReviews: {},
-    campaignWeeklyState: { elephant: { weekKey: '2026-08-03T07:00:00.000Z' } },
-    campaignStatus: {
-      elephant: { status: 'weekly_paused', pauseReason: 'weekly_cap_reached', weekKey: '2026-08-03T07:00:00.000Z' }
-    }
-  };
-  const previousWeek = new Date('2026-08-09T12:00:00.000Z');
-  const afterOfflineReset = new Date('2026-08-10T07:30:00.000Z');
-
-  assert.equal(getCampaignCurrentWeekAccounting(data, 'elephant', previousWeek).creditedViews, 8_000_000);
-  assert.equal(getCampaignOperationalState(data, CAMPAIGNS.elephant, previousWeek).state, 'weekly_paused');
-
-  const report = reconcileWeeklyCampaignState(data, 'elephant', afterOfflineReset);
-  const accounting = getCampaignCurrentWeekAccounting(data, 'elephant', afterOfflineReset);
-  const state = getCampaignOperationalState(data, CAMPAIGNS.elephant, afterOfflineReset);
-  const submitButton = buildCampaignSubmitClipButton(CAMPAIGNS.elephant, data, afterOfflineReset).data;
-
-  assert.equal(report.changed, true);
-  assert.equal(report.transitionedClips, 1);
-  assert.equal(report.weekKey, '2026-08-10T07:00:00.000Z');
-  assert.equal(report.periodEnd, '2026-08-17T07:00:00.000Z');
-  assert.equal(accounting.creditedViews, 0);
-  assert.equal(accounting.capReached, false);
-  assert.equal(state.state, 'live');
-  assert.equal(getCampaignPanelFulfilledPercent(CAMPAIGNS.elephant, data, afterOfflineReset), 0);
-  assert.equal(submitButton.label, 'Submit Clip');
-  assert.equal(submitButton.style, ButtonStyle.Success);
-  assert.equal(submitButton.disabled, false);
-  assert.equal(data.campaignStatus.elephant.status, 'active');
-  assert.equal(data.campaignStatus.elephant.pauseReason, undefined);
-  assert.equal(clip.budgetTracking.creditedViewsThisCycle, 0);
-  assert.equal(clip.budgetTracking.weekBaselinePending, true);
-  assert.equal(clip.budgetTracking.history[0].creditedViews, 8_000_000);
-  assert.equal(clip.campaignCreditedViews, 8_000_000);
-  assert.equal(clip.payout.paidViews, 0);
-
-  // The first provider snapshot after reset is a fresh baseline. Growth that
-  // accumulated while Week 1 was capped is not credited into Week 2.
-  applyTrackedMetadata(clip, { views: 8_400_000, accountingTimestamp: Date.parse('2026-08-10T07:31:00.000Z') }, data);
-  assert.equal(clip.budgetTracking.weekBaselinePending, false);
-  assert.equal(clip.budgetTracking.creditedViewsThisCycle, 0);
-  assert.equal(clip.campaignCreditedViews, 8_000_000);
-
-  applyTrackedMetadata(clip, { views: 8_500_000, accountingTimestamp: Date.parse('2026-08-10T08:00:00.000Z') }, data);
-  assert.equal(clip.budgetTracking.creditedViewsThisCycle, 100_000);
-  assert.equal(clip.campaignCreditedViews, 8_100_000);
-
-  const afterRepeat = structuredClone(data);
-  const repeat = reconcileWeeklyCampaignState(data, 'elephant', new Date('2026-08-10T08:30:00.000Z'));
-  assert.equal(repeat.changed, false);
-  assert.deepEqual(data, afterRepeat);
-});
-
-test('offline startup reconciliation refreshes campaign UIs and can rediscover a legacy Submit panel beyond 100 messages', async () => {
-  const clip = makeWeeklyAccountingClip('elephant', 'creator-a', 8_000_000);
-  const data = {
-    clips: { clip },
-    clipReviews: {},
-    campaignWeeklyState: { elephant: { weekKey: '2026-08-03T07:00:00.000Z' } },
-    campaignStatus: {}
-  };
-  const refreshed = [];
-  const startup = await refreshAllCampaignPanelMessages(
-    { id: 'guild-1' },
-    {
-      data,
-      now: new Date('2026-08-10T07:30:00.000Z'),
-      updateCampaignPanelMessage: async (_guild, campaignId) => refreshed.push(campaignId)
-    }
-  );
-  assert.equal(startup.reconciliation.reports.find(report => report.campaignId === 'elephant').weekKey, '2026-08-10T07:00:00.000Z');
-  assert.equal(getCampaignOperationalState(data, CAMPAIGNS.elephant, new Date('2026-08-10T07:30:00.000Z')).state, 'live');
-  assert.equal(refreshed.includes('elephant'), true);
-
-  const firstPage = new Map();
-  for (let index = 0; index < 100; index++) {
-    firstPage.set(`recent-${index}`, { id: `recent-${index}`, author: { id: 'bot-1' }, components: [] });
-  }
-  const legacyPanel = {
-    id: 'legacy-elephant-panel',
-    author: { id: 'bot-1' },
-    components: [{ components: [{ customId: 'submit_clip:elephant' }] }]
-  };
-  const secondPage = new Map([['legacy-elephant-panel', legacyPanel]]);
-  const fetchCalls = [];
-  const channel = {
-    messages: {
-      fetch: async options => {
-        fetchCalls.push(options);
-        return options.before ? secondPage : firstPage;
-      }
-    }
-  };
-  const found = await findCampaignSubmissionPanelMessage(channel, 'elephant', 'bot-1');
-  assert.equal(found, legacyPanel);
-  assert.equal(fetchCalls.length, 2);
-  assert.equal(fetchCalls[1].before, 'recent-99');
-});
-
 test('weekly audit flags the known late-baseline first-week mismatch without rewriting history', () => {
   const clip = makeWeeklyAccountingClip('elephant', 'creator-a', 9_000_000, {
     budgetTracking: {
@@ -1074,7 +971,7 @@ test('Submit Clip button follows canonical live, weekly-paused, and finished cam
   const liveButton = buildCampaignSubmitClipButton(CAMPAIGNS.elephant, elephantLive, currentWeek).data;
   assert.equal(liveState.state, 'live');
   assert.equal(liveButton.label, 'Submit Clip');
-  assert.equal(liveButton.emoji.name, '💰');
+  assert.equal(liveButton.emoji.name, '⬆️');
   assert.equal(liveButton.style, ButtonStyle.Success);
   assert.equal(liveButton.disabled, false);
 
@@ -1122,6 +1019,88 @@ test('Submit Clip button follows canonical live, weekly-paused, and finished cam
   assert.equal(getCampaignOperationalState(elephantFull, CAMPAIGNS.elephant, monthlyEnd).state, 'finished');
   assert.equal(monthlyFinishedButton.label, 'Campaign Finished');
   assert.equal(monthlyFinishedButton.disabled, true);
+});
+
+test('Elephant Submit panel discovery repairs stale and duplicate buttons from canonical Week 2 state', async () => {
+  const now = new Date('2026-08-10T12:00:00.000Z');
+  const clip = makeWeeklyAccountingClip('elephant', 'creator-a', 938_600, {
+    publicViews: 938_600,
+    currentViews: 938_600,
+    campaignCreditedViews: 938_600,
+    views: 938_600,
+    budgetTracking: {
+      budgetCycleKey: '2026-08-10T07:00:00.000Z',
+      baselinePublicViews: 0,
+      lastPublicViews: 938_600,
+      creditedViewsThisCycle: 938_600
+    }
+  });
+  const data = { clips: { clip }, clipReviews: {}, campaignSubmissionPanels: {} };
+  const accounting = getCampaignCurrentWeekAccounting(data, 'elephant', now);
+  assert.equal(accounting.creditedViews, 938_600);
+  assert.equal(accounting.capReached, false);
+  assert.equal(getCampaignOperationalState(data, CAMPAIGNS.elephant, now).state, 'live');
+  assert.equal(getCampaignPanelFulfilledPercent(CAMPAIGNS.elephant, data, now).toFixed(1), '11.7');
+
+  const makeStalePanel = ({ id, channelId, pinned, createdTimestamp }) => {
+    const message = {
+      id,
+      pinned,
+      createdTimestamp,
+      author: { id: 'bot-1' },
+      components: [{ components: [{ customId: 'submit_clip:elephant', label: 'Submissions Paused', disabled: true }] }],
+      editPayloads: [],
+      async edit(payload) {
+        this.editPayloads.push(payload);
+        const button = payload.components[0].components[0].data;
+        this.components = [{ components: [{ customId: button.custom_id, label: button.label, disabled: button.disabled === true }] }];
+        return this;
+      }
+    };
+    const channel = {
+      id: channelId,
+      name: `elephant-${channelId}`,
+      messages: { fetch: async input => typeof input === 'string' ? message : new Map([[message.id, message]]) }
+    };
+    return { channel, message };
+  };
+  const visible = makeStalePanel({ id: 'visible-panel', channelId: 'channel-visible', pinned: true, createdTimestamp: 1000 });
+  const duplicate = makeStalePanel({ id: 'duplicate-panel', channelId: 'channel-duplicate', pinned: false, createdTimestamp: 2000 });
+  const channels = new Map([[visible.channel.id, visible.channel], [duplicate.channel.id, duplicate.channel]]);
+  const guild = {
+    id: 'guild-1',
+    channels: {
+      cache: channels,
+      fetch: async channelId => channelId ? channels.get(channelId) || null : channels
+    }
+  };
+  let saved = false;
+  const result = await updateCampaignSubmissionPanelMessage(guild, 'elephant', {
+    data,
+    now,
+    botUserId: 'bot-1',
+    saveData: () => { saved = true; }
+  });
+
+  assert.equal(result.updated, true);
+  assert.equal(result.panels.length, 2);
+  assert.equal(result.canonical.messageId, 'visible-panel');
+  assert.equal(result.canonical.previousLabel, 'Submissions Paused');
+  assert.equal(result.canonical.previousDisabled, true);
+  assert.equal(result.canonical.renderedLabel, 'Submit Clip');
+  assert.equal(result.canonical.renderedDisabled, false);
+  assert.equal(visible.message.editPayloads[0].components[0].components[0].data.emoji.name, '⬆️');
+  assert.equal(result.panels.every(panel => panel.edited), true);
+  assert.equal(visible.message.editPayloads[0].components[0].components[0].data.label, 'Submit Clip');
+  assert.equal(visible.message.editPayloads[0].components[0].components[0].data.disabled, false);
+  assert.equal(duplicate.message.editPayloads[0].components[0].components[0].data.label, 'Submit Clip');
+  assert.equal(data.campaignSubmissionPanels.elephant.channelId, 'channel-visible');
+  assert.equal(data.campaignSubmissionPanels.elephant.messageId, 'visible-panel');
+  assert.equal(saved, true);
+  assert.equal(getCampaignSubmitButtonFromMessage(visible.message, 'elephant').label, 'Submit Clip');
+
+  const discovered = await findAllCampaignSubmissionPanelMessages(guild, 'elephant', { botUserId: 'bot-1' });
+  assert.deepEqual(discovered.map(panel => panel.message.id), ['visible-panel', 'duplicate-panel']);
 });
 
 function makeStraightTestCampaign(overrides = {}) {

@@ -661,7 +661,7 @@ function loadData() {
   if (!raw && mirrorDataFilePath !== primaryDataFilePath) raw = readJsonFileSafely(mirrorDataFilePath), recovered = !!raw;
   if (!raw) { raw = { users: {}, applications: {}, campaignAccountRequests: {}, clips: {}, campaignStatus: {}, payoutTrackers: {} }; recovered = true; }
 
-  raw.users ||= {}; raw.applications ||= {}; raw.campaignAccountRequests ||= {}; raw.globalSocialVerificationRequests ||= {}; raw.campaignAllocations ||= {}; raw.campaignWeeklyState ||= {}; raw.clips ||= {}; raw.clipReviews ||= {}; raw.campaignStatus ||= {}; raw.payoutTrackers ||= {}; raw.storageMigrations ||= {};
+  raw.users ||= {}; raw.applications ||= {}; raw.campaignAccountRequests ||= {}; raw.globalSocialVerificationRequests ||= {}; raw.campaignAllocations ||= {}; raw.clips ||= {}; raw.clipReviews ||= {}; raw.campaignStatus ||= {}; raw.payoutTrackers ||= {}; raw.storageMigrations ||= {};
   for (const request of Object.values(raw.payoutRequests || {})) {
     if (!request?.campaignId || !request?.userId) continue;
     const id = request.id || request.campaignId + '_' + request.userId;
@@ -972,11 +972,6 @@ function loadData() {
     }
     raw.storageMigrations.globalSocialAccountsV1 = { completedAt: Date.now(), initializedUsers };
     migrationChanged = true;
-  }
-  const weeklyReconciliation = reconcileAllWeeklyCampaignStates(raw, new Date());
-  if (weeklyReconciliation.changed) {
-    migrationChanged = true;
-    console.log('[Weekly Campaign Reconciliation]', weeklyReconciliation.reports);
   }
   const outOfRunCompletion = finalizeOutOfRunClips(raw, Date.now());
   if (outOfRunCompletion.changed) {
@@ -1492,41 +1487,32 @@ function applySeparateEarningCycleTracking(clip, metadata, data, publicViews, ca
       }
     }
 
+    const cap = getCampaignViewCap(campaign);
+    const otherWeeklyCredits = cap === null ? 0 : getCampaignCurrentWeeklyCreditedViews(campaign.id, { data, excludeClipId: clip.id, date: accountingDate });
+    const remainingViews = cap === null ? Infinity : Math.max(cap - otherWeeklyCredits, 0);
+    const creditedIncrease = Math.min(Math.max(publicViews - previousObservedPublicViews, 0), remainingViews, remainingClipCapacity);
     tracking.budgetCycleKey = cycleKey;
-    tracking.baselinePublicViews = publicViews;
+    tracking.baselinePublicViews = previousObservedPublicViews;
     tracking.lastPublicViews = publicViews;
-    tracking.creditedViewsThisCycle = 0;
+    tracking.creditedViewsThisCycle = creditedIncrease;
     tracking.pausedBaselineViews = null;
-    tracking.weekBaselinePending = false;
-    tracking.weekReconciledAt ||= Date.now();
-    tracking.lastCreditedAt = null;
-    clip.campaignCreditedViews = previousMonthlyViews;
+    if (creditedIncrease > 0) tracking.lastCreditedAt = Date.now();
+    clip.campaignCreditedViews = previousMonthlyViews + creditedIncrease;
   } else {
-    if (tracking.weekBaselinePending === true) {
-      tracking.baselinePublicViews = publicViews;
-      tracking.lastPublicViews = publicViews;
-      tracking.creditedViewsThisCycle = 0;
-      tracking.pausedBaselineViews = null;
-      tracking.weekBaselinePending = false;
-      tracking.weekBaselineEstablishedAt = Date.now();
-      tracking.lastCreditedAt = null;
-      clip.campaignCreditedViews = previousMonthlyViews;
-    } else {
-      const lastPublicViews = Math.max(Number(tracking.lastPublicViews) || 0, Number(tracking.baselinePublicViews) || 0);
-      const publicGrowth = Math.max(publicViews - lastPublicViews, 0);
-      const cap = getCampaignViewCap(campaign);
-      const otherWeeklyCredits = cap === null ? 0 : getCampaignCurrentWeeklyCreditedViews(campaign.id, { data, excludeClipId: clip.id, date: accountingDate });
-      const remainingViews = cap === null ? Infinity : Math.max(cap - otherWeeklyCredits, 0);
-      const creditedIncrease = Math.min(publicGrowth, remainingViews, remainingClipCapacity);
-      tracking.creditedViewsThisCycle = Math.max(Number(tracking.creditedViewsThisCycle) || 0, 0) + creditedIncrease;
-      tracking.lastPublicViews = publicViews;
-      if (creditedIncrease > 0) tracking.lastCreditedAt = Date.now();
-      if (cap !== null && process.env.DEBUG_VIEW_CAP_TRACKING === 'true') {
-        const weeklyTotalAfter = otherWeeklyCredits + tracking.creditedViewsThisCycle;
-        console.log('[Clip View Cap Update]', { clipId: clip.id, campaignId: clip.campaignId, previousCreditedViews: previousMonthlyViews, fetchedPublicViews: Number(metadata?.views) || null, creditedViewsAfter: previousMonthlyViews + creditedIncrease, creditedIncrease, campaignTotalAfter: weeklyTotalAfter, remainingAfter: Math.max(cap - weeklyTotalAfter, 0) });
-      }
-      clip.campaignCreditedViews = previousMonthlyViews + creditedIncrease;
+    const lastPublicViews = Math.max(Number(tracking.lastPublicViews) || 0, Number(tracking.baselinePublicViews) || 0);
+    const publicGrowth = Math.max(publicViews - lastPublicViews, 0);
+    const cap = getCampaignViewCap(campaign);
+    const otherWeeklyCredits = cap === null ? 0 : getCampaignCurrentWeeklyCreditedViews(campaign.id, { data, excludeClipId: clip.id, date: accountingDate });
+    const remainingViews = cap === null ? Infinity : Math.max(cap - otherWeeklyCredits, 0);
+    const creditedIncrease = Math.min(publicGrowth, remainingViews, remainingClipCapacity);
+    tracking.creditedViewsThisCycle = Math.max(Number(tracking.creditedViewsThisCycle) || 0, 0) + creditedIncrease;
+    tracking.lastPublicViews = publicViews;
+    if (creditedIncrease > 0) tracking.lastCreditedAt = Date.now();
+    if (cap !== null && process.env.DEBUG_VIEW_CAP_TRACKING === 'true') {
+      const weeklyTotalAfter = otherWeeklyCredits + tracking.creditedViewsThisCycle;
+      console.log('[Clip View Cap Update]', { clipId: clip.id, campaignId: clip.campaignId, previousCreditedViews: previousMonthlyViews, fetchedPublicViews: Number(metadata?.views) || null, creditedViewsAfter: previousMonthlyViews + creditedIncrease, creditedIncrease, campaignTotalAfter: weeklyTotalAfter, remainingAfter: Math.max(cap - weeklyTotalAfter, 0) });
     }
+    clip.campaignCreditedViews = previousMonthlyViews + creditedIncrease;
   }
 
   clip.campaignCreditedViews ??= previousMonthlyViews;
@@ -4097,129 +4083,6 @@ function getCampaignCurrentWeekAccounting(data, campaignId, now = new Date()) {
   };
 }
 
-function getWeeklyResetObservedPublicViews(clip) {
-  return Math.max(
-    Number(clip?.budgetTracking?.lastPublicViews) || 0,
-    Number(clip?.budgetTracking?.baselinePublicViews) || 0,
-    Number(clip?.publicViews) || 0,
-    Number(clip?.currentViews) || 0,
-    Number(clip?.approvalViews) || 0,
-    Number(clip?.submissionViews) || 0
-  );
-}
-
-function isStoredWeeklyCapPause(state) {
-  if (!state) return false;
-  const status = String(state.status || '').toLowerCase();
-  const reason = String(state.pauseReason || state.reason || state.finishReason || '').toLowerCase();
-  if (status === 'finished' || status === 'finished_budget') return false;
-  return status === 'weekly_paused' ||
-    reason === 'weekly_cap_reached' ||
-    reason === 'weekly_view_cap_reached';
-}
-
-function reconcileWeeklyCampaignState(data, campaignId, now = new Date()) {
-  const campaign = CAMPAIGNS[campaignId];
-  if (!campaign?.separateEarningLifecycle || isStraightCampaign(campaign)) {
-    return { campaignId, changed: false, transitionedClips: 0, weekKey: null };
-  }
-  const nowDate = new Date(now);
-  const nowMs = nowDate.getTime();
-  if (!Number.isFinite(nowMs) || !isCampaignEarningActive(campaign, nowDate)) {
-    return { campaignId, changed: false, transitionedClips: 0, weekKey: null };
-  }
-
-  const { periodStart, periodEnd } = getCampaignBudgetPeriod(campaign, nowDate);
-  const weekKey = periodStart.toISOString();
-  data.campaignWeeklyState ||= {};
-  const previousState = data.campaignWeeklyState[campaignId] || null;
-  let changed = false;
-  let transitionedClips = 0;
-
-  if (previousState?.weekKey !== weekKey) {
-    for (const collection of [data.clips || {}, data.clipReviews || {}]) {
-      for (const clip of Object.values(collection)) {
-        if (String(clip?.campaignId) !== String(campaignId)) continue;
-        if (!isClipInCampaignEarningRun(clip, campaign) || clip.trackingStatus === 'completed') continue;
-        if (clip.status !== 'pending' && !(clip.status === 'approved' && isPayoutEligibleClip(clip))) continue;
-
-        clip.budgetTracking ||= {};
-        const tracking = clip.budgetTracking;
-        if (tracking.budgetCycleKey === weekKey) continue;
-        const oldWeekKey = tracking.budgetCycleKey || null;
-        const observedPublicViews = getWeeklyResetObservedPublicViews(clip);
-        if (oldWeekKey) {
-          tracking.history ||= [];
-          if (!tracking.history.some(entry => entry?.weekKey === oldWeekKey)) {
-            tracking.history.push({
-              weekKey: oldWeekKey,
-              baselinePublicViews: Math.max(Number(tracking.baselinePublicViews) || 0, 0),
-              lastPublicViews: observedPublicViews,
-              creditedViews: Math.max(Number(tracking.creditedViewsThisCycle) || 0, 0),
-              closedAt: periodStart.getTime()
-            });
-          }
-        }
-        tracking.budgetCycleKey = weekKey;
-        tracking.baselinePublicViews = observedPublicViews;
-        tracking.lastPublicViews = observedPublicViews;
-        tracking.creditedViewsThisCycle = 0;
-        tracking.pausedBaselineViews = observedPublicViews;
-        tracking.weekBaselinePending = true;
-        tracking.weekReconciledAt = nowMs;
-        tracking.lastCreditedAt = null;
-        clip.nextCheckAt = nowMs;
-        clip.trackingRetryAt = null;
-        transitionedClips++;
-        changed = true;
-      }
-    }
-    data.campaignWeeklyState[campaignId] = {
-      weekKey,
-      periodStart: periodStart.toISOString(),
-      periodEnd: periodEnd.toISOString(),
-      reconciledAt: nowMs,
-      previousWeekKey: previousState?.weekKey || null
-    };
-    changed = true;
-  }
-
-  const currentAccounting = getCampaignCurrentWeekAccounting(data, campaignId, nowDate);
-  const storedStatus = data.campaignStatus?.[campaignId];
-  if (!currentAccounting?.capReached && isStoredWeeklyCapPause(storedStatus)) {
-    data.campaignStatus[campaignId] = {
-      ...storedStatus,
-      status: 'active',
-      weekKey,
-      reconciledAt: nowMs
-    };
-    delete data.campaignStatus[campaignId].pauseReason;
-    delete data.campaignStatus[campaignId].reason;
-    if (String(data.campaignStatus[campaignId].finishReason || '').toLowerCase().includes('weekly')) {
-      delete data.campaignStatus[campaignId].finishReason;
-    }
-    changed = true;
-  }
-
-  return {
-    campaignId,
-    changed,
-    transitionedClips,
-    weekKey,
-    periodStart: periodStart.toISOString(),
-    periodEnd: periodEnd.toISOString(),
-    creditedViews: currentAccounting?.creditedViews || 0,
-    capReached: currentAccounting?.capReached === true
-  };
-}
-
-function reconcileAllWeeklyCampaignStates(data, now = new Date()) {
-  const reports = Object.values(CAMPAIGNS)
-    .filter(campaign => campaign.separateEarningLifecycle && !isStraightCampaign(campaign))
-    .map(campaign => reconcileWeeklyCampaignState(data, campaign.id, now));
-  return { changed: reports.some(report => report.changed), reports };
-}
-
 function getUserCurrentWeekAccounting(data, campaignId, userId, now = new Date()) {
   const campaignAccounting = getCampaignCurrentWeekAccounting(data, campaignId, now);
   if (!campaignAccounting) return null;
@@ -5670,7 +5533,7 @@ function buildCampaignSubmitClipButton(campaign, data, now = new Date()) {
   }
   return button
     .setLabel('Submit Clip')
-    .setEmoji('💰')
+    .setEmoji('⬆️')
     .setStyle(ButtonStyle.Success)
     .setDisabled(false);
 }
@@ -5894,79 +5757,170 @@ function messageHasCampaignSubmitButton(message, campaignId) {
   );
 }
 
-async function findCampaignSubmissionPanelMessage(channel, campaignId, botUserId = client.user?.id, maxPages = 10) {
-  let before = null;
-  for (let page = 0; page < maxPages; page++) {
-    const batch = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
-    if (!batch) return null;
-    const messages = typeof batch.values === 'function' ? [...batch.values()] : [];
-    const match = messages.find(message =>
-      (!botUserId || message.author?.id === botUserId) && messageHasCampaignSubmitButton(message, campaignId)
-    );
-    if (match) return match;
-    if (messages.length < 100) return null;
-    before = messages[messages.length - 1]?.id || null;
-    if (!before) return null;
+function getCampaignSubmitButtonFromMessage(message, campaignId) {
+  for (const row of message?.components || []) {
+    const button = (row.components || []).find(component => component.customId === `submit_clip:${campaignId}`);
+    if (button) return button;
   }
   return null;
 }
 
-async function updateCampaignSubmissionPanelMessage(guild, campaignId) {
+async function findCampaignSubmissionPanelMessagesInChannel(channel, campaignId, botUserId = client.user?.id, maxPages = 10) {
+  const matches = [];
+  let before = null;
+  for (let page = 0; page < maxPages; page++) {
+    const batch = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
+    if (!batch) break;
+    const messages = typeof batch.values === 'function' ? [...batch.values()] : [];
+    matches.push(...messages.filter(message =>
+      (!botUserId || message.author?.id === botUserId) && messageHasCampaignSubmitButton(message, campaignId)
+    ));
+    if (messages.length < 100) break;
+    before = messages[messages.length - 1]?.id || null;
+    if (!before) break;
+  }
+  return matches;
+}
+
+async function findCampaignSubmissionPanelMessage(channel, campaignId, botUserId = client.user?.id, maxPages = 10) {
+  return (await findCampaignSubmissionPanelMessagesInChannel(channel, campaignId, botUserId, maxPages))[0] || null;
+}
+
+async function findAllCampaignSubmissionPanelMessages(guild, campaignId, options = {}) {
+  const campaign = CAMPAIGNS[campaignId];
+  if (!campaign || !guild) return [];
+  const botUserId = options.botUserId ?? client.user?.id;
+  const channelCollection = await guild.channels.fetch().catch(() => null);
+  const channels = new Map();
+  for (const channel of guild.channels.cache?.values?.() || []) {
+    if (channel?.messages) channels.set(channel.id, channel);
+  }
+  for (const channel of channelCollection?.values?.() || []) {
+    if (channel?.messages) channels.set(channel.id, channel);
+  }
+
+  const configuredChannelIds = new Set([
+    options.storedChannelId,
+    campaign.submitPanelChannelId,
+    campaign.entryChannelId
+  ].filter(Boolean).map(String));
+  const campaignNameTokens = [campaign.id, campaign.name]
+    .flatMap(value => String(value || '').toLowerCase().split(/[^a-z0-9]+/))
+    .filter(token => token.length >= 3);
+  const matches = [];
+  for (const channel of channels.values()) {
+    const channelName = String(channel.name || '').toLowerCase();
+    const isConfigured = configuredChannelIds.has(String(channel.id));
+    const isCampaignNamed = campaignNameTokens.some(token => channelName.includes(token));
+    const maxPages = isConfigured || isCampaignNamed ? 10 : 1;
+    const found = await findCampaignSubmissionPanelMessagesInChannel(channel, campaignId, botUserId, maxPages);
+    for (const message of found) {
+      matches.push({ channel, message });
+    }
+  }
+
+  const unique = new Map();
+  for (const match of matches) unique.set(String(match.message.id), match);
+  return [...unique.values()].sort((a, b) =>
+    Number(Boolean(b.message.pinned)) - Number(Boolean(a.message.pinned)) ||
+    (Number(b.message.createdTimestamp) || 0) - (Number(a.message.createdTimestamp) || 0)
+  );
+}
+
+async function updateCampaignSubmissionPanelMessage(guild, campaignId, options = {}) {
   const campaign = CAMPAIGNS[campaignId];
   if (!campaign || !guild) return false;
-  const data = loadData();
+  const data = options.data || loadData();
   const storedPanel = data.campaignSubmissionPanels?.[campaignId] || null;
-  const channelId = storedPanel?.channelId || campaign.entryChannelId;
-  if (!channelId) return false;
-  const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
-  if (!channel?.messages) return false;
-
-  let panelMessage = null;
-  if (storedPanel?.messageId) {
-    panelMessage = await channel.messages.fetch(storedPanel.messageId).catch(() => null);
+  const panels = [];
+  if (storedPanel?.channelId && storedPanel?.messageId) {
+    const storedChannel = guild.channels.cache.get(storedPanel.channelId) || await guild.channels.fetch(storedPanel.channelId).catch(() => null);
+    const storedMessage = storedChannel?.messages
+      ? await storedChannel.messages.fetch(storedPanel.messageId).catch(() => null)
+      : null;
+    if (storedChannel && storedMessage && messageHasCampaignSubmitButton(storedMessage, campaignId)) {
+      panels.push({ channel: storedChannel, message: storedMessage });
+    }
   }
-  if (!panelMessage) {
-    panelMessage = await findCampaignSubmissionPanelMessage(channel, campaignId);
+  if (!panels.length) {
+    panels.push(...await findAllCampaignSubmissionPanelMessages(guild, campaignId, {
+      botUserId: options.botUserId,
+      storedChannelId: storedPanel?.channelId
+    }));
   }
-  if (!panelMessage) return false;
+  if (!panels.length) {
+    console.error(`[Campaign Submit Panel] No existing ${campaignId} Submit Clip panel could be located.`);
+    return false;
+  }
 
-  await panelMessage.edit({
-    components: buildCampaignSubmissionPanelComponents(campaign, data)
-  });
+  const components = buildCampaignSubmissionPanelComponents(campaign, data, options.now || new Date());
+  const renderedButton = components[0].components[0].data;
+  const results = [];
+  for (const { channel, message } of panels) {
+    const previousButton = getCampaignSubmitButtonFromMessage(message, campaignId);
+    try {
+      const editedMessage = await message.edit({ components });
+      const verifiedMessage = await channel.messages.fetch(message.id).catch(() => editedMessage);
+      const verifiedButton = getCampaignSubmitButtonFromMessage(verifiedMessage || editedMessage, campaignId);
+      if (!verifiedButton || verifiedButton.label !== renderedButton.label || verifiedButton.disabled !== (renderedButton.disabled === true)) {
+        throw new Error('Discord returned a Submit panel whose rendered button state did not match the canonical components.');
+      }
+      results.push({
+        channelId: channel.id,
+        messageId: message.id,
+        messageUrl: `https://discord.com/channels/${guild.id}/${channel.id}/${message.id}`,
+        createdAt: Number(message.createdTimestamp) ? new Date(message.createdTimestamp).toISOString() : null,
+        pinned: message.pinned === true,
+        previousLabel: previousButton?.label || null,
+        previousDisabled: previousButton?.disabled === true,
+        renderedLabel: verifiedButton.label,
+        renderedDisabled: verifiedButton.disabled === true,
+        edited: true
+      });
+    } catch (error) {
+      results.push({
+        channelId: channel.id,
+        messageId: message.id,
+        messageUrl: `https://discord.com/channels/${guild.id}/${channel.id}/${message.id}`,
+        edited: false,
+        error: { message: error.message, code: error.code || null, status: error.status || null }
+      });
+    }
+  }
+
+  const canonical = panels[0];
+  const canonicalEdited = results.find(result => String(result.messageId) === String(canonical.message.id))?.edited === true;
+  if (!canonicalEdited) {
+    const failure = results.find(result => String(result.messageId) === String(canonical.message.id));
+    throw new Error(`Could not edit canonical ${campaignId} Submit panel: ${failure?.error?.message || 'Unknown Discord API error'}`);
+  }
 
   if (
     storedPanel?.guildId !== guild.id ||
-    storedPanel?.channelId !== channel.id ||
-    storedPanel?.messageId !== panelMessage.id
+    storedPanel?.channelId !== canonical.channel.id ||
+    storedPanel?.messageId !== canonical.message.id
   ) {
     data.campaignSubmissionPanels ||= {};
     data.campaignSubmissionPanels[campaignId] = {
       guildId: guild.id,
-      channelId: channel.id,
-      messageId: panelMessage.id,
+      channelId: canonical.channel.id,
+      messageId: canonical.message.id,
       updatedAt: Date.now()
     };
-    saveData(data);
+    (options.saveData || saveData)(data);
   }
-  return true;
+  console.log('[Campaign Submit Panel Refresh]', { campaignId, canonicalMessageId: canonical.message.id, panels: results });
+  return { updated: true, canonical: results.find(result => String(result.messageId) === String(canonical.message.id)), panels: results };
 }
 
-async function refreshAllCampaignPanelMessages(guild, options = {}) {
-  const now = options.now || new Date();
-  const data = options.data || loadData();
-  const reconciliation = reconcileAllWeeklyCampaignStates(data, now);
-  if (reconciliation.changed && !options.data) saveData(data);
-  const updatePanel = options.updateCampaignPanelMessage || updateCampaignPanelMessage;
-  const refreshedCampaignIds = [];
+async function refreshAllCampaignPanelMessages(guild) {
   for (const campaignId of Object.keys(CAMPAIGNS)) {
     try {
-      await updatePanel(guild, campaignId);
-      refreshedCampaignIds.push(campaignId);
+      await updateCampaignPanelMessage(guild, campaignId);
     } catch (error) {
       console.error(`Could not refresh campaign panel ${campaignId}:`, error.message);
     }
   }
-  return { reconciliation, refreshedCampaignIds };
 }
 
 function scheduleNextWeeklyCampaignPanelRefresh(guildId) {
@@ -13243,6 +13197,7 @@ module.exports.__clipLifecycleTest = {
   finalizeStraightCampaignIfFulfilled,
   fetchInstagramPublicProfile,
   fetchPublicSocialProfile,
+  findAllCampaignSubmissionPanelMessages,
   findCampaignSubmissionPanelMessage,
   getClipTrackingAudit,
   getCampaignConnectAccountLink,
@@ -13260,6 +13215,7 @@ module.exports.__clipLifecycleTest = {
   getCampaignCurrentRunAccounting,
   getCampaignCurrentWeekAccounting,
   getCampaignSubmissionAccounts,
+  getCampaignSubmitButtonFromMessage,
   getStraightCampaignAccounting,
   getCampaignPerClipPayoutLimit,
   getUserCurrentRunAccounting,
@@ -13275,9 +13231,6 @@ module.exports.__clipLifecycleTest = {
   joinCampaignMember,
   repairApprovalSnapshotInvariants,
   repairAugustFirstWeekLegacyWeeklyAccounting,
-  reconcileAllWeeklyCampaignStates,
-  reconcileWeeklyCampaignState,
-  refreshAllCampaignPanelMessages,
   getVerifiedCampaignPlatforms,
   getVerifiedGlobalSocials,
   getVerifiedGlobalSocialsForPlatforms,
@@ -13296,6 +13249,7 @@ module.exports.__clipLifecycleTest = {
   verifyGlobalSocialVerificationRequest,
   shouldTrackClip,
   updateApprovedClipTracking,
+  updateCampaignSubmissionPanelMessage,
   updatePendingReviewTracking,
   CAMPAIGNS
 };
