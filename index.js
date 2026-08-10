@@ -1,6 +1,7 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const {
   Client,
   GatewayIntentBits,
@@ -66,6 +67,7 @@ const INSTAGRAM_REDIRECT_URI = process.env.INSTAGRAM_REDIRECT_URI;
 const INSTAGRAM_API_VERSION = process.env.INSTAGRAM_API_VERSION || 'v24.0';
 const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN;
 const APIFY_INSTAGRAM_ACTOR = 'apify~instagram-reel-scraper';
+const APIFY_INSTAGRAM_PROFILE_ACTOR = 'apify~instagram-profile-scraper';
 const PRICE_PER_PROXY = 7;
 const FINISHED_CAMPAIGNS_CATEGORY_ID = '1520064994274709747';
 const STAFF_CONTROL_CHANNEL_ID = "1521116369909710889";
@@ -77,6 +79,8 @@ const ACTIVE_CAMPAIGNS_CHANNEL_ID = process.env.ACTIVE_CAMPAIGNS_CHANNEL_ID;
 const CLIP_TRACK_INTERVAL_MS = 3 * 60 * 60 * 1000;
 const CLIP_TRACK_SCHEDULER_MS = 10 * 60 * 1000;
 const CLIP_TRACK_RETRY_MS = 15 * 60 * 1000;
+const GLOBAL_SOCIAL_VERIFICATION_TTL_MS = 30 * 60 * 1000;
+const INSTAGRAM_PROFILE_VERIFICATION_COOLDOWN_MS = 20 * 1000;
 
 function getInstagramConfigurationStatus() {
   const missing = [];
@@ -208,6 +212,7 @@ function getInstagramMediaTitle(media) {
 
 const instagramMediaTestCooldowns = new Map();
 const apifyInstagramTestCooldowns = new Map();
+const apifyInstagramProfileTestCooldowns = new Map();
 
 function parsePublicInstagramReelUrl(input) {
   let url;
@@ -358,6 +363,7 @@ function normalizeApifyInstagramReel(item, requestedUrl) {
     viewMetricField: viewMetric.field,
     likes: getFirstFiniteNonNegativeValue([source.likesCount, source.likeCount, source.likes]),
     comments: getFirstFiniteNonNegativeValue([source.commentCount, source.commentsCount, source.comments]),
+    durationSeconds: normalizeVideoDurationSeconds(source.videoDuration ?? source.duration),
     publishedTimestamp: getApifyTimestampMs(source.timestamp || source.publishedTimestamp || source.publishedAt || source.takenAt),
     fetchedAt: Date.now(),
     source: 'apify'
@@ -389,6 +395,7 @@ async function fetchApifyInstagramReelMetadata(reelUrl) {
     likes: reel.likes,
     viewMetricField: reel.viewMetricField,
     thumbnailUrl: reel.thumbnailUrl,
+    durationSeconds: reel.durationSeconds,
     publishedTimestamp: reel.publishedTimestamp,
     canonicalUrl: reel.url
   };
@@ -440,6 +447,7 @@ const CAMPAIGNS = {
     endDate: '2026-08-31T07:00:00.000Z',
     cycleWeeks: "1",
     budgetCycle: "weekly",
+    budgetMode: "weekly",
     budgetCycleWeeks: 1,
     budgetResetDayUtc: 1,
     budgetResetHourUtc: 7,
@@ -453,6 +461,7 @@ const CAMPAIGNS = {
     entryChannelId: process.env.ELEPHANT_ENTRY_CHANNEL_ID,
     connectAccountChannelId: '1521567104552276058',
     source: 'monsterlab',
+    accountMode: 'campaign_staff_code',
     monsterCampaignId: "fbFMAJpxpQkZ0Honf7z4",
     status: 'active',
     
@@ -501,6 +510,7 @@ Click the button below to start clipping and earning.`
     endDate: '2026-08-31T07:00:00.000Z',
     cycleWeeks: "1",
     budgetCycle: "weekly",
+    budgetMode: "weekly",
     budgetCycleWeeks: 1,
     budgetResetDayUtc: 1,
     budgetResetHourUtc: 7,
@@ -514,6 +524,7 @@ Click the button below to start clipping and earning.`
     entryChannelId: process.env.CROWDER_ENTRY_CHANNEL_ID,
     connectAccountChannelId: '1521566652796240046',
     source: 'monsterlab',
+    accountMode: 'campaign_staff_code',
     monsterCampaignId: "Qgl6rzYPcDIVxqZ23kXI",
     status: 'active',
 
@@ -547,6 +558,55 @@ All you have to do is **register for the campaign below** and follow the guideli
 > **Payout Schedule:** Monthly
 > **Payment Method:** Crypto
 > **Minimum Payout:** $10
+
+## <a:arrow1:1504776324051374130> Join the Campaign
+
+Click the button below to start clipping and earning.`
+  },
+
+  ice: {
+    id: 'ice',
+    name: 'ICE',
+    allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
+    countryTiers: ['Tier 1', 'Tier 2', 'Tier 3'],
+    minimumVideoDuration: '10 seconds',
+    minimumVideoDurationSeconds: 10,
+    clipRequirement: 'Any clips and edits that follow the campaign rules',
+    budgetMode: 'straight',
+    earningCycle: 'straight',
+    accountMode: 'global_auto_verify',
+    source: 'internal',
+    campaignBudget: 500,
+    viewCap: 1_000_000,
+    ratePerMillion: 500,
+    payoutThresholdViews: 10_000,
+    maxPayoutPerClipPercent: 10,
+    refillable: true,
+    roleId: process.env.ICE_ROLE_ID,
+    entryChannelId: process.env.ICE_ENTRY_CHANNEL_ID,
+    launchAt: null,
+    panelChannelId: null,
+    panelMessageId: null,
+    rulesChannelId: null,
+    status: 'pending_launch',
+    panelText: `# <a:fire1:1504871649491554487> Earn Money Posting Clips & Edits – ICE
+
+Create and post engaging clips and edits that follow the campaign rules to earn
+based on performance.
+
+## <a:chart1:1504773558415523931> Campaign Details
+
+• **Clips:** Any clips and edits that follow the campaign rules
+• **Platforms:** TikTok, Instagram Reels & YouTube Shorts
+• **Country Tier:** Tier 1, 2 & 3
+• **Minimum Video Duration:** 10 seconds
+
+## <a:Cash1:1504871843419521115> Payment Details
+
+> **Payout:** $0.50 per 1,000 eligible views
+> **Budget:** $500 — Up to 1M Total Eligible Views
+> **Minimum Payout:** 10K eligible unpaid views
+> **Max Payout Per Clip:** $50
 
 ## <a:arrow1:1504776324051374130> Join the Campaign
 
@@ -601,7 +661,7 @@ function loadData() {
   if (!raw && mirrorDataFilePath !== primaryDataFilePath) raw = readJsonFileSafely(mirrorDataFilePath), recovered = !!raw;
   if (!raw) { raw = { users: {}, applications: {}, campaignAccountRequests: {}, clips: {}, campaignStatus: {}, payoutTrackers: {} }; recovered = true; }
 
-  raw.users ||= {}; raw.applications ||= {}; raw.campaignAccountRequests ||= {}; raw.clips ||= {}; raw.clipReviews ||= {}; raw.campaignStatus ||= {}; raw.payoutTrackers ||= {}; raw.storageMigrations ||= {};
+  raw.users ||= {}; raw.applications ||= {}; raw.campaignAccountRequests ||= {}; raw.globalSocialVerificationRequests ||= {}; raw.campaignAllocations ||= {}; raw.campaignWeeklyState ||= {}; raw.clips ||= {}; raw.clipReviews ||= {}; raw.campaignStatus ||= {}; raw.payoutTrackers ||= {}; raw.storageMigrations ||= {};
   for (const request of Object.values(raw.payoutRequests || {})) {
     if (!request?.campaignId || !request?.userId) continue;
     const id = request.id || request.campaignId + '_' + request.userId;
@@ -900,6 +960,24 @@ function loadData() {
     migrationChanged = true;
     console.log('[August Week 1 Legacy Weekly Backfill]', report);
   }
+  if (!raw.storageMigrations.globalSocialAccountsV1) {
+    let initializedUsers = 0;
+    for (const userRecord of Object.values(raw.users || {})) {
+      if (userRecord.socials === undefined || userRecord.socials === null) {
+        userRecord.socials = [];
+        initializedUsers++;
+      } else if (!Array.isArray(userRecord.socials)) {
+        userRecord.socials = Object.values(userRecord.socials).filter(Boolean);
+      }
+    }
+    raw.storageMigrations.globalSocialAccountsV1 = { completedAt: Date.now(), initializedUsers };
+    migrationChanged = true;
+  }
+  const weeklyReconciliation = reconcileAllWeeklyCampaignStates(raw, new Date());
+  if (weeklyReconciliation.changed) {
+    migrationChanged = true;
+    console.log('[Weekly Campaign Reconciliation]', weeklyReconciliation.reports);
+  }
   const outOfRunCompletion = finalizeOutOfRunClips(raw, Date.now());
   if (outOfRunCompletion.changed) {
     migrationChanged = true;
@@ -988,13 +1066,15 @@ function ensureUser(data, member) {
 
             stats: {},
             campaigns: [],
-            campaignAccounts: {}
+            campaignAccounts: {},
+            socials: []
 
         };
 
     }
 
     const user = data.users[id];
+    if (!Array.isArray(user.socials)) user.socials = Object.values(user.socials || {}).filter(Boolean);
 
     // Always refresh these
     user.username = member.user.username;
@@ -1148,14 +1228,155 @@ function getSafeTrackedViews(clip, metadata) {
 function getInitialSubmissionViewState(metadata, campaign) {
   const initialViews = Number(metadata?.views);
   const publicViews = Number.isFinite(initialViews) && initialViews >= 0 ? initialViews : 0;
-  const creditedViews = campaign?.separateEarningLifecycle ? 0 : publicViews;
+  const deferredCredit = campaign?.separateEarningLifecycle || isStraightCampaign(campaign);
+  const creditedViews = deferredCredit ? 0 : publicViews;
   return {
     publicViews,
     currentViews: publicViews,
     submissionViews: publicViews,
     views: creditedViews,
-    campaignCreditedViews: campaign?.separateEarningLifecycle ? 0 : undefined
+    campaignCreditedViews: deferredCredit ? 0 : undefined
   };
+}
+
+function buildApifyInstagramProfileInput(username) {
+  const cleanUsername = normalizeSocialUsername(username);
+  if (!cleanUsername) throw new Error('Instagram username is required.');
+  return { usernames: [cleanUsername] };
+}
+
+async function runApifyInstagramProfileScraper(username) {
+  if (!APIFY_API_TOKEN) throw new Error('APIFY_API_TOKEN is not configured.');
+  const input = buildApifyInstagramProfileInput(username);
+
+  try {
+    const response = await axios.post(
+      `https://api.apify.com/v2/actors/${APIFY_INSTAGRAM_PROFILE_ACTOR}/run-sync-get-dataset-items`,
+      input,
+      {
+        headers: { Authorization: `Bearer ${APIFY_API_TOKEN}` },
+        timeout: 120000
+      }
+    );
+    return Array.isArray(response.data) ? response.data : [];
+  } catch (error) {
+    const details = getApifyInstagramError(error);
+    const wrapped = new Error(details.message);
+    wrapped.apifyInstagramError = details;
+    throw wrapped;
+  }
+}
+
+function normalizeApifyInstagramProfile(item, requestedUsername) {
+  const source = item || {};
+  const username = normalizeUsername(source.username || '');
+  const normalizedUsername = normalizeSocialUsername(username);
+  const requestedNormalizedUsername = normalizeSocialUsername(requestedUsername);
+  if (!normalizedUsername || normalizedUsername !== requestedNormalizedUsername) {
+    throw new Error('Apify did not return the requested Instagram profile.');
+  }
+
+  const platformAccountId = source.id === null || source.id === undefined
+    ? null
+    : String(source.id).trim() || null;
+  const hasUsableProfilePayload = Boolean(
+    platformAccountId ||
+    typeof source.biography === 'string' ||
+    typeof source.private === 'boolean'
+  );
+  if (!hasUsableProfilePayload) throw new Error('Apify did not return usable Instagram profile data.');
+  const followers = Number(source.followersCount);
+  const profileUrl = typeof source.url === 'string' && /^https:\/\//i.test(source.url)
+    ? source.url
+    : `https://www.instagram.com/${normalizedUsername}/`;
+  const avatarUrl = [source.profilePicUrlHD, source.profilePicUrl]
+    .find(value => typeof value === 'string' && /^https:\/\//i.test(value)) || null;
+
+  return {
+    platform: 'instagram',
+    username,
+    normalizedUsername,
+    platformAccountId,
+    displayName: typeof source.fullName === 'string' && source.fullName.trim()
+      ? source.fullName.trim()
+      : username,
+    bio: typeof source.biography === 'string' ? source.biography : null,
+    profileUrl,
+    avatarUrl,
+    followers: Number.isFinite(followers) && followers >= 0 ? followers : 0,
+    private: source.private === true,
+    verifiedBadge: source.verified === true,
+    rawProvider: 'apify/instagram-profile-scraper'
+  };
+}
+
+async function fetchInstagramPublicProfile(username, options = {}) {
+  const cleanUsername = normalizeSocialUsername(username);
+  if (!cleanUsername) throw new Error('Instagram username is required.');
+  const runActor = options.runActor || runApifyInstagramProfileScraper;
+  const items = await runActor(cleanUsername);
+  const matchingItem = (Array.isArray(items) ? items : []).find(item =>
+    normalizeSocialUsername(item?.username) === cleanUsername
+  );
+  if (!matchingItem) throw new Error('Instagram profile could not be retrieved.');
+  return normalizeApifyInstagramProfile(matchingItem, cleanUsername);
+}
+
+function applyStraightCampaignTracking(clip, metadata, data, publicViews, campaign) {
+  const previousCreditedViews = getClipCreditedViews(clip);
+  const payoutLimit = ensureClipPayoutLimitSnapshot(clip, campaign, data);
+  clip.straightTracking ||= {};
+  const tracking = clip.straightTracking;
+  const previousObservedViews = Math.max(
+    Number(tracking.lastPublicViews) || 0,
+    Number(clip.publicViews) || 0,
+    Number(clip.currentViews) || 0,
+    Number(clip.approvalViews) || 0,
+    Number(clip.submissionViews) || 0
+  );
+
+  let creditedIncrease = 0;
+  if (isPayoutEligibleClip(clip)) {
+    if (tracking.baselinePending) {
+      tracking.refillBaselineViews = publicViews;
+      tracking.baselinePending = false;
+    } else {
+      const publicGrowth = Math.max(publicViews - previousObservedViews, 0);
+      const remainingIncludingThisClip = getStraightCampaignRemainingCreditableViews(data, campaign, clip.id);
+      const remainingIncrement = Math.max(remainingIncludingThisClip - previousCreditedViews, 0);
+      const remainingClipCapacity = payoutLimit
+        ? Math.max(payoutLimit.maxCampaignCreditedViews - previousCreditedViews, 0)
+        : Infinity;
+      creditedIncrease = Math.min(publicGrowth, remainingIncrement, remainingClipCapacity);
+    }
+  }
+
+  clip.campaignCreditedViews = previousCreditedViews + creditedIncrease;
+  clip.views = clip.campaignCreditedViews;
+  clip.publicViews = publicViews;
+  clip.currentViews = publicViews;
+  tracking.lastPublicViews = publicViews;
+  tracking.creditedViews = clip.campaignCreditedViews;
+  if (payoutLimit && clip.campaignCreditedViews >= payoutLimit.maxCampaignCreditedViews) {
+    clip.clipPayoutCapReached = true;
+    clip.trackingStatus = 'completed';
+    clip.completedReason = 'clip_payout_cap_reached';
+    clip.completedAt ||= Date.now();
+    clip.nextCheckAt = null;
+    clip.trackingRetryAt = null;
+  }
+  if (creditedIncrease > 0) tracking.lastCreditedAt = Date.now();
+  if (metadata?.title) clip.title = metadata.title;
+  if (metadata?.thumbnailUrl) clip.thumbnailUrl = metadata.thumbnailUrl;
+  if (metadata?.authorName || metadata?.authorDisplayName || metadata?.authorUsername) {
+    clip.platformAuthorName = metadata.authorName || metadata.authorUsername || metadata.authorDisplayName;
+  }
+  if (metadata?.authorId) clip.platformAuthorId = metadata.authorId;
+  clip.lastChecked = Date.now();
+  clip.lastTrackingError = null;
+  clip.lastTrackingErrorAt = null;
+  clip.trackingRetryAt = null;
+  return clip.campaignCreditedViews;
 }
 
 function getClipLikes(clip) {
@@ -1182,14 +1403,20 @@ function applyTrackedMetadata(clip, metadata, data) {
   }
   const publicViews = getSafeTrackedViews(clip, metadata);
   const campaign = CAMPAIGNS[clip.campaignId];
+  if (isStraightCampaign(campaign)) {
+    return applyStraightCampaignTracking(clip, metadata, data, publicViews, campaign);
+  }
   if (campaign?.separateEarningLifecycle) {
     return applySeparateEarningCycleTracking(clip, metadata, data, publicViews, campaign);
   }
   const previousCreditedViews = getClipCreditedViews(clip);
+  const payoutLimit = ensureClipPayoutLimitSnapshot(clip, campaign, data);
   const cap = getCampaignViewCap(campaign);
   const otherCreditedViews = cap === null ? 0 : getCampaignCurrentCycleCreditedViews(clip.campaignId, { data, excludeClipId: clip.id });
   const remainingForThisClip = cap === null ? Infinity : Math.max(cap - otherCreditedViews, 0);
-  const desiredCreditedViews = Math.max(previousCreditedViews, publicViews);
+  const desiredCreditedViews = Math.max(previousCreditedViews, payoutLimit
+    ? Math.min(publicViews, payoutLimit.maxCampaignCreditedViews)
+    : publicViews);
   const creditedViews = cap === null
     ? desiredCreditedViews
     : Math.max(previousCreditedViews, Math.min(desiredCreditedViews, remainingForThisClip));
@@ -1197,6 +1424,14 @@ function applyTrackedMetadata(clip, metadata, data) {
   clip.publicViews = publicViews;
   clip.currentViews = publicViews;
   clip.views = creditedViews;
+  if (payoutLimit && creditedViews >= payoutLimit.maxCampaignCreditedViews && isPayoutEligibleClip(clip)) {
+    clip.clipPayoutCapReached = true;
+    clip.trackingStatus = 'completed';
+    clip.completedReason = 'clip_payout_cap_reached';
+    clip.completedAt ||= Date.now();
+    clip.nextCheckAt = null;
+    clip.trackingRetryAt = null;
+  }
   if (cap !== null && process.env.DEBUG_VIEW_CAP_TRACKING === 'true') {
     console.log('[Campaign View Cap]', { campaignId: clip.campaignId, budgetCycleIndex: getCampaignBudgetCycleIndex(campaign), viewCap: cap, currentCreditedViews: otherCreditedViews, remainingViews: remainingForThisClip, fulfilled: otherCreditedViews >= cap });
   }
@@ -1226,6 +1461,10 @@ function applySeparateEarningCycleTracking(clip, metadata, data, publicViews, ca
     : new Date();
   const cycleKey = getCampaignBudgetCycleKey(campaign, accountingDate);
   const previousMonthlyViews = Math.max(Number(clip.campaignCreditedViews) || 0, Number(clip.views) || 0);
+  const payoutLimit = ensureClipPayoutLimitSnapshot(clip, campaign, data);
+  const remainingClipCapacity = payoutLimit
+    ? Math.max(payoutLimit.maxCampaignCreditedViews - previousMonthlyViews, 0)
+    : Infinity;
   clip.budgetTracking ||= {};
   const tracking = clip.budgetTracking;
 
@@ -1253,38 +1492,55 @@ function applySeparateEarningCycleTracking(clip, metadata, data, publicViews, ca
       }
     }
 
-    const cap = getCampaignViewCap(campaign);
-    const otherWeeklyCredits = cap === null ? 0 : getCampaignCurrentWeeklyCreditedViews(campaign.id, { data, excludeClipId: clip.id, date: accountingDate });
-    const remainingViews = cap === null ? Infinity : Math.max(cap - otherWeeklyCredits, 0);
-    const creditedIncrease = Math.min(Math.max(publicViews - previousObservedPublicViews, 0), remainingViews);
     tracking.budgetCycleKey = cycleKey;
-    tracking.baselinePublicViews = previousObservedPublicViews;
+    tracking.baselinePublicViews = publicViews;
     tracking.lastPublicViews = publicViews;
-    tracking.creditedViewsThisCycle = creditedIncrease;
+    tracking.creditedViewsThisCycle = 0;
     tracking.pausedBaselineViews = null;
-    if (creditedIncrease > 0) tracking.lastCreditedAt = Date.now();
-    clip.campaignCreditedViews = previousMonthlyViews + creditedIncrease;
+    tracking.weekBaselinePending = false;
+    tracking.weekReconciledAt ||= Date.now();
+    tracking.lastCreditedAt = null;
+    clip.campaignCreditedViews = previousMonthlyViews;
   } else {
-    const lastPublicViews = Math.max(Number(tracking.lastPublicViews) || 0, Number(tracking.baselinePublicViews) || 0);
-    const publicGrowth = Math.max(publicViews - lastPublicViews, 0);
-    const cap = getCampaignViewCap(campaign);
-    const otherWeeklyCredits = cap === null ? 0 : getCampaignCurrentWeeklyCreditedViews(campaign.id, { data, excludeClipId: clip.id, date: accountingDate });
-    const remainingViews = cap === null ? Infinity : Math.max(cap - otherWeeklyCredits, 0);
-    const creditedIncrease = Math.min(publicGrowth, remainingViews);
-    tracking.creditedViewsThisCycle = Math.max(Number(tracking.creditedViewsThisCycle) || 0, 0) + creditedIncrease;
-    tracking.lastPublicViews = publicViews;
-    if (creditedIncrease > 0) tracking.lastCreditedAt = Date.now();
-    if (cap !== null && process.env.DEBUG_VIEW_CAP_TRACKING === 'true') {
-      const weeklyTotalAfter = otherWeeklyCredits + tracking.creditedViewsThisCycle;
-      console.log('[Clip View Cap Update]', { clipId: clip.id, campaignId: clip.campaignId, previousCreditedViews: previousMonthlyViews, fetchedPublicViews: Number(metadata?.views) || null, creditedViewsAfter: previousMonthlyViews + creditedIncrease, creditedIncrease, campaignTotalAfter: weeklyTotalAfter, remainingAfter: Math.max(cap - weeklyTotalAfter, 0) });
+    if (tracking.weekBaselinePending === true) {
+      tracking.baselinePublicViews = publicViews;
+      tracking.lastPublicViews = publicViews;
+      tracking.creditedViewsThisCycle = 0;
+      tracking.pausedBaselineViews = null;
+      tracking.weekBaselinePending = false;
+      tracking.weekBaselineEstablishedAt = Date.now();
+      tracking.lastCreditedAt = null;
+      clip.campaignCreditedViews = previousMonthlyViews;
+    } else {
+      const lastPublicViews = Math.max(Number(tracking.lastPublicViews) || 0, Number(tracking.baselinePublicViews) || 0);
+      const publicGrowth = Math.max(publicViews - lastPublicViews, 0);
+      const cap = getCampaignViewCap(campaign);
+      const otherWeeklyCredits = cap === null ? 0 : getCampaignCurrentWeeklyCreditedViews(campaign.id, { data, excludeClipId: clip.id, date: accountingDate });
+      const remainingViews = cap === null ? Infinity : Math.max(cap - otherWeeklyCredits, 0);
+      const creditedIncrease = Math.min(publicGrowth, remainingViews, remainingClipCapacity);
+      tracking.creditedViewsThisCycle = Math.max(Number(tracking.creditedViewsThisCycle) || 0, 0) + creditedIncrease;
+      tracking.lastPublicViews = publicViews;
+      if (creditedIncrease > 0) tracking.lastCreditedAt = Date.now();
+      if (cap !== null && process.env.DEBUG_VIEW_CAP_TRACKING === 'true') {
+        const weeklyTotalAfter = otherWeeklyCredits + tracking.creditedViewsThisCycle;
+        console.log('[Clip View Cap Update]', { clipId: clip.id, campaignId: clip.campaignId, previousCreditedViews: previousMonthlyViews, fetchedPublicViews: Number(metadata?.views) || null, creditedViewsAfter: previousMonthlyViews + creditedIncrease, creditedIncrease, campaignTotalAfter: weeklyTotalAfter, remainingAfter: Math.max(cap - weeklyTotalAfter, 0) });
+      }
+      clip.campaignCreditedViews = previousMonthlyViews + creditedIncrease;
     }
-    clip.campaignCreditedViews = previousMonthlyViews + creditedIncrease;
   }
 
   clip.campaignCreditedViews ??= previousMonthlyViews;
   clip.publicViews = publicViews;
   clip.currentViews = publicViews;
   clip.views = clip.campaignCreditedViews;
+  if (payoutLimit && clip.campaignCreditedViews >= payoutLimit.maxCampaignCreditedViews && isPayoutEligibleClip(clip)) {
+    clip.clipPayoutCapReached = true;
+    clip.trackingStatus = 'completed';
+    clip.completedReason = 'clip_payout_cap_reached';
+    clip.completedAt ||= Date.now();
+    clip.nextCheckAt = null;
+    clip.trackingRetryAt = null;
+  }
   if (metadata?.title) clip.title = metadata.title;
   if (metadata?.thumbnailUrl) clip.thumbnailUrl = metadata.thumbnailUrl;
   if (metadata?.authorName || metadata?.authorDisplayName || metadata?.authorUsername) {
@@ -1347,6 +1603,9 @@ function updateApprovedClipTracking(clip, metadata, data) {
   const paidViews = Number(clip.payout.paidViews) || 0;
   clip.unpaidViews = Math.max(views - paidViews, 0);
   clip.unpaidMoney = clip.unpaidViews / 1_000_000 * rate;
+  if (isStraightCampaign(CAMPAIGNS[clip.campaignId])) {
+    finalizeStraightCampaignIfFulfilled(data, clip.campaignId);
+  }
   advanceClipNextCheckAt(clip);
   logClipViewLifecycle(clip);
   return clip;
@@ -1376,8 +1635,21 @@ function applyApprovalSnapshotAccounting(clip, campaign, data, latestPublicViews
     ? 0
     : getCampaignCurrentCycleCreditedViews(clip.campaignId, { data, excludeClipId: clip.id, date: new Date(approvedAt) });
   let creditedViews;
+  const payoutLimit = ensureClipPayoutLimitSnapshot(clip, campaign, data);
 
-  if (campaign?.separateEarningLifecycle) {
+  if (isStraightCampaign(campaign)) {
+    const previousCredited = getClipCreditedViews(clip);
+    const remainingIncludingThisClip = getStraightCampaignRemainingCreditableViews(data, campaign, clip.id);
+    const maxClipCreditedViews = payoutLimit?.maxCampaignCreditedViews ?? Infinity;
+    creditedViews = Math.max(previousCredited, Math.min(latestPublicViews, remainingIncludingThisClip, maxClipCreditedViews));
+    clip.campaignCreditedViews = creditedViews;
+    clip.straightTracking ||= {};
+    clip.straightTracking.baselinePublicViews = Number(clip.submissionViews) || 0;
+    clip.straightTracking.lastPublicViews = latestPublicViews;
+    clip.straightTracking.creditedViews = creditedViews;
+    clip.straightTracking.baselinePending = false;
+    if (creditedViews > previousCredited) clip.straightTracking.lastCreditedAt = approvedAt;
+  } else if (campaign?.separateEarningLifecycle) {
     const previousCredited = Math.max(Number(clip.campaignCreditedViews) || 0, Number(clip.views) || 0);
     clip.budgetTracking ||= {};
     const approvalCycleKey = getCampaignBudgetCycleKey(campaign, new Date(approvedAt));
@@ -1389,7 +1661,10 @@ function applyApprovalSnapshotAccounting(clip, campaign, data, latestPublicViews
       ? Infinity
       : Math.max(viewCap - otherCreditedViews - existingWeekCredits, 0);
     const uncreditedPublicViews = Math.max(latestPublicViews - previousCredited, 0);
-    const creditedIncrease = Math.min(uncreditedPublicViews, remainingWeekCapacity);
+    const remainingClipCapacity = payoutLimit
+      ? Math.max(payoutLimit.maxCampaignCreditedViews - previousCredited, 0)
+      : Infinity;
+    const creditedIncrease = Math.min(uncreditedPublicViews, remainingWeekCapacity, remainingClipCapacity);
     creditedViews = previousCredited + creditedIncrease;
     if (!isSameWeek && clip.budgetTracking.budgetCycleKey) {
       clip.budgetTracking.history ||= [];
@@ -1412,9 +1687,10 @@ function applyApprovalSnapshotAccounting(clip, campaign, data, latestPublicViews
       : Math.max(Number(clip.publicViews) || 0, Number(clip.currentViews) || 0, Number(clip.approvalViews) || 0, Number(clip.submissionViews) || 0);
     clip.campaignCreditedViews = creditedViews;
   } else {
+    const maxClipCreditedViews = payoutLimit?.maxCampaignCreditedViews ?? Infinity;
     creditedViews = viewCap === null
-      ? latestPublicViews
-      : Math.min(latestPublicViews, Math.max(viewCap - otherCreditedViews, 0));
+      ? Math.min(latestPublicViews, maxClipCreditedViews)
+      : Math.min(latestPublicViews, Math.max(viewCap - otherCreditedViews, 0), maxClipCreditedViews);
   }
 
   clip.publicViews = latestPublicViews;
@@ -1425,6 +1701,15 @@ function applyApprovalSnapshotAccounting(clip, campaign, data, latestPublicViews
   clip.moneyMade = clip.totalMoneyMade;
   clip.weeklyViews = creditedViews;
   clip.weeklyMoneyMade = clip.totalMoneyMade;
+  if (payoutLimit && creditedViews >= payoutLimit.maxCampaignCreditedViews) {
+    clip.clipPayoutCapReached = true;
+    clip.trackingStatus = 'completed';
+    clip.completedReason = 'clip_payout_cap_reached';
+    clip.completedAt ||= approvedAt;
+    clip.nextCheckAt = null;
+    clip.trackingRetryAt = null;
+  }
+  if (isStraightCampaign(campaign)) finalizeStraightCampaignIfFulfilled(data, campaign.id, approvedAt);
   return creditedViews;
 }
 
@@ -1440,6 +1725,153 @@ function delayBetweenPlatformRequests() {
 }
 function normalizeSocialUsername(value) {
   return String(value || '').trim().replace(/^@+/, '').toLowerCase();
+}
+function normalizeTypedSocialPlatform(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'tiktok') return 'tiktok';
+  if (normalized === 'instagram' || normalized === 'ig') return 'instagram';
+  if (normalized === 'youtube' || normalized === 'yt') return 'youtube';
+  return null;
+}
+function getCampaignBudgetMode(campaign) {
+  const explicit = String(campaign?.budgetMode || '').trim().toLowerCase();
+  if (explicit === 'weekly' || explicit === 'monthly' || explicit === 'straight') return explicit;
+  const legacy = String(campaign?.budgetCycle || '').trim().toLowerCase();
+  if (legacy === 'monthly') return 'monthly';
+  return 'weekly';
+}
+function isStraightCampaign(campaign) {
+  return getCampaignBudgetMode(campaign) === 'straight';
+}
+function getCampaignAccountMode(campaign) {
+  const explicit = String(campaign?.accountMode || '').trim().toLowerCase();
+  if (explicit === 'campaign_staff_code' || explicit === 'global_auto_verify') return explicit;
+  return String(campaign?.source || '').trim().toLowerCase() === 'monsterlab'
+    ? 'campaign_staff_code'
+    : 'global_auto_verify';
+}
+function isNonMonsterlabCampaign(campaign) {
+  return getCampaignAccountMode(campaign) === 'global_auto_verify' ||
+    (Boolean(campaign?.source) && String(campaign.source).trim().toLowerCase() !== 'monsterlab');
+}
+function getCampaignPayoutThresholdViews(campaign) {
+  const explicit = Number(campaign?.payoutThresholdViews);
+  if (Number.isFinite(explicit) && explicit > 0) return Math.floor(explicit);
+  if (isNonMonsterlabCampaign(campaign)) return 10_000;
+  const legacy = Number(campaign?.payoutThreshold);
+  return Number.isFinite(legacy) && legacy > 0 ? Math.floor(legacy) : 100_000;
+}
+function formatPayoutThresholdViews(value) {
+  const views = Math.max(Math.floor(Number(value) || 0), 0);
+  return views > 0 && views % 1000 === 0 ? `${views / 1000}K` : formatNumber(views);
+}
+function getCampaignLaunchTimestamp(campaign) {
+  const value = String(campaign?.launchAt || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value)) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+function normalizeVideoDurationSeconds(value) {
+  if (value === null || value === undefined || String(value).trim() === '') return null;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric >= 0) return numeric;
+  const match = String(value || '').trim().match(/^P(?:(\d+(?:\.\d+)?)D)?T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/i);
+  if (!match) return null;
+  const days = Number(match[1] || 0);
+  const hours = Number(match[2] || 0);
+  const minutes = Number(match[3] || 0);
+  const seconds = Number(match[4] || 0);
+  const total = days * 86400 + hours * 3600 + minutes * 60 + seconds;
+  return Number.isFinite(total) ? total : null;
+}
+function getCampaignMinimumVideoDurationSeconds(campaign) {
+  const seconds = Number(campaign?.minimumVideoDurationSeconds);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+}
+function validateCampaignVideoDuration(campaign, metadata) {
+  const minimumDurationSeconds = getCampaignMinimumVideoDurationSeconds(campaign);
+  if (minimumDurationSeconds === null) return { valid: true };
+  const durationSeconds = normalizeVideoDurationSeconds(metadata?.durationSeconds);
+  if (!Number.isFinite(durationSeconds)) {
+    return { valid: false, code: 'VIDEO_DURATION_UNAVAILABLE', message: "We couldn't verify this video's duration. Please try again shortly." };
+  }
+  if (durationSeconds < minimumDurationSeconds) {
+    return {
+      valid: false,
+      code: 'VIDEO_TOO_SHORT',
+      message: `This video is ${durationSeconds.toFixed(1)} seconds long. Campaign videos must be at least ${minimumDurationSeconds} seconds.`,
+      durationSeconds,
+      minimumDurationSeconds
+    };
+  }
+  return { valid: true, durationSeconds, minimumDurationSeconds };
+}
+function normalizeDemographicTier(value) {
+  const match = String(value || '').trim().match(/(?:tier\s*)?([1-3])$/i);
+  return match ? `Tier ${match[1]}` : null;
+}
+function getCampaignDemographicEligibility(userRecord, campaign) {
+  const allowedTiers = new Set((campaign?.countryTiers || []).map(normalizeDemographicTier).filter(Boolean));
+  if (!allowedTiers.size) return { required: false, eligible: true, tier: null, allowedTiers: [] };
+  const approvedTier = normalizeDemographicTier(
+    userRecord?.demographics?.status === 'approved'
+      ? userRecord.demographics.tier
+      : userRecord?.demographicTier
+  );
+  return {
+    required: true,
+    eligible: Boolean(approvedTier && allowedTiers.has(approvedTier)),
+    tier: approvedTier,
+    allowedTiers: [...allowedTiers]
+  };
+}
+function getCampaignPerClipPayoutLimit(data, campaign) {
+  if (!isNonMonsterlabCampaign(campaign)) return null;
+  const configuredPercent = Number(campaign?.maxPayoutPerClipPercent);
+  if (!Number.isFinite(configuredPercent) || configuredPercent <= 0 || configuredPercent > 100) return null;
+  const percent = configuredPercent;
+  const allocationBudget = isStraightCampaign(campaign)
+    ? Number(getStraightCampaignAllocation(data, campaign.id)?.totalBudget)
+    : Number(campaign?.campaignBudget);
+  const rate = Number(campaign?.ratePerMillion);
+  if (!Number.isFinite(allocationBudget) || allocationBudget <= 0 || !Number.isFinite(rate) || rate <= 0) return null;
+  const maxPayoutAmount = allocationBudget * (percent / 100);
+  return {
+    maxPayoutPerClipPercent: percent,
+    maxPayoutAmount,
+    maxCampaignCreditedViews: Math.floor(maxPayoutAmount / rate * 1_000_000)
+  };
+}
+function ensureClipPayoutLimitSnapshot(clip, campaign, data) {
+  if (!isNonMonsterlabCampaign(campaign)) return null;
+  if (!Number.isFinite(Number(clip.maxPayoutAmount)) || !Number.isFinite(Number(clip.maxCampaignCreditedViews))) {
+    const limit = getCampaignPerClipPayoutLimit(data, campaign);
+    if (!limit) return null;
+    clip.maxPayoutPerClipPercent = limit.maxPayoutPerClipPercent;
+    clip.maxPayoutAmount = limit.maxPayoutAmount;
+    clip.maxCampaignCreditedViews = limit.maxCampaignCreditedViews;
+    clip.payoutLimitSnapshottedAt ||= Date.now();
+  }
+  return {
+    maxPayoutPerClipPercent: Number(clip.maxPayoutPerClipPercent) || null,
+    maxPayoutAmount: Number(clip.maxPayoutAmount),
+    maxCampaignCreditedViews: Math.max(Math.floor(Number(clip.maxCampaignCreditedViews)), 0)
+  };
+}
+function validateCampaignPublicationDate(campaign, metadata) {
+  if (!isNonMonsterlabCampaign(campaign)) return { valid: true };
+  const campaignLaunch = getCampaignLaunchTimestamp(campaign);
+  if (campaignLaunch === null) {
+    return { valid: false, code: 'CAMPAIGN_LAUNCH_UNAVAILABLE', message: 'The campaign launch time is not configured. Please contact staff.' };
+  }
+  const publishedAt = Date.parse(metadata?.publishedAt || '');
+  if (!Number.isFinite(publishedAt)) {
+    return { valid: false, code: 'PUBLICATION_DATE_UNAVAILABLE', message: "We couldn't verify when this video was published. Please try again shortly." };
+  }
+  if (publishedAt < campaignLaunch) {
+    return { valid: false, code: 'VIDEO_PREDATES_CAMPAIGN', publishedAt, campaignLaunch };
+  }
+  return { valid: true, publishedAt, campaignLaunch };
 }
 function normalizeExternalId(value) {
   return String(value || '').trim();
@@ -1552,9 +1984,350 @@ async function expandSocialUrl(inputUrl) {
 
 function ensureUserSocials(data, userId) {
   if (!data.users[userId]) return;
-  if (!data.users[userId].socials) {
-    data.users[userId].socials = [];
+  if (!Array.isArray(data.users[userId].socials)) {
+    data.users[userId].socials = Object.values(data.users[userId].socials || {}).filter(Boolean);
   }
+  return data.users[userId].socials;
+}
+
+function getVerifiedGlobalSocials(userRecord) {
+  const socials = Array.isArray(userRecord?.socials)
+    ? userRecord.socials
+    : Object.values(userRecord?.socials || {}).filter(Boolean);
+  return socials.filter(social =>
+    social &&
+    social.verified === true &&
+    social.status === 'verified' &&
+    !social.unlinkedAt &&
+    normalizeTypedSocialPlatform(social.platform) &&
+    normalizeSocialUsername(social.normalizedUsername || social.username)
+  );
+}
+
+function getVerifiedGlobalSocialsForPlatforms(userRecord, allowedPlatforms) {
+  const allowed = new Set((allowedPlatforms || []).map(normalizeTypedSocialPlatform).filter(Boolean));
+  return getVerifiedGlobalSocials(userRecord).filter(social => allowed.has(normalizeTypedSocialPlatform(social.platform)));
+}
+
+function userHasEligibleGlobalSocial(userRecord, campaign) {
+  return getVerifiedGlobalSocialsForPlatforms(userRecord, campaign?.allowedPlatforms).length > 0;
+}
+
+function getCampaignAccountEligibility(userRecord, campaign) {
+  const accountMode = getCampaignAccountMode(campaign);
+  if (accountMode === 'global_auto_verify') {
+    const accounts = getVerifiedGlobalSocialsForPlatforms(userRecord, campaign?.allowedPlatforms);
+    return { accountMode, eligible: accounts.length > 0, accounts };
+  }
+  const campaignAccounts = userRecord?.campaignAccounts?.[campaign?.id] || {};
+  const accounts = Object.entries(campaignAccounts)
+    .filter(([platform, account]) => campaign?.allowedPlatforms?.includes(platform) && account?.verified === true)
+    .map(([platform, account]) => ({ ...account, platform, id: `campaign_${platform}` }));
+  return { accountMode, eligible: accounts.length > 0, accounts };
+}
+
+function getApprovedGlobalAccounts(data, userId, platform) {
+  return getVerifiedGlobalSocials(data.users?.[String(userId)])
+    .filter(social => normalizeTypedSocialPlatform(social.platform) === normalizeTypedSocialPlatform(platform))
+    .map(social => ({
+      id: social.id,
+      platform: social.platform,
+      username: social.username,
+      externalAccountId: social.externalAccountId || null,
+      verified: true,
+      source: social
+    }));
+}
+
+function getApprovedSubmissionAccounts(data, userId, campaignId, platform) {
+  const campaign = CAMPAIGNS[campaignId];
+  return getCampaignAccountMode(campaign) === 'global_auto_verify'
+    ? getApprovedGlobalAccounts(data, userId, platform)
+    : getApprovedCampaignAccounts(data, userId, campaignId, platform);
+}
+
+function getCampaignSubmissionAccounts(userRecord, campaign) {
+  const eligibility = getCampaignAccountEligibility(userRecord, campaign);
+  return eligibility.accounts.map(account => ({
+    ...account,
+    id: account.id || `campaign_${account.platform}`,
+    platform: normalizeTypedSocialPlatform(account.platform),
+    username: normalizeUsername(account.username)
+  })).filter(account => account.platform && account.username);
+}
+
+function findVerifiedGlobalSocialOwner(data, platform, username, excludeUserId = null, platformAccountId = null) {
+  const normalizedPlatform = normalizeTypedSocialPlatform(platform);
+  const normalizedUsername = normalizeSocialUsername(username);
+  const stableId = platformAccountId === null || platformAccountId === undefined
+    ? null
+    : String(platformAccountId).trim() || null;
+  for (const [userId, userRecord] of Object.entries(data.users || {})) {
+    if (excludeUserId !== null && String(userId) === String(excludeUserId)) continue;
+    const match = getVerifiedGlobalSocials(userRecord).find(social => {
+      if (normalizeTypedSocialPlatform(social.platform) !== normalizedPlatform) return false;
+      const socialStableId = social.platformAccountId || social.externalAccountId;
+      const stableIdMatches = stableId && socialStableId && String(socialStableId) === stableId;
+      const usernameMatches = normalizedUsername &&
+        normalizeSocialUsername(social.normalizedUsername || social.username) === normalizedUsername;
+      return Boolean(stableIdMatches || usernameMatches);
+    });
+    if (match) return { userId, social: match };
+  }
+  return null;
+}
+
+function makeGlobalSocialVerificationCode(data) {
+  const activeCodes = new Set(Object.values(data.globalSocialVerificationRequests || {})
+    .filter(request => request?.status === 'pending' && Number(request.expiresAt) > Date.now())
+    .map(request => String(request.verificationCode || '').toUpperCase()));
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const code = `CE-${crypto.randomBytes(4).toString('hex').slice(0, 6).toUpperCase()}`;
+    if (!activeCodes.has(code)) return code;
+  }
+  throw new Error('Could not generate a unique verification code.');
+}
+
+function createGlobalSocialVerificationRequest(data, { userId, platform, username, returnCampaignId = null, now = Date.now() }) {
+  const normalizedPlatform = normalizeTypedSocialPlatform(platform);
+  const cleanUsername = normalizeUsername(username);
+  const normalizedUsername = normalizeSocialUsername(cleanUsername);
+  if (!normalizedPlatform) throw new Error('Unsupported platform. Please enter TikTok, Instagram, or YouTube.');
+  if (!normalizedUsername) throw new Error('Username / Handle cannot be empty.');
+  data.globalSocialVerificationRequests ||= {};
+  const id = `gsv_${now}_${crypto.randomBytes(3).toString('hex')}`;
+  const request = {
+    id,
+    userId: String(userId),
+    platform: normalizedPlatform,
+    username: cleanUsername,
+    normalizedUsername,
+    status: 'pending',
+    verificationCode: makeGlobalSocialVerificationCode(data),
+    verificationRequestedAt: Number(now),
+    expiresAt: Number(now) + GLOBAL_SOCIAL_VERIFICATION_TTL_MS,
+    returnCampaignId: returnCampaignId && CAMPAIGNS[returnCampaignId] ? returnCampaignId : null,
+    lastVerificationAttemptAt: null,
+    verificationAttemptCount: 0,
+    usedAt: null
+  };
+  data.globalSocialVerificationRequests[id] = request;
+  return request;
+}
+
+function removeGlobalSocialAccount(userRecord, socialId, removedBy = null, now = Date.now()) {
+  const socials = Array.isArray(userRecord?.socials) ? userRecord.socials : [];
+  const index = socials.findIndex(social => String(social?.id) === String(socialId) && !social?.unlinkedAt);
+  if (index < 0) return { removed: false };
+  const [social] = socials.splice(index, 1);
+  userRecord.unlinkedSocials ||= [];
+  userRecord.unlinkedSocials.push({ ...social, verified: false, status: 'unlinked', unlinkedAt: Number(now), unlinkedBy: removedBy });
+  return { removed: true, social };
+}
+
+function buildGlobalSocialLinkButtonRow(returnCampaignId = null) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`global_social_link:${returnCampaignId || 'none'}`)
+      .setLabel('➕ Link Account')
+      .setEmoji('👤')
+      .setStyle(ButtonStyle.Success)
+  );
+}
+
+function buildGlobalSocialLinkModal(returnCampaignId = null) {
+  const modal = new ModalBuilder()
+    .setCustomId(`global_social_link_modal:${returnCampaignId || 'none'}`)
+    .setTitle('Link Social Account');
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('global_social_platform')
+        .setLabel('Platform')
+        .setPlaceholder('TikTok, Instagram, YouTube')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('global_social_username')
+        .setLabel('Username / Handle')
+        .setPlaceholder('@username')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+    )
+  );
+  return modal;
+}
+
+function buildGlobalSocialVerificationPrompt(request) {
+  const embed = new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setTitle(`Verify Your ${formatPlatform(request.platform)} Account`)
+    .setDescription(
+      `**Account:**\n@${request.username}\n\n` +
+      `Add this code to your account bio:\n\n` +
+      `\`${request.verificationCode}\`\n\n` +
+      `The code expires <t:${Math.floor(Number(request.expiresAt) / 1000)}:R>. Once it is visible publicly, click **Verify Account**.`
+    )
+    .setFooter({ text: 'Creators Elite • Social Verification' });
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`global_social_verify:${request.id}`)
+      .setLabel('Verify Account')
+      .setEmoji('✅')
+      .setStyle(ButtonStyle.Success)
+  );
+  return { embeds: [embed], components: [row] };
+}
+
+function buildInstagramVerificationRetryRow(request) {
+  if (!request?.id) return null;
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`global_social_verify:${request.id}`)
+      .setLabel('Verify Again')
+      .setEmoji('🔄')
+      .setStyle(ButtonStyle.Success)
+  );
+}
+
+function buildInstagramVerificationFailureResponse(result) {
+  const request = result?.request;
+  const username = request?.username || 'Instagram account';
+  const code = request?.verificationCode || 'CE-XXXXXX';
+  if (result?.code === 'PRIVATE_PROFILE') {
+    return {
+      embeds: [new EmbedBuilder()
+        .setColor(0xED4245)
+        .setTitle('Private Instagram Account ❌')
+        .setDescription(
+          `We couldn't verify this account because the profile is private.\n\n` +
+          'Temporarily make your Instagram account public, add the verification code to your bio, then try again.'
+        )],
+      components: []
+    };
+  }
+  if (result?.code === 'CODE_NOT_FOUND') {
+    const retryRow = buildInstagramVerificationRetryRow(request);
+    return {
+      embeds: [new EmbedBuilder()
+        .setColor(0xED4245)
+        .setTitle('Verification Code Not Found ❌')
+        .setDescription(
+          `We couldn't find your verification code in the bio of **@${username}**.\n\n` +
+          `Make sure you've added:\n\n\`${code}\`\n\n` +
+          'to your Instagram bio, save the changes, then try again.'
+        )],
+      components: retryRow ? [retryRow] : []
+    };
+  }
+  if (result?.code === 'PROFILE_UNAVAILABLE') {
+    const retryRow = buildInstagramVerificationRetryRow(request);
+    return {
+      embeds: [new EmbedBuilder()
+        .setColor(0xFEE75C)
+        .setTitle('Verification Temporarily Unavailable')
+        .setDescription(
+          `We couldn't check your Instagram profile right now.\n\n` +
+          'Your verification code is still valid. Please try again shortly.'
+        )],
+      components: retryRow ? [retryRow] : []
+    };
+  }
+  if (result?.code === 'COOLDOWN') {
+    return {
+      embeds: [new EmbedBuilder()
+        .setColor(0xFEE75C)
+        .setTitle('Please Wait')
+        .setDescription(`Please wait ${Math.max(1, Math.ceil(Number(result.retryAfterMs || 0) / 1000))} seconds before checking this profile again.`)],
+      components: []
+    };
+  }
+  return null;
+}
+
+function buildInstagramVerificationSuccessEmbed(social) {
+  return new EmbedBuilder()
+    .setColor(0x57F287)
+    .setTitle('Instagram Account Verified ✅')
+    .setDescription(
+      `**@${social.username}** has been successfully verified and connected to your Creators Elite account.\n\n` +
+      'You can now remove the verification code from your Instagram bio.'
+    )
+    .addFields(
+      { name: 'Platform', value: 'Instagram', inline: true },
+      { name: 'Account', value: `@${social.username}`, inline: true },
+      { name: 'Status', value: '✅ Verified', inline: true }
+    )
+    .setFooter({ text: 'Creators Elite • Social Accounts' });
+}
+
+function buildGlobalSocialPanel(guildId, demographicsChannelId = VERIFY_DEMOGRAPHICS_CHANNEL_ID) {
+  const embed = new EmbedBuilder()
+    .setColor(0x7ED957)
+    .setTitle('Manage Your Social Accounts')
+    .setDescription(
+      `Use the buttons below to manage your social media accounts.\n\n` +
+      `👤➕ **Link Account**\nConnect a new social media account.\n\n` +
+      `👤➖ **Remove Account**\nUnlink a connected social account.\n\n` +
+      `👥 **View Accounts**\nView your connected social accounts.\n\n` +
+      `🌍 **Verify Demographics**\nVerify your audience demographics to join campaigns.\n\n` +
+      `<:whiteCE:1504904179905200148> **Powered by Creators Elite**`
+    );
+  const buttons = [
+    new ButtonBuilder().setCustomId('global_social_link:none').setLabel('➕ Link Account').setEmoji('👤').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('global_social_remove').setLabel('➖ Remove Account').setEmoji('👤').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('global_social_view').setLabel('View Accounts').setEmoji('👥').setStyle(ButtonStyle.Secondary)
+  ];
+  const demographicsUrl = guildId && demographicsChannelId
+    ? `https://discord.com/channels/${guildId}/${demographicsChannelId}`
+    : null;
+  if (demographicsUrl) {
+    buttons.push(new ButtonBuilder().setLabel('Verify Demographics').setEmoji('🌍').setStyle(ButtonStyle.Link).setURL(demographicsUrl));
+  }
+  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(...buttons)] };
+}
+
+function renderGlobalSocialAccounts(userRecord) {
+  const socials = Array.isArray(userRecord?.socials) ? userRecord.socials.filter(social => !social?.unlinkedAt) : [];
+  if (!socials.length) return 'No global social accounts connected.';
+  return socials.map(social =>
+    `**${formatPlatform(social.platform)}**\n@${social.username}\n${social.verified ? '✅ Verified' : '⏳ Pending'}\nVerification: ${social.verificationMethod === 'bio_code_api' ? 'Bio Code / API' : social.verificationMethod || 'Pending'}`
+  ).join('\n\n');
+}
+
+function buildMissingGlobalAccountResponse(campaign) {
+  const platforms = (campaign.allowedPlatforms || []).map(normalizeTypedSocialPlatform).filter(Boolean);
+  const singlePlatform = platforms.length === 1 ? formatPlatform(platforms[0]) : null;
+  const title = singlePlatform ? `No ${singlePlatform} Account Connected ❌` : 'No Eligible Social Account Connected ❌';
+  const description = singlePlatform
+    ? `You need to connect and verify a ${singlePlatform} account before joining this campaign.\n\nUse the button below to get started. 👇`
+    : `This campaign requires a verified account on at least one of:\n\n${platforms.map(platform => `• ${formatPlatform(platform)}`).join('\n')}\n\nConnect and verify one account to join.`;
+  return {
+    embeds: [new EmbedBuilder().setColor(0xED4245).setTitle(title).setDescription(description)],
+    components: [buildGlobalSocialLinkButtonRow(campaign.id)]
+  };
+}
+
+function buildMissingCampaignDemographicsResponse(guildId, campaign) {
+  const allowedTiers = getCampaignDemographicEligibility({}, campaign).allowedTiers;
+  const embed = new EmbedBuilder()
+    .setColor(0xED4245)
+    .setTitle('Audience Demographics Required ❌')
+    .setDescription(
+      `You need approved audience demographics in ${allowedTiers.join(', ')} before joining **${campaign.name}**.\n\n` +
+      'Use the button below to submit or review your demographics verification.'
+    );
+  const url = guildId && VERIFY_DEMOGRAPHICS_CHANNEL_ID
+    ? `https://discord.com/channels/${guildId}/${VERIFY_DEMOGRAPHICS_CHANNEL_ID}`
+    : null;
+  const components = url
+    ? [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setLabel('Verify Demographics').setEmoji('🌍').setStyle(ButtonStyle.Link).setURL(url)
+      )]
+    : [];
+  return { embeds: [embed], components };
 }
 
 function getApprovedCampaignAccounts(data, userId, campaignId, platform) {
@@ -1665,12 +2438,19 @@ function normalizeClipVideoUrl(value) {
   return null;
 }
 
-async function validateClipBeforeSubmission({ data, userId, campaignId, submittedUrl }) {
+async function validateClipBeforeSubmission({ data, userId, campaignId, submittedUrl, selectedAccountId = null }) {
   const campaign = CAMPAIGNS[campaignId];
   if (!campaign) return { valid: false, message: '❌ Campaign not found.', metadata: null };
+  if (isNonMonsterlabCampaign(campaign) && !getCampaignPerClipPayoutLimit(data, campaign)) {
+    return { valid: false, code: 'CAMPAIGN_PAYOUT_CONFIG_INVALID', message: '❌ This campaign payout configuration is incomplete. Please contact staff.', metadata: null };
+  }
   const campaignState = getCampaignOperationalState(data, campaign);
   const submissionBlockMessage = getCampaignSubmissionBlockMessage(campaignState);
   if (submissionBlockMessage) return { valid: false, message: submissionBlockMessage, metadata: null };
+  const demographicEligibility = getCampaignDemographicEligibility(data.users?.[String(userId)], campaign);
+  if (!demographicEligibility.eligible) {
+    return { valid: false, code: 'DEMOGRAPHICS_NOT_ELIGIBLE', message: '❌ Approved audience demographics for this campaign are required before submitting clips.', metadata: null };
+  }
 
   try {
     const instagramReel = parsePublicInstagramReelUrl(submittedUrl);
@@ -1708,15 +2488,40 @@ async function validateClipBeforeSubmission({ data, userId, campaignId, submitte
     if (parsed.platform === 'tiktok' && !normalizeUsername(metadata.authorUsername || '')) {
       return { valid: false, message: '❌ We could not verify the TikTok username for this video. Please submit the full public TikTok video link or try again shortly.', metadata };
     }
-    const accounts = getApprovedCampaignAccounts(data, userId, campaignId, parsed.platform);
+    let accounts = getApprovedSubmissionAccounts(data, userId, campaignId, parsed.platform);
+    if (selectedAccountId) accounts = accounts.filter(account => String(account.id || `campaign_${account.platform}`) === String(selectedAccountId));
     if (!accounts.length) {
-      return { valid: false, message: `❌ You do not have a verified ${formatPlatform(parsed.platform)} account for this campaign.`, metadata };
+      return { valid: false, message: `❌ You do not have the selected verified ${formatPlatform(parsed.platform)} account available for this campaign.`, metadata };
     }
 
     const ownership = await validateVideoOwnership(accounts, metadata);
     if (!ownership.valid) {
       const author = metadata.authorUsername || metadata.authorDisplayName || 'an unlinked account';
       return { valid: false, message: `❌ This video was posted by **@${author}**, but that account is not linked and approved for this campaign.`, metadata };
+    }
+
+    const durationValidation = validateCampaignVideoDuration(campaign, metadata);
+    if (!durationValidation.valid) {
+      return { valid: false, code: durationValidation.code, message: `❌ ${durationValidation.message}`, metadata };
+    }
+
+    const publicationValidation = validateCampaignPublicationDate(campaign, metadata);
+    if (!publicationValidation.valid) {
+      if (publicationValidation.code === 'VIDEO_PREDATES_CAMPAIGN') {
+        return {
+          valid: false,
+          code: publicationValidation.code,
+          message: 'This video was published before the campaign launch.',
+          metadata,
+          responseEmbed: buildPreLaunchSubmissionEmbed(
+            campaign,
+            parsed.platform,
+            publicationValidation.publishedAt,
+            publicationValidation.campaignLaunch
+          )
+        };
+      }
+      return { valid: false, code: publicationValidation.code, message: `❌ ${publicationValidation.message}`, metadata };
     }
 
     if (parsed.platform === 'tiktok' && metadata.authorId && !ownership.matchedAccount.externalAccountId) {
@@ -1816,7 +2621,7 @@ function calculateTrackerStats(tracker) {
     }, 0);
     if (tracker.status !== 'issue') {
         tracker.status = tracker.currentUnpaidViews === 0 ? 'paid' :
-            tracker.currentUnpaidViews >= (Number(campaign.payoutThreshold) || 0) ? 'ready' : 'waiting';
+            tracker.currentUnpaidViews >= getCampaignPayoutThresholdViews(campaign) ? 'ready' : 'waiting';
     }
     tracker.updatedAt = Date.now();
     return tracker;
@@ -2264,6 +3069,9 @@ function buildClipStaffEmbed(clip) {
   const earnings = pending || rejectionStage === 'pre_approval'
     ? Number(clip.estimatedEarnings) || 0
     : creditedViews / 1_000_000 * (Number(campaign?.ratePerMillion) || 0);
+  const payoutLimitText = Number.isFinite(Number(clip.maxPayoutAmount))
+    ? `**Clip Payout Limit**\n$${Number(clip.maxPayoutAmount).toFixed(2)}${clip.clipPayoutCapReached ? ' — Reached' : ''}\n`
+    : '';
   const statusText = pending ? '🟡 Pending Review' :
     rejectionStage === 'pre_approval' ? '🔴 Rejected Before Approval' :
     rejectionStage === 'post_approval' ? '🔴 Removed From Payment' :
@@ -2294,6 +3102,7 @@ function buildClipStaffEmbed(clip) {
       '**' + viewsLabel + '**\n' + formatNumber(getSafeTrackedViews(clip, null)) + '\n' +
       '**Campaign Credited Views**\n' + formatNumber(creditedViews) + '\n' +
       '**' + earningsLabel + '**\n$' + earnings.toFixed(2) + (pending ? ' — Not Yet Approved' : '') + '\n' +
+      payoutLimitText +
       (pending ? '**Payment Eligibility**\nNot eligible until approved\n' : '') +
       (rejectionStage === 'pre_approval' ? '**Payment Eligibility**\nNot eligible\n' : '') +
       (rejectionStage === 'post_approval' ? '**Payment Eligibility**\nNot eligible for new payment\n**Historical Paid**\n$' + (Number(clip.payout?.paidMoney) || 0).toFixed(2) + '\n' : '') +
@@ -2794,6 +3603,141 @@ function getCampaignViewCap(campaign) {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
 }
 
+function getStraightCampaignAllocation(data, campaignId) {
+  const campaign = CAMPAIGNS[campaignId];
+  if (!campaign || !isStraightCampaign(campaign)) return null;
+  const stored = data?.campaignAllocations?.[campaignId] || {};
+  const baseBudget = Math.max(Number(campaign.campaignBudget) || 0, 0);
+  const baseViewCap = Math.max(Number(campaign.viewCap) || 0, 0);
+  return {
+    totalBudget: Math.max(Number(stored.totalBudget) || baseBudget, baseBudget),
+    totalViewCap: Math.max(Number(stored.totalViewCap) || baseViewCap, baseViewCap),
+    refills: Array.isArray(stored.refills) ? stored.refills : []
+  };
+}
+
+function getStraightCampaignCreditRecords(data, campaignId, excludeClipId = null) {
+  return getUniqueClipRecords([
+    ...Object.values(data?.clips || {}),
+    ...Object.values(data?.clipReviews || {})
+  ]).filter(clip =>
+    String(clip?.campaignId) === String(campaignId) &&
+    String(clip?.id) !== String(excludeClipId || '') &&
+    getClipCreditedViews(clip) > 0
+  );
+}
+
+function getStraightCampaignAccounting(data, campaignId) {
+  const campaign = CAMPAIGNS[campaignId];
+  const allocation = getStraightCampaignAllocation(data, campaignId);
+  if (!campaign || !allocation) return null;
+  const creditRecords = getStraightCampaignCreditRecords(data, campaignId);
+  const rawCreditedViews = creditRecords.reduce((sum, clip) => sum + getClipCreditedViews(clip), 0);
+  const rate = Math.max(Number(campaign.ratePerMillion) || 0, 0);
+  const rawCreditedMoney = rawCreditedViews / 1_000_000 * rate;
+  const creditedViews = Math.min(rawCreditedViews, allocation.totalViewCap);
+  const creditedMoney = Math.min(rawCreditedMoney, allocation.totalBudget);
+  const viewProgress = allocation.totalViewCap > 0 ? creditedViews / allocation.totalViewCap : 0;
+  const moneyProgress = allocation.totalBudget > 0 ? creditedMoney / allocation.totalBudget : 0;
+  return {
+    creditedViews,
+    creditedMoney,
+    rawCreditedViews,
+    rawCreditedMoney,
+    viewCap: allocation.totalViewCap,
+    budget: allocation.totalBudget,
+    remainingViews: Math.max(allocation.totalViewCap - creditedViews, 0),
+    remainingMoney: Math.max(allocation.totalBudget - creditedMoney, 0),
+    fulfilledPercent: Math.min(Math.max(viewProgress, moneyProgress) * 100, 100),
+    capReached: (allocation.totalViewCap > 0 && rawCreditedViews >= allocation.totalViewCap) ||
+      (allocation.totalBudget > 0 && rawCreditedMoney >= allocation.totalBudget),
+    refills: allocation.refills
+  };
+}
+
+function getStraightCampaignRemainingCreditableViews(data, campaign, excludeClipId = null) {
+  const allocation = getStraightCampaignAllocation(data, campaign.id);
+  if (!allocation) return 0;
+  const otherViews = getStraightCampaignCreditRecords(data, campaign.id, excludeClipId)
+    .reduce((sum, clip) => sum + getClipCreditedViews(clip), 0);
+  const remainingByViews = Math.max(allocation.totalViewCap - otherViews, 0);
+  const rate = Math.max(Number(campaign.ratePerMillion) || 0, 0);
+  if (rate <= 0) return remainingByViews;
+  const otherMoney = otherViews / 1_000_000 * rate;
+  const remainingByMoney = Math.max(allocation.totalBudget - otherMoney, 0) / rate * 1_000_000;
+  return Math.max(Math.floor(Math.min(remainingByViews, remainingByMoney)), 0);
+}
+
+function finalizeStraightCampaignIfFulfilled(data, campaignId, now = Date.now()) {
+  const accounting = getStraightCampaignAccounting(data, campaignId);
+  if (!accounting?.capReached) return false;
+  data.campaignStatus ||= {};
+  const previous = data.campaignStatus[campaignId] || {};
+  data.campaignStatus[campaignId] = {
+    ...previous,
+    status: 'finished_budget',
+    finishReason: 'campaign_budget_fulfilled',
+    finishedAt: previous.status === 'finished_budget' ? previous.finishedAt : Number(now),
+    archived: false
+  };
+  return previous.status !== 'finished_budget' || previous.finishReason !== 'campaign_budget_fulfilled';
+}
+
+function applyStraightCampaignRefill(data, campaignId, addBudget, addViewCap, options = {}) {
+  const campaign = CAMPAIGNS[campaignId];
+  if (!campaign || !isStraightCampaign(campaign)) throw new Error('Campaign is not a straight-budget campaign.');
+  if (campaign.refillable !== true) throw new Error('Campaign is not configured as refillable.');
+  const budgetIncrease = Number(addBudget);
+  const viewCapIncrease = Number(addViewCap);
+  if (!Number.isFinite(budgetIncrease) || budgetIncrease <= 0 || !Number.isFinite(viewCapIncrease) || viewCapIncrease <= 0) {
+    throw new Error('Refill budget and view cap must both be positive numbers.');
+  }
+  const now = Number(options.now ?? Date.now());
+  const allocation = getStraightCampaignAllocation(data, campaignId);
+  const baselineViews = options.baselineViews || {};
+  data.campaignAllocations ||= {};
+  data.campaignAllocations[campaignId] = {
+    totalBudget: allocation.totalBudget + budgetIncrease,
+    totalViewCap: allocation.totalViewCap + Math.floor(viewCapIncrease),
+    refills: [
+      ...allocation.refills,
+      { addedBudget: budgetIncrease, addedViewCap: Math.floor(viewCapIncrease), refilledAt: now, refilledBy: options.refilledBy || null }
+    ]
+  };
+  data.campaignStatus ||= {};
+  data.campaignStatus[campaignId] = {
+    ...(data.campaignStatus[campaignId] || {}),
+    status: 'active',
+    finishReason: null,
+    finishedAt: null,
+    reopenedAt: now,
+    archived: false
+  };
+  for (const clip of Object.values(data.clips || {})) {
+    if (String(clip.campaignId) !== String(campaignId) || !isPayoutEligibleClip(clip)) continue;
+    clip.straightTracking ||= {};
+    const fetchedBaseline = Number(baselineViews[clip.id]);
+    if (Number.isFinite(fetchedBaseline) && fetchedBaseline >= 0) {
+      const baseline = Math.max(fetchedBaseline, Number(clip.publicViews) || 0, Number(clip.currentViews) || 0);
+      clip.publicViews = baseline;
+      clip.currentViews = baseline;
+      clip.straightTracking.lastPublicViews = baseline;
+      clip.straightTracking.refillBaselineViews = baseline;
+      clip.straightTracking.baselinePending = false;
+    } else {
+      clip.straightTracking.baselinePending = true;
+    }
+    if (clip.completedReason === 'campaign_budget_fulfilled') {
+      clip.trackingStatus = 'active';
+      clip.completedReason = null;
+      clip.completedAt = null;
+    }
+    clip.nextCheckAt = clip.trackingStatus === 'completed' ? null : now + CLIP_TRACK_INTERVAL_MS;
+    clip.trackingRetryAt = null;
+  }
+  return getStraightCampaignAccounting(data, campaignId);
+}
+
 function campaignHasViewCap(campaign) {
   return getCampaignViewCap(campaign) !== null;
 }
@@ -3153,6 +4097,129 @@ function getCampaignCurrentWeekAccounting(data, campaignId, now = new Date()) {
   };
 }
 
+function getWeeklyResetObservedPublicViews(clip) {
+  return Math.max(
+    Number(clip?.budgetTracking?.lastPublicViews) || 0,
+    Number(clip?.budgetTracking?.baselinePublicViews) || 0,
+    Number(clip?.publicViews) || 0,
+    Number(clip?.currentViews) || 0,
+    Number(clip?.approvalViews) || 0,
+    Number(clip?.submissionViews) || 0
+  );
+}
+
+function isStoredWeeklyCapPause(state) {
+  if (!state) return false;
+  const status = String(state.status || '').toLowerCase();
+  const reason = String(state.pauseReason || state.reason || state.finishReason || '').toLowerCase();
+  if (status === 'finished' || status === 'finished_budget') return false;
+  return status === 'weekly_paused' ||
+    reason === 'weekly_cap_reached' ||
+    reason === 'weekly_view_cap_reached';
+}
+
+function reconcileWeeklyCampaignState(data, campaignId, now = new Date()) {
+  const campaign = CAMPAIGNS[campaignId];
+  if (!campaign?.separateEarningLifecycle || isStraightCampaign(campaign)) {
+    return { campaignId, changed: false, transitionedClips: 0, weekKey: null };
+  }
+  const nowDate = new Date(now);
+  const nowMs = nowDate.getTime();
+  if (!Number.isFinite(nowMs) || !isCampaignEarningActive(campaign, nowDate)) {
+    return { campaignId, changed: false, transitionedClips: 0, weekKey: null };
+  }
+
+  const { periodStart, periodEnd } = getCampaignBudgetPeriod(campaign, nowDate);
+  const weekKey = periodStart.toISOString();
+  data.campaignWeeklyState ||= {};
+  const previousState = data.campaignWeeklyState[campaignId] || null;
+  let changed = false;
+  let transitionedClips = 0;
+
+  if (previousState?.weekKey !== weekKey) {
+    for (const collection of [data.clips || {}, data.clipReviews || {}]) {
+      for (const clip of Object.values(collection)) {
+        if (String(clip?.campaignId) !== String(campaignId)) continue;
+        if (!isClipInCampaignEarningRun(clip, campaign) || clip.trackingStatus === 'completed') continue;
+        if (clip.status !== 'pending' && !(clip.status === 'approved' && isPayoutEligibleClip(clip))) continue;
+
+        clip.budgetTracking ||= {};
+        const tracking = clip.budgetTracking;
+        if (tracking.budgetCycleKey === weekKey) continue;
+        const oldWeekKey = tracking.budgetCycleKey || null;
+        const observedPublicViews = getWeeklyResetObservedPublicViews(clip);
+        if (oldWeekKey) {
+          tracking.history ||= [];
+          if (!tracking.history.some(entry => entry?.weekKey === oldWeekKey)) {
+            tracking.history.push({
+              weekKey: oldWeekKey,
+              baselinePublicViews: Math.max(Number(tracking.baselinePublicViews) || 0, 0),
+              lastPublicViews: observedPublicViews,
+              creditedViews: Math.max(Number(tracking.creditedViewsThisCycle) || 0, 0),
+              closedAt: periodStart.getTime()
+            });
+          }
+        }
+        tracking.budgetCycleKey = weekKey;
+        tracking.baselinePublicViews = observedPublicViews;
+        tracking.lastPublicViews = observedPublicViews;
+        tracking.creditedViewsThisCycle = 0;
+        tracking.pausedBaselineViews = observedPublicViews;
+        tracking.weekBaselinePending = true;
+        tracking.weekReconciledAt = nowMs;
+        tracking.lastCreditedAt = null;
+        clip.nextCheckAt = nowMs;
+        clip.trackingRetryAt = null;
+        transitionedClips++;
+        changed = true;
+      }
+    }
+    data.campaignWeeklyState[campaignId] = {
+      weekKey,
+      periodStart: periodStart.toISOString(),
+      periodEnd: periodEnd.toISOString(),
+      reconciledAt: nowMs,
+      previousWeekKey: previousState?.weekKey || null
+    };
+    changed = true;
+  }
+
+  const currentAccounting = getCampaignCurrentWeekAccounting(data, campaignId, nowDate);
+  const storedStatus = data.campaignStatus?.[campaignId];
+  if (!currentAccounting?.capReached && isStoredWeeklyCapPause(storedStatus)) {
+    data.campaignStatus[campaignId] = {
+      ...storedStatus,
+      status: 'active',
+      weekKey,
+      reconciledAt: nowMs
+    };
+    delete data.campaignStatus[campaignId].pauseReason;
+    delete data.campaignStatus[campaignId].reason;
+    if (String(data.campaignStatus[campaignId].finishReason || '').toLowerCase().includes('weekly')) {
+      delete data.campaignStatus[campaignId].finishReason;
+    }
+    changed = true;
+  }
+
+  return {
+    campaignId,
+    changed,
+    transitionedClips,
+    weekKey,
+    periodStart: periodStart.toISOString(),
+    periodEnd: periodEnd.toISOString(),
+    creditedViews: currentAccounting?.creditedViews || 0,
+    capReached: currentAccounting?.capReached === true
+  };
+}
+
+function reconcileAllWeeklyCampaignStates(data, now = new Date()) {
+  const reports = Object.values(CAMPAIGNS)
+    .filter(campaign => campaign.separateEarningLifecycle && !isStraightCampaign(campaign))
+    .map(campaign => reconcileWeeklyCampaignState(data, campaign.id, now));
+  return { changed: reports.some(report => report.changed), reports };
+}
+
 function getUserCurrentWeekAccounting(data, campaignId, userId, now = new Date()) {
   const campaignAccounting = getCampaignCurrentWeekAccounting(data, campaignId, now);
   if (!campaignAccounting) return null;
@@ -3182,6 +4249,9 @@ function getCampaignCurrentWeeklyCreditedViews(campaignId, options = {}) {
 }
 
 function getCampaignCurrentCycleCreditedViews(campaignId, options = {}) {
+  if (isStraightCampaign(CAMPAIGNS[campaignId])) {
+    return getStraightCampaignAccounting(options.data || loadData(), campaignId)?.creditedViews || 0;
+  }
   if (CAMPAIGNS[campaignId]?.separateEarningLifecycle) {
     return getCampaignCurrentWeeklyCreditedViews(campaignId, options);
   }
@@ -3203,6 +4273,7 @@ function finalizeExpiredBudgetCycleClips(data = loadData(), now = new Date()) {
     for (const clip of Object.values(collection)) {
       const campaign = CAMPAIGNS[clip?.campaignId];
       if (!campaign) continue;
+      if (isStraightCampaign(campaign)) continue;
       if (campaign.separateEarningLifecycle) {
         const { periodStart, periodEnd } = getCampaignEarningPeriod(campaign);
         const submittedAt = getClipSubmissionTimestamp(clip);
@@ -3296,13 +4367,20 @@ function getClipTrackingAudit(clip, now = Date.now()) {
   };
 }
 
-function shouldTrackClip(clip, campaign, data) {
+function shouldTrackClip(clip, campaign, data, now = new Date()) {
   if (!clip || !campaign || clip.trackingStatus === 'completed') return false;
   if (clip.status !== 'pending' && !(clip.status === 'approved' && isPayoutEligibleClip(clip))) return false;
-  if (campaign.separateEarningLifecycle) {
-    if (!isClipInCampaignEarningPeriod(clip, campaign)) return false;
-  } else if (!isClipInCurrentBudgetCycle(clip, campaign)) return false;
-  if (campaignHasViewCap(campaign) && isCampaignCurrentBudgetCycleFulfilled(campaign.id, { data })) return false;
+  if (
+    clip.status === 'approved' &&
+    Number.isFinite(Number(clip.maxCampaignCreditedViews)) &&
+    getClipCreditedViews(clip) >= Number(clip.maxCampaignCreditedViews)
+  ) return false;
+  if (isStraightCampaign(campaign)) {
+    if (getStraightCampaignAccounting(data, campaign.id)?.capReached) return false;
+  } else if (campaign.separateEarningLifecycle) {
+    if (!isClipInCampaignEarningPeriod(clip, campaign, now)) return false;
+  } else if (!isClipInCurrentBudgetCycle(clip, campaign, now)) return false;
+  if (!isStraightCampaign(campaign) && campaignHasViewCap(campaign) && isCampaignCurrentBudgetCycleFulfilled(campaign.id, { data, date: now })) return false;
   return true;
 }
 
@@ -3498,7 +4576,7 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
   }
 
   const currentCycle = getCampaignBudgetCycleIndex(campaign);
-  const payoutThreshold = campaign?.payoutThreshold || 100000;
+  const payoutThreshold = getCampaignPayoutThresholdViews(campaign);
 
   const targetUserId =
     userId ||
@@ -3512,9 +4590,11 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
       .setDescription('❌ Could not resolve user identity context.');
   }
 
-  const inStatsScope = clip => campaign.separateEarningLifecycle
-    ? isClipInCampaignEarningRun(clip, campaign)
-    : isClipInCurrentBudgetCycle(clip, campaign);
+  const inStatsScope = clip => isStraightCampaign(campaign)
+    ? true
+    : campaign.separateEarningLifecycle
+      ? isClipInCampaignEarningRun(clip, campaign)
+      : isClipInCurrentBudgetCycle(clip, campaign);
   const matchesUserCampaign = clip =>
     String(clip.userId) === String(targetUserId) &&
     String(clip.campaignId) === String(campaignId);
@@ -3605,17 +4685,17 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
   const payoutStatus = payoutTracker?.status === 'issue' ? '⚠️ Payment on hold' :
     payoutTracker?.status === 'ready' ? '✅ Ready for payout' :
     payoutTracker?.status === 'pending' ? '⏳ Payment pending' :
-    '✅ Eligible for payout';
+    isNonMonsterlabCampaign(campaign) ? '✅ Ready for payout' : '✅ Eligible for payout';
   const payoutSection = payoutEligible
     ? `<a:Cash1:1504871843419521115> **Payout Status**\n${payoutStatus}\n\n`
-    : `<a:Cash1:1504871843419521115> **Payout Target: ${formatNumber(payoutThreshold)} Views**\nNeed **${formatNumber(viewsNeeded)}** more unpaid views\n\n`;
+    : `<a:Cash1:1504871843419521115> **Payout Target: ${formatPayoutThresholdViews(payoutThreshold)} Views**\nNeed **${formatPayoutThresholdViews(viewsNeeded)}** more unpaid views\n\n`;
 
   return new EmbedBuilder()
     .setColor(0x7ED957)
     .setDescription(
       `<a:chart1:1504773558415523931> **Campaign Stats - ${campaignName}**\n\n` +
 
-      `<a:rocket1:1504872045849346140> **${campaign.separateEarningLifecycle ? 'Monthly Earned Views' : 'Total Views'}**\n${formatNumber(totalViews)}\n\n` +
+      `<a:rocket1:1504872045849346140> **${isStraightCampaign(campaign) ? 'Campaign Earned Views' : campaign.separateEarningLifecycle ? 'Monthly Earned Views' : 'Total Views'}**\n${formatNumber(totalViews)}\n\n` +
       (weeklyUserViews === null ? '' : `<a:chart1:1504773558415523931> **Current Week Views**\n${formatNumber(weeklyUserViews)}\n\n`) +
       `<a:good1:1504871589332914176> **Paid Views**\n${formatNumber(paidViews)}\n\n` +
       `<a:flyin:1506234392920723546> **Unpaid Views**\n${formatNumber(unpaidViews)}\n\n` +
@@ -3932,6 +5012,26 @@ function getCampaignTotals(data, campaignId, now = new Date()) {
       };
   }
 
+  if (isStraightCampaign(campaign)) {
+    const campaignClips = Object.values(data.clips || {}).filter(clip => String(clip.campaignId) === String(campaignId));
+    const collectionAccounting = calculateClipCollectionAccounting(campaignClips, campaign, { scope: 'campaign_status', campaignId });
+    const straightAccounting = getStraightCampaignAccounting(data, campaignId);
+    const creditedViews = straightAccounting?.creditedViews || 0;
+    const paidViews = Math.min(collectionAccounting.paidViews, creditedViews);
+    const unpaidViews = Math.max(creditedViews - paidViews, 0);
+    return {
+      users: collectionAccounting.users,
+      videos: collectionAccounting.videos,
+      views: creditedViews,
+      paidViews,
+      unpaidViews,
+      paidMoney: collectionAccounting.paidMoney,
+      unpaidMoney: unpaidViews / 1_000_000 * (Number(campaign.ratePerMillion) || 0),
+      payout: straightAccounting?.creditedMoney || 0,
+      straightAccounting
+    };
+  }
+
   const campaignClips = Object.values(data.clips || {}).filter(clip =>
     String(clip.campaignId) === String(campaignId) &&
     (campaign.separateEarningLifecycle
@@ -3988,11 +5088,15 @@ async function updateServerStats(guild) {
         const accounting = calculateClipCollectionAccounting(campaignClips, campaign, { scope: 'server_stats', campaignId: campaign.id });
         totalPaid += accounting.paidMoney + accounting.unpaidMoney;
     }
-    const activeCampaigns = Object.values(CAMPAIGNS).filter(c => c.status === "active").length;
+    const activeCampaigns = Object.values(CAMPAIGNS).filter(c => getCampaignOperationalState(data, c).state === 'live').length;
 
     let availableMoney = 0;
     for (const campaign of Object.values(CAMPAIGNS)) {
-        if (campaign.status !== "active") continue;
+        if (getCampaignOperationalState(data, campaign).state !== 'live') continue;
+        if (isStraightCampaign(campaign)) {
+            availableMoney += getStraightCampaignAccounting(data, campaign.id)?.remainingMoney || 0;
+            continue;
+        }
         const totals = getCampaignTotals(data, campaign.id);
         availableMoney += Math.max((campaign.campaignBudget || 0) - totals.payout, 0);
     }
@@ -4028,8 +5132,34 @@ async function updateServerStats(guild) {
     console.log("📈 Counter display sync completed successfully!");
 }
 
-function buildCampaignStatusEmbed(campaign, data) {
-  const now = new Date();
+function buildCampaignStatusEmbed(campaign, data, now = new Date()) {
+  if (isStraightCampaign(campaign)) {
+    const totals = getCampaignTotals(data, campaign.id, now);
+    const accounting = getStraightCampaignAccounting(data, campaign.id);
+    const operationalState = getCampaignOperationalState(data, campaign, now);
+    const finished = operationalState.state === 'finished';
+    const statusText = finished
+      ? 'Finished — Campaign Budget Fulfilled'
+      : operationalState.state === 'not_launched'
+        ? (operationalState.reason === 'launch_not_configured' ? 'Not Live — Launch Not Configured' : 'Scheduled — Not Yet Launched')
+        : 'Live';
+    return new EmbedBuilder()
+      .setColor(finished || operationalState.state === 'not_launched' ? 0xED4245 : 0x7ED957)
+      .setTitle(campaign.name)
+      .setDescription(
+        `<a:redalert:1504777207648620595> **Campaign Status**\n` +
+        `**Status:** ${statusText}\n\n` +
+        `<a:rocket1:1504872045849346140> **Performance Metrics**\n` +
+        `**Users:** ${totals.users}\n` +
+        `**Videos:** ${totals.videos}\n` +
+        `**Views:** ${formatNumber(accounting.creditedViews)} / ${formatNumber(accounting.viewCap)}\n\n` +
+        `<a:Cash1:1504871843419521115> **Payout & Budget**\n` +
+        `**Campaign Budget:** $${formatNumber(accounting.budget)}\n` +
+        `**Fulfilled:** $${formatNumber(accounting.creditedMoney)} (${accounting.fulfilledPercent.toFixed(1)}%)\n` +
+        `**Remaining:** $${formatNumber(accounting.remainingMoney)}\n\n` +
+        `<:whiteCE:1504904179905200148> Powered by Creators Elite | ${new Date().toLocaleString()}`
+      );
+  }
   const { periodStart, periodEnd } = getCampaignBudgetPeriod(campaign, now);
   const earningPeriod = getCampaignEarningPeriod(campaign);
   const totals = getCampaignTotals(data, campaign.id, now);
@@ -4383,6 +5513,40 @@ function getCampaignConnectAccountLink(guildId, campaign) {
   return `https://discord.com/channels/${guildId}/${channelId}`;
 }
 
+function getCampaignRulesLink(guildId, campaign) {
+  const channelId = campaign?.rulesChannelId;
+  if (!guildId || !channelId) return null;
+  return `https://discord.com/channels/${guildId}/${channelId}`;
+}
+
+function buildCampaignRulesRow(guildId, campaign) {
+  const url = getCampaignRulesLink(guildId, campaign);
+  if (!url) return null;
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setLabel('Campaign Rules')
+      .setEmoji('📋')
+      .setStyle(ButtonStyle.Link)
+      .setURL(url)
+  );
+}
+
+function buildPreLaunchSubmissionEmbed(campaign, platform, publishedAt, campaignLaunch) {
+  return new EmbedBuilder()
+    .setColor(0xED4245)
+    .setTitle('Video Posted Before Campaign Launch ❌')
+    .setDescription(
+      `This video was published before the **${campaign.name}** started and is not eligible for this campaign.\n\n` +
+      'Only videos posted after the campaign launch time can be submitted.'
+    )
+    .addFields(
+      { name: '🌐 Platform', value: formatPlatform(platform), inline: true },
+      { name: '📅 Video Published', value: `<t:${Math.floor(publishedAt / 1000)}:F>`, inline: false },
+      { name: '🚀 Campaign Launched', value: `<t:${Math.floor(campaignLaunch / 1000)}:F>`, inline: false }
+    )
+    .setFooter({ text: 'Creators Elite • Campaign Submission' });
+}
+
 function buildCampaignConnectAccountRow(guildId, campaign, options = {}) {
   const url = getCampaignConnectAccountLink(guildId, campaign);
   if (!url) return null;
@@ -4399,15 +5563,19 @@ function buildCampaignJoinSuccessEmbed(interaction, campaign, options = {}) {
   const displayName = interaction?.member?.displayName || interaction?.user?.globalName || interaction?.user?.username || 'Creator';
   const alreadyJoined = options.alreadyJoined === true;
   const connectAvailable = options.connectAvailable !== false;
+  const accountReady = options.accountReady === true;
+  const accountGuidance = accountReady
+    ? 'Make sure you read the campaign rules before posting or submitting clips. 👇'
+    : (connectAvailable ? 'Before submitting clips, connect at least one social media account using the button below. ⤵️' : 'Campaign joined successfully, but the account connection channel is currently unavailable. Please contact staff.');
   const description = alreadyJoined
     ? `You're already part of the **${campaign.name}**. Your campaign access and roles have been checked.\n\n` +
-      (connectAvailable ? 'Before submitting clips, make sure at least one social account is connected and verified using the button below. ⤵️' : 'The account connection channel is currently unavailable. Please contact staff.')
-    : `You've successfully joined the **${campaign.name}**!\n\nYou're now part of the campaign and have access to the campaign channels.\n\n` +
-      (connectAvailable ? 'Before submitting clips, connect at least one social media account using the button below. ⤵️' : 'Campaign joined successfully, but the account connection channel is currently unavailable. Please contact staff.');
+      (accountReady ? accountGuidance : (connectAvailable ? 'Before submitting clips, make sure at least one social account is connected and verified using the button below. ⤵️' : 'The account connection channel is currently unavailable. Please contact staff.'))
+    : `You've successfully joined the **${campaign.name}**!\n\n${accountReady ? "You're now part of the campaign and ready to start clipping." : "You're now part of the campaign and have access to the campaign channels."}\n\n` +
+      accountGuidance;
   return new EmbedBuilder()
     .setColor(0x57F287)
     .setAuthor({ name: 'Creators Elite', iconURL: interaction?.guild?.iconURL?.() || undefined })
-    .setTitle(`Let's Get Clipping, ${displayName} <a:fire1:1504871649491554487>`)
+    .setTitle(`Let's Get Clipping, ${displayName} ${accountReady ? '🔥' : '<a:fire1:1504871649491554487>'}`)
     .setDescription(description)
     .setFooter({ 
       text: 'Creators Elite',
@@ -4418,6 +5586,15 @@ function buildCampaignJoinSuccessEmbed(interaction, campaign, options = {}) {
 
 function getCampaignJoinBlockReason(campaign, data, now = new Date()) {
   if (!campaign) return 'Campaign not found.';
+  const operationalState = getCampaignOperationalState(data, campaign, now);
+  if (operationalState.state === 'not_launched') {
+    return operationalState.reason === 'launch_not_configured'
+      ? 'This campaign is not live yet. Its launch time has not been configured.'
+      : 'This campaign has not launched yet.';
+  }
+  if (isStraightCampaign(campaign) && operationalState.state === 'finished') {
+    return 'This campaign budget has been fulfilled and is no longer accepting members.';
+  }
   const permanentlyFinished = data?.campaignStatus?.[campaign.id]?.status === 'finished' ||
     data?.campaigns?.[campaign.id]?.status === 'finished' ||
     campaign.status === 'finished';
@@ -4434,9 +5611,31 @@ function getCampaignOperationalState(data, campaign, now = new Date()) {
   if (!campaign) return { state: 'finished', weeklyAccounting: null };
   const time = new Date(now).getTime();
   const earningEnd = getCampaignEarningEnd(campaign);
-  const permanentlyFinished = data?.campaignStatus?.[campaign.id]?.status === 'finished' ||
+  const persistedStatus = data?.campaignStatus?.[campaign.id]?.status || data?.campaigns?.[campaign.id]?.status;
+  const permanentlyFinished = persistedStatus === 'finished' ||
     data?.campaigns?.[campaign.id]?.status === 'finished' ||
     campaign.status === 'finished';
+  if (isStraightCampaign(campaign)) {
+    const straightAccounting = getStraightCampaignAccounting(data, campaign.id);
+    const budgetFinished = persistedStatus === 'finished_budget' || straightAccounting?.capReached;
+    if (permanentlyFinished || budgetFinished) {
+      return { state: 'finished', weeklyAccounting: null, straightAccounting };
+    }
+    if (isNonMonsterlabCampaign(campaign)) {
+      const launchTimestamp = getCampaignLaunchTimestamp(campaign);
+      if (launchTimestamp === null) {
+        return { state: 'not_launched', reason: 'launch_not_configured', weeklyAccounting: null, straightAccounting };
+      }
+      if (time < launchTimestamp) {
+        return { state: 'not_launched', reason: 'launch_scheduled', launchTimestamp, weeklyAccounting: null, straightAccounting };
+      }
+    }
+    return {
+      state: 'live',
+      weeklyAccounting: null,
+      straightAccounting
+    };
+  }
   if (permanentlyFinished || (campaign.separateEarningLifecycle && Number.isFinite(earningEnd) && time >= earningEnd)) {
     return { state: 'finished', weeklyAccounting: null };
   }
@@ -4448,6 +5647,13 @@ function getCampaignOperationalState(data, campaign, now = new Date()) {
 function buildCampaignSubmitClipButton(campaign, data, now = new Date()) {
   const { state } = getCampaignOperationalState(data, campaign, now);
   const button = new ButtonBuilder().setCustomId(`submit_clip:${campaign.id}`);
+  if (state === 'not_launched') {
+    return button
+      .setLabel('Campaign Not Started')
+      .setEmoji('⏳')
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(true);
+  }
   if (state === 'finished') {
     return button
       .setLabel('Campaign Finished')
@@ -4470,6 +5676,9 @@ function buildCampaignSubmitClipButton(campaign, data, now = new Date()) {
 }
 
 function getCampaignSubmissionBlockMessage(campaignState) {
+  if (campaignState.state === 'not_launched') {
+    return '❌ This campaign has not launched yet and is not accepting submissions.';
+  }
   if (campaignState.state === 'finished') {
     return '❌ This campaign has finished and is no longer accepting submissions.';
   }
@@ -4514,7 +5723,9 @@ function applyCampaignMembership(userRecord, campaign, joinedAt = Date.now()) {
   userRecord.campaignMemberships ||= {};
   userRecord.campaignMemberships[campaign.id] ||= {
     joinedAt,
-    joinedRunKey: typeof getCampaignEarningRunKey === 'function' ? getCampaignEarningRunKey(campaign) : null
+    joinedRunKey: !isStraightCampaign(campaign) && typeof getCampaignEarningRunKey === 'function'
+      ? getCampaignEarningRunKey(campaign)
+      : null
   };
   userRecord.campaignAccounts ||= {};
   userRecord.campaignAccounts[campaign.id] ||= {};
@@ -4547,6 +5758,9 @@ async function assignCampaignJoinRoles(guild, member, campaign, options = {}) {
 }
 
 function getCampaignPanelFulfilledPercent(campaign, data, now = new Date()) {
+  if (isStraightCampaign(campaign)) {
+    return getStraightCampaignAccounting(data, campaign.id)?.fulfilledPercent || 0;
+  }
   const weeklyAccounting = getCampaignCurrentWeekAccounting(data, campaign.id, now);
   const weeklyCap = getCampaignViewCap(campaign) || 0;
   const creditedViews = Math.min(
@@ -4558,14 +5772,13 @@ function getCampaignPanelFulfilledPercent(campaign, data, now = new Date()) {
     : 0;
 }
 
-function buildCampaignPanelButtons(campaign, data) {
-  const fulfilledPercent = getCampaignPanelFulfilledPercent(campaign, data);
+function buildCampaignPanelButtons(campaign, data, now = new Date()) {
+  const fulfilledPercent = getCampaignPanelFulfilledPercent(campaign, data, now);
 
   // 🟢 FIX: Dynamic fallbacks to check both the state tree and the raw campaign object properties safely
-  const isFinished =
-    data.campaignStatus?.[campaign.id]?.status === 'finished' ||
-    data.campaigns?.[campaign.id]?.status === 'finished' ||
-    campaign.status === 'finished';
+  const operationalState = getCampaignOperationalState(data, campaign, now).state;
+  const isFinished = operationalState === 'finished';
+  const joinDisabled = isFinished || operationalState === 'not_launched';
 
   console.log(`📊 Campaign UI Build [${campaign.name || campaign.id}] - Weekly Fulfilled: ${fulfilledPercent.toFixed(1)}% | Finished: ${isFinished}`);
 
@@ -4575,7 +5788,7 @@ function buildCampaignPanelButtons(campaign, data) {
       .setLabel("Join Campaign")
       .setEmoji("<a:flyin:1506234392920723546>")
       .setStyle(ButtonStyle.Success)
-      .setDisabled(isFinished),
+      .setDisabled(joinDisabled),
 
     new ButtonBuilder()
       .setCustomId(`campaign_status:${campaign.id}`)
@@ -4667,7 +5880,7 @@ async function updateCampaignPanelMessage(guild, campaignId) {
   const data = loadData();
 
   await msg.edit({
-    content: campaign.panelText,
+    content: getCampaignPanelText(campaign),
     components: buildCampaignPanelButtons(campaign, data)
   });
   
@@ -4679,6 +5892,23 @@ function messageHasCampaignSubmitButton(message, campaignId) {
   return (message?.components || []).some(row =>
     (row.components || []).some(component => component.customId === `submit_clip:${campaignId}`)
   );
+}
+
+async function findCampaignSubmissionPanelMessage(channel, campaignId, botUserId = client.user?.id, maxPages = 10) {
+  let before = null;
+  for (let page = 0; page < maxPages; page++) {
+    const batch = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
+    if (!batch) return null;
+    const messages = typeof batch.values === 'function' ? [...batch.values()] : [];
+    const match = messages.find(message =>
+      (!botUserId || message.author?.id === botUserId) && messageHasCampaignSubmitButton(message, campaignId)
+    );
+    if (match) return match;
+    if (messages.length < 100) return null;
+    before = messages[messages.length - 1]?.id || null;
+    if (!before) return null;
+  }
+  return null;
 }
 
 async function updateCampaignSubmissionPanelMessage(guild, campaignId) {
@@ -4696,10 +5926,7 @@ async function updateCampaignSubmissionPanelMessage(guild, campaignId) {
     panelMessage = await channel.messages.fetch(storedPanel.messageId).catch(() => null);
   }
   if (!panelMessage) {
-    const recentMessages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
-    panelMessage = recentMessages?.find(message =>
-      message.author?.id === client.user?.id && messageHasCampaignSubmitButton(message, campaignId)
-    ) || null;
+    panelMessage = await findCampaignSubmissionPanelMessage(channel, campaignId);
   }
   if (!panelMessage) return false;
 
@@ -4724,14 +5951,22 @@ async function updateCampaignSubmissionPanelMessage(guild, campaignId) {
   return true;
 }
 
-async function refreshAllCampaignPanelMessages(guild) {
+async function refreshAllCampaignPanelMessages(guild, options = {}) {
+  const now = options.now || new Date();
+  const data = options.data || loadData();
+  const reconciliation = reconcileAllWeeklyCampaignStates(data, now);
+  if (reconciliation.changed && !options.data) saveData(data);
+  const updatePanel = options.updateCampaignPanelMessage || updateCampaignPanelMessage;
+  const refreshedCampaignIds = [];
   for (const campaignId of Object.keys(CAMPAIGNS)) {
     try {
-      await updateCampaignPanelMessage(guild, campaignId);
+      await updatePanel(guild, campaignId);
+      refreshedCampaignIds.push(campaignId);
     } catch (error) {
       console.error(`Could not refresh campaign panel ${campaignId}:`, error.message);
     }
   }
+  return { reconciliation, refreshedCampaignIds };
 }
 
 function scheduleNextWeeklyCampaignPanelRefresh(guildId) {
@@ -5167,6 +6402,7 @@ async function fetchClipMetadata(clip) {
       thumbnailUrl: metadata.thumbnailUrl,
       authorName: metadata.authorUsername,
       authorId: metadata.authorId || null,
+      durationSeconds: metadata.durationSeconds,
       publishedAt: metadata.publishedTimestamp ? new Date(metadata.publishedTimestamp).toISOString() : null,
       publishedTimestamp: metadata.publishedTimestamp || null
     };
@@ -5180,6 +6416,7 @@ async function fetchClipMetadata(clip) {
       title: item.title || '',
       thumbnailUrl: item.cover || item.origin_cover || null,
       authorName: item.author?.nickname || item.author?.unique_id || null,
+      durationSeconds: normalizeVideoDurationSeconds(item.duration),
       publishedAt: Number(item.create_time) > 0 ? new Date(Number(item.create_time) * 1000).toISOString() : null,
       publishedTimestamp: Number(item.create_time) > 0 ? Number(item.create_time) * 1000 : null
     };
@@ -5192,7 +6429,7 @@ async function fetchClipMetadata(clip) {
   const res = await axios.get('https://www.googleapis.com/youtube/v3/videos', {
     timeout: 15000,
     params: {
-      part: 'statistics,snippet',
+      part: 'statistics,snippet,contentDetails',
       id: videoId,
       key: process.env.YOUTUBE_API_KEY
     }
@@ -5206,6 +6443,7 @@ async function fetchClipMetadata(clip) {
     title: item.snippet?.title || '',
     thumbnailUrl: thumbs.maxres?.url || thumbs.standard?.url || thumbs.high?.url || thumbs.medium?.url || thumbs.default?.url || null,
     authorName: item.snippet?.channelTitle || null,
+    durationSeconds: normalizeVideoDurationSeconds(item.contentDetails?.duration),
     publishedAt: item.snippet?.publishedAt || null,
     publishedTimestamp: Number.isFinite(Date.parse(item.snippet?.publishedAt || '')) ? Date.parse(item.snippet.publishedAt) : null
   };
@@ -5241,6 +6479,7 @@ async function fetchSubmissionMetadata(platform, canonicalUrl, videoId) {
       views: Number(data.play_count) || 0,
       likes: getFirstFiniteNonNegativeValue([data.digg_count, data.like_count, data.likeCount, data.likes]),
       thumbnailUrl: data.cover || data.origin_cover || null,
+      durationSeconds: normalizeVideoDurationSeconds(data.duration),
       publishedTimestamp: Number.isFinite(createdAt) && createdAt > 0 ? createdAt * 1000 : null,
       publishedAt: Number.isFinite(createdAt) && createdAt > 0 ? new Date(createdAt * 1000).toISOString() : null
     };
@@ -5252,7 +6491,7 @@ async function fetchSubmissionMetadata(platform, canonicalUrl, videoId) {
 
     const response = await axios.get('https://www.googleapis.com/youtube/v3/videos', {
       timeout: 15000,
-      params: { part: 'snippet,statistics', id, key: process.env.YOUTUBE_API_KEY }
+      params: { part: 'snippet,statistics,contentDetails', id, key: process.env.YOUTUBE_API_KEY }
     });
     const item = response.data?.items?.[0];
     if (!item) throw new Error('This YouTube video could not be found or is not publicly available.');
@@ -5269,12 +6508,234 @@ async function fetchSubmissionMetadata(platform, canonicalUrl, videoId) {
       views: Number(item.statistics?.viewCount) || 0,
       likes: getFirstFiniteNonNegativeValue([item.statistics?.likeCount]),
       thumbnailUrl: thumbnails.maxres?.url || thumbnails.standard?.url || thumbnails.high?.url || thumbnails.medium?.url || thumbnails.default?.url || null,
+      durationSeconds: normalizeVideoDurationSeconds(item.contentDetails?.duration),
       publishedTimestamp: Number.isFinite(publishedTimestamp) ? publishedTimestamp : null,
       publishedAt: snippet.publishedAt || null
     };
   }
 
   throw new Error('Unsupported social platform.');
+}
+
+function buildShortCampaignPanelText(campaign) {
+  const platforms = (campaign.allowedPlatforms || []).map(formatPlatform).join(', ') || 'See campaign configuration';
+  const countryTiers = Array.isArray(campaign.countryTiers) ? campaign.countryTiers.join(', ') : (campaign.countryTiers || 'See campaign rules');
+  const ratePerThousand = (Number(campaign.ratePerMillion) || 0) / 1000;
+  const allocationViews = getCampaignViewCap(campaign) || 0;
+  const payoutExamples = `$${ratePerThousand.toFixed(2)} per 1,000 views / $${(ratePerThousand * 100).toFixed(0)} per 100,000 views`;
+  const payoutThresholdViews = getCampaignPayoutThresholdViews(campaign);
+  const minimumPayout = payoutThresholdViews > 0
+    ? `\n> **Minimum Payout:** ${formatPayoutThresholdViews(payoutThresholdViews)} eligible unpaid views`
+    : '';
+  return `# 🔥 Earn Money Posting Clips & Edits – ${campaign.name}\n\n` +
+    `${campaign.shortDescription || campaign.description || 'Create eligible clips and edits for this campaign.'}\n\n` +
+    `## ⚠️ Campaign Details\n\n` +
+    `• **Clips:** ${campaign.clipRequirement || campaign.rulesSummary || 'Follow the configured campaign rules'}\n` +
+    `• **Platforms:** ${platforms}\n` +
+    `• **Country Tier:** ${countryTiers}\n` +
+    `• **Minimum Video Duration:** ${campaign.minimumVideoDuration || 'See campaign rules'}\n\n` +
+    `## 💸 Payment Details\n\n` +
+    `> **Payout:** ${payoutExamples}\n` +
+    `> **Budget:** $${formatNumber(campaign.campaignBudget)} — Up to ${formatNumber(allocationViews)} Total Eligible Views${minimumPayout}\n\n` +
+    `## ➜ Join the Campaign\n\n` +
+    `Click the button below to start clipping and earning.`;
+}
+
+function getCampaignPanelText(campaign) {
+  if (campaign.panelText) return campaign.panelText;
+  return isStraightCampaign(campaign) ? buildShortCampaignPanelText(campaign) : '';
+}
+
+async function fetchPublicSocialProfile(platform, username) {
+  const normalizedPlatform = normalizeTypedSocialPlatform(platform);
+  const cleanUsername = normalizeUsername(username);
+  if (!normalizedPlatform) throw new Error('Unsupported platform. Please enter TikTok, Instagram, or YouTube.');
+  if (!cleanUsername) throw new Error('Username / Handle cannot be empty.');
+
+  if (normalizedPlatform === 'tiktok') {
+    const response = await axios.get('https://www.tikwm.com/api/user/info', {
+      timeout: 15000,
+      params: { unique_id: cleanUsername }
+    });
+    const user = response.data?.data?.user;
+    if (!user || !normalizeSocialUsername(user.uniqueId || user.unique_id)) {
+      throw new Error('TikTok profile could not be retrieved.');
+    }
+    const stats = response.data?.data?.stats || response.data?.data?.statsV2 || {};
+    return {
+      platform: 'tiktok',
+      username: user.uniqueId || user.unique_id,
+      displayName: user.nickname || user.uniqueId || cleanUsername,
+      bio: String(user.signature || ''),
+      profileUrl: `https://www.tiktok.com/@${normalizeUsername(user.uniqueId || user.unique_id)}`,
+      avatarUrl: user.avatarLarger || user.avatarMedium || user.avatarThumb || null,
+      followers: Number(stats.followerCount ?? stats.follower_count) || 0,
+      externalAccountId: user.id ? String(user.id) : null,
+      rawProvider: 'tikwm'
+    };
+  }
+
+  if (normalizedPlatform === 'youtube') {
+    let channelId = null;
+    let handle = cleanUsername;
+    try {
+      const parsed = /^https?:\/\//i.test(cleanUsername) ? new URL(cleanUsername) : null;
+      const channelMatch = parsed?.pathname?.match(/\/channel\/(UC[\w-]{20,})/i);
+      const handleMatch = parsed?.pathname?.match(/@([^/?#]+)/);
+      if (/^UC[\w-]{20,}$/i.test(cleanUsername)) channelId = cleanUsername;
+      else if (channelMatch) channelId = channelMatch[1];
+      else if (handleMatch) handle = handleMatch[1];
+    } catch {}
+    const params = { part: 'snippet,statistics', key: process.env.YOUTUBE_API_KEY };
+    if (channelId) params.id = channelId;
+    else params.forHandle = handle;
+    let response = await axios.get('https://www.googleapis.com/youtube/v3/channels', { timeout: 15000, params });
+    let item = response.data?.items?.[0];
+    if (!item && !channelId) {
+      response = await axios.get('https://www.googleapis.com/youtube/v3/channels', {
+        timeout: 15000,
+        params: { part: 'snippet,statistics', forUsername: handle, key: process.env.YOUTUBE_API_KEY }
+      });
+      item = response.data?.items?.[0];
+    }
+    if (!item) throw new Error('YouTube channel could not be retrieved.');
+    const thumbnails = item.snippet?.thumbnails || {};
+    return {
+      platform: 'youtube',
+      username: handle,
+      displayName: item.snippet?.title || handle,
+      bio: String(item.snippet?.description || ''),
+      profileUrl: `https://www.youtube.com/channel/${item.id}`,
+      avatarUrl: thumbnails.high?.url || thumbnails.medium?.url || thumbnails.default?.url || null,
+      followers: Number(item.statistics?.subscriberCount) || 0,
+      externalAccountId: item.id || null,
+      rawProvider: 'youtube_data_api_v3'
+    };
+  }
+
+  return fetchInstagramPublicProfile(cleanUsername);
+}
+
+function bioContainsExactVerificationCode(bio, verificationCode) {
+  if (typeof bio !== 'string' || typeof verificationCode !== 'string' || !verificationCode) return false;
+  const escapedCode = verificationCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^A-Za-z0-9-])${escapedCode}(?=$|[^A-Za-z0-9-])`).test(bio);
+}
+
+async function verifyGlobalSocialVerificationRequest(data, requestId, options = {}) {
+  const now = Number(options.now ?? Date.now());
+  const request = data.globalSocialVerificationRequests?.[requestId];
+  if (!request) return { verified: false, code: 'NOT_FOUND', message: 'Verification request not found.' };
+  if (options.requestingUserId !== undefined && String(options.requestingUserId) !== String(request.userId)) {
+    return { verified: false, code: 'NOT_REQUEST_OWNER', message: 'This verification request belongs to another creator.' };
+  }
+  if (request.status !== 'pending' || request.usedAt) {
+    return { verified: false, code: 'ALREADY_USED', message: 'This verification request has already been used.' };
+  }
+  if (!Number.isFinite(Number(request.expiresAt)) || now > Number(request.expiresAt)) {
+    request.status = 'expired';
+    return { verified: false, code: 'EXPIRED', message: 'This verification code has expired. Start a new Link Account request.' };
+  }
+  const existingOwner = findVerifiedGlobalSocialOwner(data, request.platform, request.username, request.userId);
+  if (existingOwner) {
+    return { verified: false, code: 'OWNED_BY_ANOTHER_USER', message: 'This social account is already verified to another creator.', request };
+  }
+  if (request.platform === 'instagram' && Number.isFinite(Number(request.lastVerificationAttemptAt))) {
+    const retryAfterMs = INSTAGRAM_PROFILE_VERIFICATION_COOLDOWN_MS - (now - Number(request.lastVerificationAttemptAt));
+    if (retryAfterMs > 0) {
+      return { verified: false, code: 'COOLDOWN', message: 'Please wait before checking this Instagram profile again.', retryAfterMs, request };
+    }
+  }
+
+  const fetchProfile = options.fetchProfile || fetchPublicSocialProfile;
+  if (request.platform === 'instagram') {
+    request.lastVerificationAttemptAt = now;
+    request.verificationAttemptCount = Math.max(0, Number(request.verificationAttemptCount) || 0) + 1;
+  }
+  let profile;
+  try {
+    profile = await fetchProfile(request.platform, request.username);
+  } catch (error) {
+    return { verified: false, code: 'PROFILE_UNAVAILABLE', message: 'The public profile could not be retrieved.', request };
+  }
+  if (!profile || normalizeTypedSocialPlatform(profile.platform) !== request.platform) {
+    return { verified: false, code: 'PROFILE_UNAVAILABLE', message: 'The provider did not return a valid public profile.', request };
+  }
+  if (normalizeSocialUsername(profile.username) !== request.normalizedUsername) {
+    return { verified: false, code: 'PROFILE_MISMATCH', message: 'The retrieved public profile does not match this verification request.', request };
+  }
+  if (request.platform === 'instagram' && profile.private === true) {
+    return { verified: false, code: 'PRIVATE_PROFILE', message: 'Private Instagram profiles cannot be verified automatically.', request, profile };
+  }
+  const verificationCodeFound = request.platform === 'instagram'
+    ? bioContainsExactVerificationCode(profile.bio, request.verificationCode)
+    : String(profile.bio || '').includes(request.verificationCode);
+  if (!verificationCodeFound) {
+    return { verified: false, code: 'CODE_NOT_FOUND', message: 'Verification code was not found in the public profile bio. Add the code and try again.', request, profile };
+  }
+
+  const platformAccountId = profile.platformAccountId || profile.externalAccountId || null;
+  const providerOwner = findVerifiedGlobalSocialOwner(
+    data,
+    request.platform,
+    profile.username,
+    request.userId,
+    platformAccountId
+  );
+  if (providerOwner) {
+    return { verified: false, code: 'OWNED_BY_ANOTHER_USER', message: 'This social account is already verified to another creator.', request, profile };
+  }
+
+  const userRecord = data.users?.[request.userId];
+  if (!userRecord) return { verified: false, code: 'USER_NOT_FOUND', message: 'Creator record not found.', request };
+  ensureUserSocials(data, request.userId);
+  let social = getVerifiedGlobalSocials(userRecord).find(candidate =>
+    normalizeTypedSocialPlatform(candidate.platform) === request.platform &&
+    (
+      normalizeSocialUsername(candidate.normalizedUsername || candidate.username) === request.normalizedUsername ||
+      (platformAccountId && String(candidate.platformAccountId || candidate.externalAccountId || '') === String(platformAccountId))
+    )
+  );
+  const storedPlatformAccountId = social?.platformAccountId || social?.externalAccountId || null;
+  if (social && storedPlatformAccountId && platformAccountId && String(storedPlatformAccountId) !== String(platformAccountId)) {
+    return { verified: false, code: 'PROFILE_ID_MISMATCH', message: 'The profile identity does not match the previously verified account.', request, profile };
+  }
+  if (!social) {
+    social = {
+      id: `gsa_${now}_${crypto.randomBytes(3).toString('hex')}`,
+      platform: request.platform,
+      username: request.username,
+      normalizedUsername: request.normalizedUsername,
+      status: 'verified',
+      verified: true,
+      verificationMethod: 'bio_code_api',
+      verificationCode: request.verificationCode,
+      verificationRequestedAt: request.verificationRequestedAt,
+      verifiedAt: now,
+      lastVerifiedAt: now,
+      profileUrl: profile.profileUrl || null,
+      avatarUrl: profile.avatarUrl || null,
+      followers: Number(profile.followers) || 0,
+      platformAccountId,
+      externalAccountId: platformAccountId,
+      provider: profile.rawProvider || null
+    };
+    userRecord.socials.push(social);
+  } else {
+    social.lastVerifiedAt = now;
+    social.profileUrl = profile.profileUrl || social.profileUrl || null;
+    social.avatarUrl = profile.avatarUrl || social.avatarUrl || null;
+    social.followers = Number(profile.followers) || social.followers || 0;
+    if (!storedPlatformAccountId && platformAccountId) {
+      social.platformAccountId = platformAccountId;
+      social.externalAccountId = platformAccountId;
+    }
+  }
+  request.status = 'verified';
+  request.usedAt = now;
+  request.verifiedAt = now;
+  request.socialId = social.id;
+  return { verified: true, request, social, profile };
 }
 
 async function fetchClipViews(clip) {
@@ -5301,6 +6762,57 @@ async function withCampaignTrackingLock(campaignId, task) {
   }
 }
 
+async function joinCampaignMember(data, guild, member, campaign, options = {}) {
+  const roleResult = await assignCampaignJoinRoles(guild, member, campaign, options);
+  if (!roleResult.ok) return { ok: false, error: roleResult.error, alreadyJoined: false };
+  const userRecord = ensureUser(data, member);
+  const membership = applyCampaignMembership(userRecord, campaign);
+  return { ok: true, alreadyJoined: membership.alreadyJoined, userRecord, roleResult };
+}
+
+async function autoJoinReturnCampaignAfterGlobalVerification(data, guild, member, request, options = {}) {
+  const campaign = request?.returnCampaignId ? CAMPAIGNS[request.returnCampaignId] : null;
+  if (!campaign || !member || getCampaignAccountMode(campaign) !== 'global_auto_verify') {
+    return { joinedCampaign: null, joinResult: null };
+  }
+  const userRecord = data.users?.[String(request.userId)];
+  if (!getCampaignAccountEligibility(userRecord, campaign).eligible) {
+    return { joinedCampaign: null, joinResult: null };
+  }
+  if (!getCampaignDemographicEligibility(userRecord, campaign).eligible) {
+    return { joinedCampaign: null, joinResult: null };
+  }
+  if (getCampaignOperationalState(data, campaign, options.now ?? new Date()).state !== 'live') {
+    return { joinedCampaign: null, joinResult: null };
+  }
+  const joinResult = await joinCampaignMember(data, guild, member, campaign, options);
+  return {
+    joinedCampaign: joinResult.ok ? campaign : null,
+    joinResult
+  };
+}
+
+async function refillStraightCampaign(data, campaignId, addBudget, addViewCap, options = {}) {
+  const campaign = CAMPAIGNS[campaignId];
+  if (!campaign || !isStraightCampaign(campaign)) throw new Error('Campaign is not a straight-budget campaign.');
+  const fetchMetadata = options.fetchMetadata || fetchClipMetadata;
+  const baselineViews = {};
+  for (const clip of Object.values(data.clips || {})) {
+    if (String(clip.campaignId) !== String(campaignId) || !isPayoutEligibleClip(clip)) continue;
+    try {
+      const metadata = await fetchMetadata(clip);
+      const fetchedViews = Number(metadata?.views);
+      if (Number.isFinite(fetchedViews) && fetchedViews >= 0) baselineViews[clip.id] = fetchedViews;
+    } catch (error) {
+      console.warn(`[Campaign Refill] Fresh baseline pending for ${clip.id}:`, error.message);
+    }
+  }
+  return applyStraightCampaignRefill(data, campaignId, addBudget, addViewCap, {
+    ...options,
+    baselineViews
+  });
+}
+
 async function autoTrackClipViews() {
   if (trackingRunning) return;
   trackingRunning = true;
@@ -5311,6 +6823,9 @@ async function autoTrackClipViews() {
 
     let changed = finalizeExpiredBudgetCycleClips(data);
     changed = finalizeOutOfRunClips(data, Date.now()).changed || changed;
+    for (const campaign of Object.values(CAMPAIGNS)) {
+      if (isStraightCampaign(campaign)) changed = finalizeStraightCampaignIfFulfilled(data, campaign.id) || changed;
+    }
     const updatedCampaignIds = new Set();
     const updatedPayoutPairs = new Set();
     const approvedClipIds = new Set(Object.entries(data.clips || {})
@@ -5597,6 +7112,45 @@ client.on('messageCreate', async message => {
     content: `Weekly accounting audit for \`${campaignId}\`. Flags: **${flagSummary}**`,
     files: [{ attachment: Buffer.from(report, 'utf8'), name: `weekly-audit-${campaignId}.json` }]
   });
+});
+
+client.on('messageCreate', async message => {
+  if (message.author.bot || !message.guild || !message.content.toLowerCase().startsWith('!testinstagramprofile')) return;
+  if (!isAdmin(message.member)) {
+    await message.reply('❌ You need administrator permissions to test Instagram profiles.');
+    return;
+  }
+  const username = normalizeSocialUsername(message.content.trim().replace(/^!testinstagramprofile\b/i, ''));
+  if (!username || !/^[a-z0-9._]+$/i.test(username)) {
+    await message.reply('❌ Provide one Instagram username, for example: `!testinstagramprofile creatorselite`');
+    return;
+  }
+  const now = Date.now();
+  const lastRun = apifyInstagramProfileTestCooldowns.get(message.author.id) || 0;
+  if (now - lastRun < 30_000) {
+    await message.reply('Please wait before running the Instagram profile test again.');
+    return;
+  }
+  apifyInstagramProfileTestCooldowns.set(message.author.id, now);
+
+  const loadingMessage = await message.reply('⏳ Retrieving the public Instagram profile through Apify…');
+  try {
+    const profile = await fetchInstagramPublicProfile(username);
+    const embed = new EmbedBuilder()
+      .setColor(profile.private ? 0xFEE75C : 0x57F287)
+      .setTitle('Instagram Profile Provider Test')
+      .addFields(
+        { name: 'Username', value: `@${profile.username}`, inline: true },
+        { name: 'Profile ID', value: profile.platformAccountId || 'Not returned', inline: true },
+        { name: 'Public/Private', value: profile.private ? 'Private' : 'Public', inline: true },
+        { name: 'Bio Found', value: profile.bio ? 'Yes' : 'No', inline: true },
+        { name: 'Followers', value: Number(profile.followers || 0).toLocaleString('en-US'), inline: true }
+      )
+      .setFooter({ text: 'Safe provider fields only • Creators Elite' });
+    await loadingMessage.edit({ content: null, embeds: [embed] });
+  } catch {
+    await loadingMessage.edit('❌ The Instagram profile provider could not retrieve a usable profile. Please try again shortly.');
+  }
 });
 
 // ==========================================
@@ -6226,6 +7780,16 @@ client.on(Events.MessageCreate, async message => {
       return;
     }
 
+    if (message.content.trim().toLowerCase() === '!socialpanel') {
+      if (!isAdmin(message.member)) {
+        await message.reply('❌ You must be an admin to use this command.');
+        return;
+      }
+      await message.delete().catch(() => {});
+      await message.channel.send(buildGlobalSocialPanel(message.guild.id));
+      return;
+    }
+
     if (message.content.trim() === '!accountpanel') {
       const embed = new EmbedBuilder()
         .setColor(0x7ED957)
@@ -6324,6 +7888,38 @@ client.on(Events.MessageCreate, async message => {
         components: [row]
       });
 
+      return;
+    }
+
+    if (message.content.toLowerCase().startsWith('!refillcampaign')) {
+      if (!isAdmin(message.member)) {
+        await message.reply('❌ You must be an admin to use this command.');
+        return;
+      }
+      const [, campaignId, budgetValue, viewCapValue] = message.content.trim().split(/\s+/);
+      const campaign = CAMPAIGNS[campaignId];
+      const addBudget = Number(budgetValue);
+      const addViewCap = Number(viewCapValue);
+      if (!campaign || !isStraightCampaign(campaign) || !Number.isFinite(addBudget) || addBudget <= 0 || !Number.isFinite(addViewCap) || addViewCap <= 0) {
+        await message.reply('❌ Usage: `!refillcampaign CAMPAIGN_ID BUDGET VIEW_CAP` for a refillable straight-budget campaign.');
+        return;
+      }
+      try {
+        const accounting = await withCampaignTrackingLock(campaignId, async () => {
+          const data = loadData();
+          const result = await refillStraightCampaign(data, campaignId, addBudget, addViewCap, {
+            refilledBy: message.author.id
+          });
+          saveData(data);
+          return result;
+        });
+        await updateCampaignPanelMessage(message.guild, campaignId);
+        await message.reply(
+          `✅ Refilled **${campaign.name}**. Total allocation: **$${formatNumber(accounting.budget)}** and **${formatNumber(accounting.viewCap)} views**.`
+        );
+      } catch (error) {
+        await message.reply(`❌ Campaign refill failed: ${error.message}`);
+      }
       return;
     }
 
@@ -6481,35 +8077,13 @@ client.on(Events.MessageCreate, async message => {
       const campaign = CAMPAIGNS[campaignId];
 
       const panelData = loadData();
-      const fulfilledPercent = getCampaignPanelFulfilledPercent(campaign, panelData).toFixed(1);
-
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`join_campaign:${campaign.id}`)
-          .setLabel('Join Campaign')
-          .setEmoji('<a:flyin:1506234392920723546>')
-          .setStyle(ButtonStyle.Success),
-
-        new ButtonBuilder()
-          .setCustomId(`campaign_status:${campaign.id}`)
-          .setLabel('Campaign Status')
-          .setEmoji('<a:chart1:1504773558415523931>')
-          .setStyle(ButtonStyle.Primary),
-
-        new ButtonBuilder()
-          .setCustomId(`campaign_fulfilled:${campaign.id}`)
-          .setLabel(`Fulfilled: ${fulfilledPercent}%`)
-          .setStyle(ButtonStyle.Secondary)
-          .setEmoji('<a:Loadin:1506234461459714100>')
-          .setDisabled(true)
-      );
 
       try {
         await message.delete().catch(() => {});
 
         await message.channel.send({
-          content: campaign.panelText,
-          components: [row]
+          content: getCampaignPanelText(campaign),
+          components: buildCampaignPanelButtons(campaign, panelData)
         });
 
         console.log(`Panel sent for ${campaignId}`);
@@ -6846,7 +8420,7 @@ client.on(Events.InteractionCreate, async interaction => {
         if (!tracker || !campaign) return interaction.reply({ content: 'Payout tracker not found.', flags: MessageFlags.Ephemeral });
         tracker.issueReason = null;
         tracker.issueAt = null;
-        tracker.status = tracker.currentUnpaidViews === 0 ? 'paid' : tracker.currentUnpaidViews >= campaign.payoutThreshold ? 'ready' : 'waiting';
+        tracker.status = tracker.currentUnpaidViews === 0 ? 'paid' : tracker.currentUnpaidViews >= getCampaignPayoutThresholdViews(campaign) ? 'ready' : 'waiting';
         tracker.updatedAt = Date.now();
         savePayoutTracker(tracker);
         await syncPayoutCard(interaction.guild, tracker.campaignId, tracker.userId);
@@ -7488,9 +9062,25 @@ ${reason}
 
       const userRecord = ensureUser(data, interaction.member);
       const accounts = [];
+      const seenAccounts = new Set();
+
+      for (const social of getVerifiedGlobalSocials(userRecord)) {
+        const platform = normalizeTypedSocialPlatform(social.platform);
+        const username = normalizeUsername(social.username);
+        const key = `${platform}:${normalizeSocialUsername(username)}`;
+        if (!platform || !username || seenAccounts.has(key)) continue;
+        seenAccounts.add(key);
+        accounts.push({
+          label: `${formatPlatform(platform)} — @${username}`,
+          value: `global|${platform}|${username}`
+        });
+      }
 
       for (const [campaignId, platforms] of Object.entries(userRecord.campaignAccounts || {})) {
         for (const [platform, account] of Object.entries(platforms || {})) {
+          const key = `${normalizeTypedSocialPlatform(platform) || platform}:${normalizeSocialUsername(account.username)}`;
+          if (seenAccounts.has(key)) continue;
+          seenAccounts.add(key);
           accounts.push({
             label: `${formatPlatform(platform)} — @${account.username}`,
             value: `${campaignId}|${platform}|${account.username}`
@@ -8301,6 +9891,159 @@ ${reason}
         return;
     }
 
+    if (interaction.isButton() && interaction.customId.startsWith('global_social_link:')) {
+      const returnCampaignId = interaction.customId.split(':')[1];
+      await interaction.showModal(buildGlobalSocialLinkModal(returnCampaignId === 'none' ? null : returnCampaignId));
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('global_social_link_modal:')) {
+      const returnCampaignIdValue = interaction.customId.split(':')[1];
+      const returnCampaignId = returnCampaignIdValue === 'none' ? null : returnCampaignIdValue;
+      const platformInput = interaction.fields.getTextInputValue('global_social_platform');
+      const username = normalizeUsername(interaction.fields.getTextInputValue('global_social_username'));
+      const platform = normalizeTypedSocialPlatform(platformInput);
+      if (!platform) {
+        await interaction.reply({ content: 'Unsupported platform. Please enter TikTok, Instagram, or YouTube.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (!username) {
+        await interaction.reply({ content: '❌ Username / Handle cannot be empty.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const data = loadData();
+      const member = await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
+      if (!member) {
+        await interaction.reply({ content: '❌ Could not load your server profile.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const userRecord = ensureUser(data, member);
+      ensureUserSocials(data, interaction.user.id);
+      const existingOwner = findVerifiedGlobalSocialOwner(data, platform, username, interaction.user.id);
+      if (existingOwner) {
+        await interaction.reply({ content: '❌ This social account is already verified to another creator.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const alreadyVerified = getVerifiedGlobalSocials(userRecord).find(social =>
+        normalizeTypedSocialPlatform(social.platform) === platform &&
+        normalizeSocialUsername(social.username) === normalizeSocialUsername(username)
+      );
+      if (alreadyVerified) {
+        await interaction.reply({ content: `✅ @${username} is already verified on your account.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const request = createGlobalSocialVerificationRequest(data, {
+        userId: interaction.user.id,
+        platform,
+        username,
+        returnCampaignId
+      });
+      saveData(data);
+      await interaction.reply({ ...buildGlobalSocialVerificationPrompt(request), flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('global_social_verify:')) {
+      const requestId = interaction.customId.split(':')[1];
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const data = loadData();
+      const result = await verifyGlobalSocialVerificationRequest(data, requestId, {
+        requestingUserId: interaction.user.id
+      });
+      if (!result.verified) {
+        saveData(data);
+        const instagramFailure = result.request?.platform === 'instagram'
+          ? buildInstagramVerificationFailureResponse(result)
+          : null;
+        await interaction.editReply(instagramFailure || { content: `❌ ${result.message}`, embeds: [], components: [] });
+        return;
+      }
+
+      const member = await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
+      const autoJoin = await autoJoinReturnCampaignAfterGlobalVerification(
+        data,
+        interaction.guild,
+        member,
+        result.request
+      );
+      const joinedCampaign = autoJoin.joinedCampaign;
+      const joinWarning = autoJoin.joinResult && !autoJoin.joinResult.ok ? autoJoin.joinResult.error : null;
+      saveData(data);
+      const rulesRow = joinedCampaign ? buildCampaignRulesRow(interaction.guild?.id, joinedCampaign) : null;
+      if (joinedCampaign && !rulesRow) console.warn(`[Campaign Join]\nMissing rulesChannelId for ${joinedCampaign.id}`);
+      if (result.social.platform === 'instagram') {
+        const embeds = [buildInstagramVerificationSuccessEmbed(result.social)];
+        if (joinedCampaign) {
+          embeds.push(buildCampaignJoinSuccessEmbed(interaction, joinedCampaign, {
+            accountReady: true,
+            alreadyJoined: autoJoin.joinResult?.alreadyJoined === true
+          }));
+        }
+        await interaction.editReply({
+          content: joinWarning ? `⚠️ ${joinWarning}` : null,
+          embeds,
+          components: rulesRow ? [rulesRow] : []
+        });
+        return;
+      }
+      const joinedText = joinedCampaign
+        ? ` and you've successfully joined **${joinedCampaign.name}**`
+        : '';
+      await interaction.editReply({
+        content: `✅ **Account Verified**\n\nYour ${formatPlatform(result.social.platform)} account **@${result.social.username}** has been verified${joinedText}.${joinWarning ? `\n\n⚠️ ${joinWarning}` : ''}`,
+        components: rulesRow ? [rulesRow] : []
+      });
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'global_social_view') {
+      const data = loadData();
+      const userRecord = data.users?.[interaction.user.id] || { socials: [] };
+      await interaction.reply({
+        embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('Connected Social Accounts').setDescription(renderGlobalSocialAccounts(userRecord))],
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'global_social_remove') {
+      const data = loadData();
+      const socials = getVerifiedGlobalSocials(data.users?.[interaction.user.id]).slice(0, 25);
+      if (!socials.length) {
+        await interaction.reply({ content: 'You do not have any verified global social accounts to remove.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const select = new StringSelectMenuBuilder()
+        .setCustomId('global_social_remove_select')
+        .setPlaceholder('Choose an account to unlink')
+        .addOptions(socials.map(social => ({
+          label: `${formatPlatform(social.platform)} - @${social.username}`.slice(0, 100),
+          value: social.id
+        })));
+      await interaction.reply({
+        content: 'Select the global social account to unlink. Historical clips and payments will be preserved.',
+        components: [new ActionRowBuilder().addComponents(select)],
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
+    if (interaction.isStringSelectMenu() && interaction.customId === 'global_social_remove_select') {
+      const data = loadData();
+      const userRecord = data.users?.[interaction.user.id];
+      const removal = removeGlobalSocialAccount(userRecord, interaction.values[0], interaction.user.id);
+      if (!removal.removed) {
+        await interaction.reply({ content: '❌ Social account not found.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      saveData(data);
+      await interaction.reply({
+        content: `✅ Unlinked **${formatPlatform(removal.social.platform)} @${removal.social.username}**. Historical clips, payments, and analytics were preserved.`,
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
     if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_view:')) {
       const campaignId = interaction.customId.split(':')[1];
       const campaign = CAMPAIGNS[campaignId];
@@ -9008,24 +10751,34 @@ ${reason}
       }
 
       const userRecord = ensureUser(data, member);
-      const accounts = userRecord.campaignAccounts?.[campaignId] || {};
-      const availablePlatforms = getVerifiedCampaignPlatforms(userRecord, campaignId);
+      if (getCampaignAccountMode(campaign) === 'global_auto_verify' && !userRecord.campaigns?.includes(campaignId)) {
+        await interaction.reply({ content: '❌ Join this campaign before submitting clips.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const demographicEligibility = getCampaignDemographicEligibility(userRecord, campaign);
+      if (!demographicEligibility.eligible) {
+        await interaction.reply({ ...buildMissingCampaignDemographicsResponse(interaction.guild.id, campaign), flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const submissionAccounts = getCampaignSubmissionAccounts(userRecord, campaign);
 
-      if (availablePlatforms.length === 0) {
-        const connectButtonRow = buildCampaignConnectAccountRow(interaction.guild.id, campaign);
+      if (submissionAccounts.length === 0) {
+        const connectButtonRow = getCampaignAccountMode(campaign) === 'global_auto_verify'
+          ? buildGlobalSocialLinkButtonRow(campaignId)
+          : buildCampaignConnectAccountRow(interaction.guild.id, campaign);
         await interaction.reply({
-          content: '❌ You need to connect and verify at least one campaign account before submitting clips.',
+          content: '❌ You need to connect and verify at least one eligible account before submitting clips.',
           components: connectButtonRow ? [connectButtonRow] : [],
           flags: MessageFlags.Ephemeral
         });
         return;
       }
 
-      if (availablePlatforms.length === 1) {
-        const platform = availablePlatforms[0];
+      if (submissionAccounts.length === 1) {
+        const selectedAccount = submissionAccounts[0];
 
         const modal = new ModalBuilder()
-          .setCustomId(`submit_clip_modal:${campaignId}:${platform}`)
+          .setCustomId(`submit_clip_modal:${campaignId}:${selectedAccount.platform}:${selectedAccount.id}`)
           .setTitle('Submit your Clips');
 
         modal.addComponents(
@@ -9048,9 +10801,10 @@ ${reason}
         .setCustomId(`submit_clip_platform_select:${campaignId}`)
         .setPlaceholder('Choose platform account')
         .addOptions(
-          availablePlatforms.map(platform => ({
-            label: `${formatPlatform(platform)} - @${accounts[platform].username}`.slice(0, 100),
-            value: platform
+          submissionAccounts.slice(0, 25).map(account => ({
+            label: `${formatPlatform(account.platform)} - @${account.username}`.slice(0, 100),
+            value: account.id,
+            description: `Verified ${formatPlatform(account.platform)} account`.slice(0, 100)
           }))
         );
 
@@ -9065,7 +10819,6 @@ ${reason}
 
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('submit_clip_platform_select:')) {
       const campaignId = interaction.customId.split(':')[1];
-      const platform = interaction.values[0];
       const campaign = CAMPAIGNS[campaignId];
       if (!campaign) {
         await interaction.reply({ content: '❌ Campaign not found.', flags: MessageFlags.Ephemeral });
@@ -9077,9 +10830,20 @@ ${reason}
         await interaction.reply({ content: submissionBlockMessage, flags: MessageFlags.Ephemeral });
         return;
       }
+      const userRecord = data.users?.[interaction.user.id];
+      const submissionAccounts = getCampaignSubmissionAccounts(userRecord, campaign);
+      const selectedValue = interaction.values[0];
+      let selectedAccount = submissionAccounts.find(account => String(account.id) === String(selectedValue));
+      if (!selectedAccount && getCampaignAccountMode(campaign) === 'campaign_staff_code') {
+        selectedAccount = submissionAccounts.find(account => account.platform === selectedValue);
+      }
+      if (!selectedAccount) {
+        await interaction.reply({ content: '❌ That verified account is no longer available. Reopen Submit Clip and choose again.', flags: MessageFlags.Ephemeral });
+        return;
+      }
 
       const modal = new ModalBuilder()
-        .setCustomId(`submit_clip_modal:${campaignId}:${platform}`)
+        .setCustomId(`submit_clip_modal:${campaignId}:${selectedAccount.platform}:${selectedAccount.id}`)
         .setTitle('Submit your Clips');
 
       modal.addComponents(
@@ -9099,7 +10863,7 @@ ${reason}
     }
 
     if (interaction.isModalSubmit() && interaction.customId.startsWith('submit_clip_modal:')) {
-        const [, campaignId, platform] = interaction.customId.split(':');
+        const [, campaignId, platform, selectedAccountIdValue] = interaction.customId.split(':');
         const campaign = CAMPAIGNS[campaignId];
 
         if (!campaign) {
@@ -9144,10 +10908,25 @@ ${reason}
         }
 
         const userRecord = ensureUser(data, member);
-        const campaignAccount = userRecord.campaignAccounts?.[campaignId]?.[platform];
-    
-        if (!campaignAccount || !campaignAccount.verified) {
-            const connectButtonRow = buildCampaignConnectAccountRow(interaction.guild.id, campaign);
+        if (getCampaignAccountMode(campaign) === 'global_auto_verify' && !userRecord.campaigns?.includes(campaignId)) {
+            await interaction.reply({ content: '❌ Join this campaign before submitting clips.', flags: MessageFlags.Ephemeral });
+            return;
+        }
+        const demographicEligibility = getCampaignDemographicEligibility(userRecord, campaign);
+        if (!demographicEligibility.eligible) {
+            await interaction.reply({ ...buildMissingCampaignDemographicsResponse(interaction.guild.id, campaign), flags: MessageFlags.Ephemeral });
+            return;
+        }
+        const submissionAccounts = getCampaignSubmissionAccounts(userRecord, campaign).filter(account => account.platform === platform);
+        let selectedAccount = selectedAccountIdValue
+            ? submissionAccounts.find(account => String(account.id) === String(selectedAccountIdValue))
+            : null;
+        if (!selectedAccount && submissionAccounts.length === 1) selectedAccount = submissionAccounts[0];
+
+        if (!selectedAccount) {
+            const connectButtonRow = getCampaignAccountMode(campaign) === 'global_auto_verify'
+                ? buildGlobalSocialLinkButtonRow(campaignId)
+                : buildCampaignConnectAccountRow(interaction.guild.id, campaign);
             await interaction.reply({
                 content: `❌ No verified ${formatPlatform(platform)} account was found for this campaign. Connect and verify an account before submitting clips.`,
                 components: connectButtonRow ? [connectButtonRow] : [],
@@ -9156,7 +10935,7 @@ ${reason}
             return;
         }
 
-        const username = campaignAccount.username;
+        const username = selectedAccount.username;
         const platformStats = ensureCampaignPlatformStats(userRecord, campaignId, platform, username);
 
         // 🟢 RESOLVE PLATFORM DYNAMIC STAFF CHANNEL (#ig-clips, #tiktok-clips, #yt-clips)
@@ -9182,12 +10961,13 @@ ${reason}
                 data,
                 userId: interaction.user.id,
                 campaignId,
-                submittedUrl: originalLink
+                submittedUrl: originalLink,
+                selectedAccountId: selectedAccount.id
             });
 
             if (!validation.valid) {
                 if (validation.code === 'DUPLICATE_CLIP') duplicateCount++;
-                else rejectedResults.push({ link: originalLink, reason: validation.message || 'Validation failed.' });
+                else rejectedResults.push({ link: originalLink, reason: validation.message || 'Validation failed.', responseEmbed: validation.responseEmbed || null });
                 continue;
             }
 
@@ -9210,7 +10990,9 @@ ${reason}
             const matchedAccount = validation.matchedAccount;
             const clipId = makeClipId();
             const submittedTimestamp = Date.now();
-            const submissionBudgetCycle = getCampaignBudgetCycleIndex(campaign, new Date(submittedTimestamp));
+            const submissionBudgetCycle = isStraightCampaign(campaign)
+                ? null
+                : getCampaignBudgetCycleIndex(campaign, new Date(submittedTimestamp));
             const initialViewState = getInitialSubmissionViewState(metadata, campaign);
             const publicViews = initialViewState.publicViews;
             const fetchedLikes = Number(metadata?.likes);
@@ -9223,13 +11005,15 @@ ${reason}
                 campaignId,
                 campaignName: campaign.name,
                 platform: validation.platform,
-                username: matchedAccount?.username || metadata.authorUsername || metadata.authorDisplayName || campaignAccount.username,
+                username: matchedAccount?.username || metadata.authorUsername || metadata.authorDisplayName || selectedAccount.username,
+                globalSocialId: getCampaignAccountMode(campaign) === 'global_auto_verify' ? selectedAccount.id : null,
                 url: validation.canonicalUrl,
                 videoUrl: validation.canonicalUrl,
                 originalSubmittedUrl: originalLink,
                 videoId: validation.videoId,
                 platformAuthorId: metadata.authorId || null,
                 platformAuthorName: metadata.authorUsername || metadata.authorDisplayName || null,
+                durationSeconds: Number.isFinite(Number(metadata.durationSeconds)) ? Number(metadata.durationSeconds) : null,
                 publishedAt: metadata.publishedAt || null,
                 publishedTimestamp: metadata.publishedTimestamp || null,
                 title: metadata.title || validation.canonicalUrl,
@@ -9249,6 +11033,13 @@ ${reason}
                     initializedAt: submittedTimestamp,
                     runLedgerCompleteFor: getCampaignEarningRunKey(campaign)
                 } : undefined,
+                straightTracking: isStraightCampaign(campaign) ? {
+                    baselinePublicViews: publicViews,
+                    lastPublicViews: publicViews,
+                    creditedViews: 0,
+                    baselinePending: false,
+                    initializedAt: submittedTimestamp
+                } : undefined,
                 estimatedEarnings,
                 status: 'pending',
                 payoutEligible: false,
@@ -9256,17 +11047,18 @@ ${reason}
                 submittedTimestamp,
                 budgetCycleIndex: submissionBudgetCycle,
                 earningRunKey: campaign.separateEarningLifecycle ? getCampaignEarningRunKey(campaign) : undefined,
-                trackingStatus: campaign.separateEarningLifecycle ? 'active' : undefined,
+                trackingStatus: campaign.separateEarningLifecycle || isStraightCampaign(campaign) ? 'active' : undefined,
                 budgetCycleSubmittedAt: submittedTimestamp,
                 submittedAt: new Date(submittedTimestamp).toISOString(),
                 createdAt: new Date(submittedTimestamp).toISOString(),
                 lastChecked: submittedTimestamp,
                 nextCheckAt: submittedTimestamp + CLIP_TRACK_INTERVAL_MS,
-                cycle: getCampaignCycle(campaign, new Date()),
+                cycle: isStraightCampaign(campaign) ? undefined : getCampaignCycle(campaign, new Date()),
                 staffChannelId: staffChannel ? staffChannel.id : null,
                 staffMessageId: null,
                 payout: { paidViews: 0, paidMoney: 0, lastPaidAt: null, history: [] }
             };
+            ensureClipPayoutLimitSnapshot(clip, campaign, data);
 
             data.clipReviews ||= {};
             if (!staffChannel) {
@@ -9301,7 +11093,12 @@ ${reason}
         }
         if (rejectedResults.length > 5) responseMessage += '\n…and ' + (rejectedResults.length - 5) + ' more.';
 
-        await interaction.editReply({ content: responseMessage });
+        const singlePreLaunchRejection = submittedCount === 0 && duplicateCount === 0 && rejectedResults.length === 1
+            ? rejectedResults[0].responseEmbed
+            : null;
+        await interaction.editReply(singlePreLaunchRejection
+            ? { content: null, embeds: [singlePreLaunchRejection] }
+            : { content: responseMessage });
         return;    }
 
     if (interaction.isButton() && interaction.customId.startsWith('campaign_stats:')) {
@@ -9801,10 +11598,14 @@ ${reason}
       clip.payoutEligible = true;
       clip.wasEverApproved = true;
       clip.approvedAt = approvedAt;
-      clip.budgetCycleIndex = Number.isFinite(Number(clip.budgetCycleIndex))
+      clip.budgetCycleIndex = isStraightCampaign(campaign)
+        ? null
+        : Number.isFinite(Number(clip.budgetCycleIndex))
         ? Number(clip.budgetCycleIndex)
         : getClipBudgetCycleIndex(clip, campaign);
-      clip.approvalCycleIndex = getCampaignBudgetCycleIndex(campaign, new Date(approvedAt));
+      clip.approvalCycleIndex = isStraightCampaign(campaign)
+        ? null
+        : getCampaignBudgetCycleIndex(campaign, new Date(approvedAt));
       clip.lastChecked = approvedAt;
       logClipViewLifecycle(clip);
 
@@ -10362,24 +12163,37 @@ ${reason}
       }
 
       const userRecord = ensureUser(data, member);
-      const alreadyJoined = Array.isArray(userRecord.campaigns) && userRecord.campaigns.includes(campaignId);
-      const roleResult = await assignCampaignJoinRoles(interaction.guild, member, campaign);
-      if (!roleResult.ok) {
-        console.warn('[Campaign Join]', { campaignId, userId: interaction.user.id, roleError: roleResult.error });
-        await interaction.reply({ content: `⚠️ ${roleResult.error}`, flags: MessageFlags.Ephemeral });
+      const accountMode = getCampaignAccountMode(campaign);
+      const accountEligibility = getCampaignAccountEligibility(userRecord, campaign);
+      if (accountMode === 'global_auto_verify' && !accountEligibility.eligible) {
+        await interaction.reply({ ...buildMissingGlobalAccountResponse(campaign), flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const demographicEligibility = getCampaignDemographicEligibility(userRecord, campaign);
+      if (!demographicEligibility.eligible) {
+        await interaction.reply({ ...buildMissingCampaignDemographicsResponse(interaction.guild.id, campaign), flags: MessageFlags.Ephemeral });
         return;
       }
 
-      applyCampaignMembership(userRecord, campaign);
+      const joinResult = await joinCampaignMember(data, interaction.guild, member, campaign);
+      if (!joinResult.ok) {
+        console.warn('[Campaign Join]', { campaignId, userId: interaction.user.id, roleError: joinResult.error });
+        await interaction.reply({ content: `⚠️ ${joinResult.error}`, flags: MessageFlags.Ephemeral });
+        return;
+      }
       saveData(data);
 
-      const connectButtonRow = buildCampaignConnectAccountRow(interaction.guild.id, campaign);
-      if (!connectButtonRow) console.warn(`[Campaign Join] Missing connectAccountChannelId for campaign: ${campaignId}`);
+      const connectButtonRow = accountMode === 'campaign_staff_code'
+        ? buildCampaignConnectAccountRow(interaction.guild.id, campaign)
+        : buildCampaignRulesRow(interaction.guild.id, campaign);
+      if (accountMode === 'campaign_staff_code' && !connectButtonRow) console.warn(`[Campaign Join] Missing connectAccountChannelId for campaign: ${campaignId}`);
+      if (accountMode === 'global_auto_verify' && !connectButtonRow) console.warn(`[Campaign Join]\nMissing rulesChannelId for ${campaignId}`);
 
       await interaction.reply({
         embeds: [buildCampaignJoinSuccessEmbed(interaction, campaign, {
-          alreadyJoined,
-          connectAvailable: Boolean(connectButtonRow)
+          alreadyJoined: joinResult.alreadyJoined,
+          connectAvailable: Boolean(connectButtonRow),
+          accountReady: accountMode === 'global_auto_verify'
         })],
         components: connectButtonRow ? [connectButtonRow] : [],
         flags: MessageFlags.Ephemeral
@@ -11393,9 +13207,14 @@ if (require.main === module) client.login(process.env.TOKEN);
 module.exports.__clipLifecycleTest = {
   applyCampaignMembership,
   applyApprovalSnapshotAccounting,
+  applyStraightCampaignRefill,
   applyTrackedMetadata,
   assignCampaignJoinRoles,
+  autoJoinReturnCampaignAfterGlobalVerification,
+  bioContainsExactVerificationCode,
+  buildApifyInstagramProfileInput,
   buildCampaignConnectAccountRow,
+  buildCampaignRulesRow,
   buildCampaignAccountApprovedEmbed,
   buildCampaignAccountRejectedEmbed,
   buildCampaignJoinSuccessEmbed,
@@ -11406,19 +13225,43 @@ module.exports.__clipLifecycleTest = {
   buildCampaignStatusEmbed,
   buildClipStaffEmbed,
   buildClipStaffButtons,
+  buildGlobalSocialLinkModal,
+  buildGlobalSocialPanel,
+  buildGlobalSocialVerificationPrompt,
+  buildInstagramVerificationFailureResponse,
+  buildInstagramVerificationSuccessEmbed,
+  buildMissingGlobalAccountResponse,
+  buildMissingCampaignDemographicsResponse,
+  buildPreLaunchSubmissionEmbed,
   buildRejectedClipUserDm,
   buildRejectedClipUserEmbed,
+  buildShortCampaignPanelText,
   clearClipAppealWindow,
+  createGlobalSocialVerificationRequest,
   ensureClipAppealDeadline,
   finalizeOutOfRunClips,
+  finalizeStraightCampaignIfFulfilled,
+  fetchInstagramPublicProfile,
+  fetchPublicSocialProfile,
+  findCampaignSubmissionPanelMessage,
   getClipTrackingAudit,
   getCampaignConnectAccountLink,
+  getCampaignRulesLink,
+  getCampaignAccountEligibility,
+  getCampaignDemographicEligibility,
+  getCampaignAccountMode,
+  getCampaignBudgetMode,
   getCampaignJoinBlockReason,
   getCampaignOperationalState,
   getCampaignPanelFulfilledPercent,
+  getCampaignPanelText,
+  getCampaignPayoutThresholdViews,
   getCampaignSubmissionBlockMessage,
   getCampaignCurrentRunAccounting,
   getCampaignCurrentWeekAccounting,
+  getCampaignSubmissionAccounts,
+  getStraightCampaignAccounting,
+  getCampaignPerClipPayoutLimit,
   getUserCurrentRunAccounting,
   getUserCurrentWeekAccounting,
   getWeeklyAccountingAudit,
@@ -11427,12 +13270,30 @@ module.exports.__clipLifecycleTest = {
   getSafeTrackedViews,
   initializeClipTrackingFields,
   isClipAppealWindowOpen,
+  isStraightCampaign,
+  isNonMonsterlabCampaign,
+  joinCampaignMember,
   repairApprovalSnapshotInvariants,
   repairAugustFirstWeekLegacyWeeklyAccounting,
+  reconcileAllWeeklyCampaignStates,
+  reconcileWeeklyCampaignState,
+  refreshAllCampaignPanelMessages,
   getVerifiedCampaignPlatforms,
+  getVerifiedGlobalSocials,
+  getVerifiedGlobalSocialsForPlatforms,
   ensureCampaignAccount,
   removeCampaignAccount,
+  removeGlobalSocialAccount,
+  refillStraightCampaign,
+  renderGlobalSocialAccounts,
+  normalizeTypedSocialPlatform,
+  normalizeApifyInstagramProfile,
+  normalizeVideoDurationSeconds,
+  userHasEligibleGlobalSocial,
+  validateCampaignPublicationDate,
+  validateCampaignVideoDuration,
   validateAccountSubmission,
+  verifyGlobalSocialVerificationRequest,
   shouldTrackClip,
   updateApprovedClipTracking,
   updatePendingReviewTracking,

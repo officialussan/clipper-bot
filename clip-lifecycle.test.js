@@ -5,11 +5,16 @@ const { ButtonStyle } = require('discord.js');
 const {
   applyCampaignMembership,
   applyApprovalSnapshotAccounting,
+  applyStraightCampaignRefill,
   applyTrackedMetadata,
   assignCampaignJoinRoles,
+  autoJoinReturnCampaignAfterGlobalVerification,
+  bioContainsExactVerificationCode,
+  buildApifyInstagramProfileInput,
   buildCampaignAccountApprovedEmbed,
   buildCampaignAccountRejectedEmbed,
   buildCampaignConnectAccountRow,
+  buildCampaignRulesRow,
   buildCampaignJoinSuccessEmbed,
   buildCampaignPanelButtons,
   buildCampaignSubmitClipButton,
@@ -18,34 +23,74 @@ const {
   buildCampaignStatusEmbed,
   buildClipStaffEmbed,
   buildClipStaffButtons,
+  buildGlobalSocialLinkModal,
+  buildGlobalSocialPanel,
+  buildGlobalSocialVerificationPrompt,
+  buildInstagramVerificationFailureResponse,
+  buildInstagramVerificationSuccessEmbed,
+  buildMissingGlobalAccountResponse,
+  buildMissingCampaignDemographicsResponse,
+  buildPreLaunchSubmissionEmbed,
   buildRejectedClipUserDm,
   buildRejectedClipUserEmbed,
+  buildShortCampaignPanelText,
   CAMPAIGNS,
   clearClipAppealWindow,
+  createGlobalSocialVerificationRequest,
+  finalizeStraightCampaignIfFulfilled,
+  fetchInstagramPublicProfile,
+  findCampaignSubmissionPanelMessage,
   ensureClipAppealDeadline,
   finalizeOutOfRunClips,
   getCampaignConnectAccountLink,
+  getCampaignRulesLink,
+  getCampaignAccountEligibility,
+  getCampaignDemographicEligibility,
+  getCampaignAccountMode,
+  getCampaignBudgetMode,
   getCampaignJoinBlockReason,
   getCampaignOperationalState,
   getCampaignPanelFulfilledPercent,
+  getCampaignPanelText,
+  getCampaignPayoutThresholdViews,
+  getCampaignPerClipPayoutLimit,
   getCampaignSubmissionBlockMessage,
   getCampaignCurrentRunAccounting,
   getCampaignCurrentWeekAccounting,
+  getCampaignSubmissionAccounts,
+  getStraightCampaignAccounting,
   getClipAppealHelpLink,
   getVerifiedCampaignPlatforms,
+  getVerifiedGlobalSocials,
+  getVerifiedGlobalSocialsForPlatforms,
   getUserCurrentRunAccounting,
   getUserCurrentWeekAccounting,
   getWeeklyAccountingAudit,
   getInitialSubmissionViewState,
   initializeClipTrackingFields,
   isClipAppealWindowOpen,
+  isStraightCampaign,
+  joinCampaignMember,
   repairApprovalSnapshotInvariants,
   repairAugustFirstWeekLegacyWeeklyAccounting,
+  reconcileAllWeeklyCampaignStates,
+  reconcileWeeklyCampaignState,
+  refreshAllCampaignPanelMessages,
   ensureCampaignAccount,
   removeCampaignAccount,
+  removeGlobalSocialAccount,
+  refillStraightCampaign,
+  renderGlobalSocialAccounts,
+  normalizeTypedSocialPlatform,
+  normalizeApifyInstagramProfile,
+  normalizeVideoDurationSeconds,
+  userHasEligibleGlobalSocial,
+  validateCampaignPublicationDate,
+  validateCampaignVideoDuration,
   shouldTrackClip,
   updateApprovedClipTracking,
-  validateAccountSubmission
+  validateAccountSubmission,
+  verifyGlobalSocialVerificationRequest
 } = require('./index.js').__clipLifecycleTest;
 
 const currentSubmittedTimestamp = Date.parse('2026-08-07T12:00:00.000Z');
@@ -208,7 +253,7 @@ test('J: a fulfilled weekly cap pauses tracking without monthly completion', () 
     }
   });
   const data = { clips: { target, capped }, clipReviews: {} };
-  assert.equal(shouldTrackClip(target, CAMPAIGNS.crowder, data), false);
+  assert.equal(shouldTrackClip(target, CAMPAIGNS.crowder, data, new Date('2026-08-09T12:00:00.000Z')), false);
   assert.equal(target.trackingStatus, 'active');
 });
 
@@ -743,6 +788,109 @@ test('weekly accounting G: Monday boundary starts at zero, preserves monthly cre
   assert.equal(clip.campaignCreditedViews, 4_300_000);
 });
 
+test('weekly reset reconciliation clears an old Elephant cap without erasing monthly history or paused-period growth', () => {
+  const clip = makeWeeklyAccountingClip('elephant', 'creator-a', 8_000_000);
+  const data = {
+    clips: { clip },
+    clipReviews: {},
+    campaignWeeklyState: { elephant: { weekKey: '2026-08-03T07:00:00.000Z' } },
+    campaignStatus: {
+      elephant: { status: 'weekly_paused', pauseReason: 'weekly_cap_reached', weekKey: '2026-08-03T07:00:00.000Z' }
+    }
+  };
+  const previousWeek = new Date('2026-08-09T12:00:00.000Z');
+  const afterOfflineReset = new Date('2026-08-10T07:30:00.000Z');
+
+  assert.equal(getCampaignCurrentWeekAccounting(data, 'elephant', previousWeek).creditedViews, 8_000_000);
+  assert.equal(getCampaignOperationalState(data, CAMPAIGNS.elephant, previousWeek).state, 'weekly_paused');
+
+  const report = reconcileWeeklyCampaignState(data, 'elephant', afterOfflineReset);
+  const accounting = getCampaignCurrentWeekAccounting(data, 'elephant', afterOfflineReset);
+  const state = getCampaignOperationalState(data, CAMPAIGNS.elephant, afterOfflineReset);
+  const submitButton = buildCampaignSubmitClipButton(CAMPAIGNS.elephant, data, afterOfflineReset).data;
+
+  assert.equal(report.changed, true);
+  assert.equal(report.transitionedClips, 1);
+  assert.equal(report.weekKey, '2026-08-10T07:00:00.000Z');
+  assert.equal(report.periodEnd, '2026-08-17T07:00:00.000Z');
+  assert.equal(accounting.creditedViews, 0);
+  assert.equal(accounting.capReached, false);
+  assert.equal(state.state, 'live');
+  assert.equal(getCampaignPanelFulfilledPercent(CAMPAIGNS.elephant, data, afterOfflineReset), 0);
+  assert.equal(submitButton.label, 'Submit Clip');
+  assert.equal(submitButton.style, ButtonStyle.Success);
+  assert.equal(submitButton.disabled, false);
+  assert.equal(data.campaignStatus.elephant.status, 'active');
+  assert.equal(data.campaignStatus.elephant.pauseReason, undefined);
+  assert.equal(clip.budgetTracking.creditedViewsThisCycle, 0);
+  assert.equal(clip.budgetTracking.weekBaselinePending, true);
+  assert.equal(clip.budgetTracking.history[0].creditedViews, 8_000_000);
+  assert.equal(clip.campaignCreditedViews, 8_000_000);
+  assert.equal(clip.payout.paidViews, 0);
+
+  // The first provider snapshot after reset is a fresh baseline. Growth that
+  // accumulated while Week 1 was capped is not credited into Week 2.
+  applyTrackedMetadata(clip, { views: 8_400_000, accountingTimestamp: Date.parse('2026-08-10T07:31:00.000Z') }, data);
+  assert.equal(clip.budgetTracking.weekBaselinePending, false);
+  assert.equal(clip.budgetTracking.creditedViewsThisCycle, 0);
+  assert.equal(clip.campaignCreditedViews, 8_000_000);
+
+  applyTrackedMetadata(clip, { views: 8_500_000, accountingTimestamp: Date.parse('2026-08-10T08:00:00.000Z') }, data);
+  assert.equal(clip.budgetTracking.creditedViewsThisCycle, 100_000);
+  assert.equal(clip.campaignCreditedViews, 8_100_000);
+
+  const afterRepeat = structuredClone(data);
+  const repeat = reconcileWeeklyCampaignState(data, 'elephant', new Date('2026-08-10T08:30:00.000Z'));
+  assert.equal(repeat.changed, false);
+  assert.deepEqual(data, afterRepeat);
+});
+
+test('offline startup reconciliation refreshes campaign UIs and can rediscover a legacy Submit panel beyond 100 messages', async () => {
+  const clip = makeWeeklyAccountingClip('elephant', 'creator-a', 8_000_000);
+  const data = {
+    clips: { clip },
+    clipReviews: {},
+    campaignWeeklyState: { elephant: { weekKey: '2026-08-03T07:00:00.000Z' } },
+    campaignStatus: {}
+  };
+  const refreshed = [];
+  const startup = await refreshAllCampaignPanelMessages(
+    { id: 'guild-1' },
+    {
+      data,
+      now: new Date('2026-08-10T07:30:00.000Z'),
+      updateCampaignPanelMessage: async (_guild, campaignId) => refreshed.push(campaignId)
+    }
+  );
+  assert.equal(startup.reconciliation.reports.find(report => report.campaignId === 'elephant').weekKey, '2026-08-10T07:00:00.000Z');
+  assert.equal(getCampaignOperationalState(data, CAMPAIGNS.elephant, new Date('2026-08-10T07:30:00.000Z')).state, 'live');
+  assert.equal(refreshed.includes('elephant'), true);
+
+  const firstPage = new Map();
+  for (let index = 0; index < 100; index++) {
+    firstPage.set(`recent-${index}`, { id: `recent-${index}`, author: { id: 'bot-1' }, components: [] });
+  }
+  const legacyPanel = {
+    id: 'legacy-elephant-panel',
+    author: { id: 'bot-1' },
+    components: [{ components: [{ customId: 'submit_clip:elephant' }] }]
+  };
+  const secondPage = new Map([['legacy-elephant-panel', legacyPanel]]);
+  const fetchCalls = [];
+  const channel = {
+    messages: {
+      fetch: async options => {
+        fetchCalls.push(options);
+        return options.before ? secondPage : firstPage;
+      }
+    }
+  };
+  const found = await findCampaignSubmissionPanelMessage(channel, 'elephant', 'bot-1');
+  assert.equal(found, legacyPanel);
+  assert.equal(fetchCalls.length, 2);
+  assert.equal(fetchCalls[1].before, 'recent-99');
+});
+
 test('weekly audit flags the known late-baseline first-week mismatch without rewriting history', () => {
   const clip = makeWeeklyAccountingClip('elephant', 'creator-a', 9_000_000, {
     budgetTracking: {
@@ -883,7 +1031,7 @@ test('Campaign Status separates earning and weekly periods and uses weekly fulfi
     },
     clipReviews: {}
   };
-  const description = buildCampaignStatusEmbed(CAMPAIGNS.elephant, data).data.description;
+  const description = buildCampaignStatusEmbed(CAMPAIGNS.elephant, data, new Date('2026-08-09T12:00:00.000Z')).data.description;
 
   assert.match(description, /Earning Period/);
   assert.match(description, /Aug 3 - Aug 31/);
@@ -909,7 +1057,7 @@ test('campaign panel Fulfilled button uses canonical weekly view-cap percentage'
   assert.equal(getCampaignPanelFulfilledPercent(CAMPAIGNS.crowder, crowderHalf, currentWeek), 50);
   assert.equal(getCampaignPanelFulfilledPercent(CAMPAIGNS.elephant, elephantFull, nextWeek), 0);
 
-  const fulfilledButton = buildCampaignPanelButtons(CAMPAIGNS.elephant, elephantFull)[0].components[2];
+  const fulfilledButton = buildCampaignPanelButtons(CAMPAIGNS.elephant, elephantFull, currentWeek)[0].components[2];
   assert.equal(fulfilledButton.data.label, 'Fulfilled: 100.0%');
   assert.equal(fulfilledButton.data.disabled, true);
 });
@@ -974,4 +1122,728 @@ test('Submit Clip button follows canonical live, weekly-paused, and finished cam
   assert.equal(getCampaignOperationalState(elephantFull, CAMPAIGNS.elephant, monthlyEnd).state, 'finished');
   assert.equal(monthlyFinishedButton.label, 'Campaign Finished');
   assert.equal(monthlyFinishedButton.disabled, true);
+});
+
+function makeStraightTestCampaign(overrides = {}) {
+  return {
+    id: 'straight_test',
+    name: 'Straight Test Campaign',
+    allowedPlatforms: ['tiktok'],
+    campaignBudget: 500,
+    viewCap: 1_000_000,
+    ratePerMillion: 500,
+    budgetMode: 'straight',
+    earningCycle: 'straight',
+    accountMode: 'global_auto_verify',
+    source: 'internal',
+    refillable: true,
+    launchAt: '2026-08-01T12:00:00.000Z',
+    rulesChannelId: 'rules-channel',
+    payoutThresholdViews: 10_000,
+    maxPayoutPerClipPercent: 100,
+    status: 'active',
+    roleId: 'campaign-role',
+    shortDescription: 'Post eligible configured campaign clips.',
+    clipRequirement: 'Use approved campaign source content',
+    countryTiers: ['Tier 1', 'Tier 2'],
+    minimumVideoDuration: '20 seconds',
+    ...overrides
+  };
+}
+
+function makeStraightTestClip(creditedViews, overrides = {}) {
+  const publicViews = Number(overrides.publicViews ?? creditedViews);
+  return {
+    id: overrides.id || 'straight-clip',
+    userId: overrides.userId || 'creator-a',
+    campaignId: 'straight_test',
+    platform: 'tiktok',
+    username: 'dailyclips',
+    status: 'approved',
+    payoutEligible: true,
+    wasEverApproved: true,
+    submittedTimestamp: Date.parse('2026-08-04T12:00:00.000Z'),
+    submittedAt: '2026-08-04T12:00:00.000Z',
+    publicViews,
+    currentViews: publicViews,
+    submissionViews: 0,
+    approvalViews: 0,
+    views: creditedViews,
+    campaignCreditedViews: creditedViews,
+    trackingStatus: 'active',
+    straightTracking: { baselinePublicViews: 0, lastPublicViews: publicViews, creditedViews, baselinePending: false },
+    payout: { paidViews: 0, paidMoney: 0, history: [] },
+    ...overrides
+  };
+}
+
+test('straight campaign accounting is continuous across weekly/monthly boundaries and finishes at its total allocation', () => {
+  const campaign = makeStraightTestCampaign();
+  CAMPAIGNS[campaign.id] = campaign;
+  try {
+    const empty = { clips: {}, clipReviews: {}, campaignStatus: {}, campaignAllocations: {} };
+    const zero = getStraightCampaignAccounting(empty, campaign.id);
+    assert.equal(getCampaignBudgetMode(campaign), 'straight');
+    assert.equal(isStraightCampaign(campaign), true);
+    assert.equal(zero.creditedViews, 0);
+    assert.equal(zero.creditedMoney, 0);
+    assert.equal(zero.fulfilledPercent, 0);
+    assert.equal(zero.capReached, false);
+    assert.equal(getCampaignOperationalState(empty, campaign, new Date('2026-08-09T12:00:00Z')).state, 'live');
+    assert.equal(buildCampaignSubmitClipButton(campaign, empty).data.disabled, false);
+
+    const half = { clips: { clip: makeStraightTestClip(500_000) }, clipReviews: {}, campaignStatus: {}, campaignAllocations: {} };
+    const halfAccounting = getStraightCampaignAccounting(half, campaign.id);
+    assert.equal(halfAccounting.creditedViews, 500_000);
+    assert.equal(halfAccounting.creditedMoney, 250);
+    assert.equal(halfAccounting.remainingViews, 500_000);
+    assert.equal(halfAccounting.remainingMoney, 250);
+    assert.equal(halfAccounting.fulfilledPercent, 50);
+    assert.equal(getCampaignPanelFulfilledPercent(campaign, half, new Date('2026-08-10T07:00:00Z')), 50);
+    assert.equal(getStraightCampaignAccounting(half, campaign.id).creditedViews, 500_000);
+    assert.equal(getCampaignOperationalState(half, campaign, new Date('2026-09-10T07:00:00Z')).state, 'live');
+    assert.equal(getStraightCampaignAccounting(half, campaign.id).creditedViews, 500_000);
+
+    const fullClip = makeStraightTestClip(1_000_000);
+    const full = { clips: { fullClip }, clipReviews: {}, campaignStatus: {}, campaignAllocations: {} };
+    assert.equal(finalizeStraightCampaignIfFulfilled(full, campaign.id, 12345), true);
+    const fullAccounting = getStraightCampaignAccounting(full, campaign.id);
+    assert.equal(fullAccounting.creditedViews, 1_000_000);
+    assert.equal(fullAccounting.creditedMoney, 500);
+    assert.equal(fullAccounting.remainingMoney, 0);
+    assert.equal(fullAccounting.fulfilledPercent, 100);
+    assert.equal(full.campaignStatus[campaign.id].status, 'finished_budget');
+    assert.equal(full.campaignStatus[campaign.id].finishReason, 'campaign_budget_fulfilled');
+    assert.equal(shouldTrackClip(fullClip, campaign, full), false);
+    const submitButton = buildCampaignSubmitClipButton(campaign, full).data;
+    assert.equal(submitButton.label, 'Campaign Finished');
+    assert.equal(submitButton.style, ButtonStyle.Danger);
+    assert.equal(submitButton.disabled, true);
+    assert.equal(buildCampaignPanelButtons(campaign, full)[0].components[0].data.disabled, true);
+  } finally {
+    delete CAMPAIGNS[campaign.id];
+  }
+});
+
+test('straight campaign refill adds cumulative capacity and excludes the finished-period view gap', async () => {
+  const campaign = makeStraightTestCampaign();
+  CAMPAIGNS[campaign.id] = campaign;
+  try {
+    const clip = makeStraightTestClip(1_000_000, { publicViews: 1_000_000, currentViews: 1_000_000 });
+    const data = { clips: { clip }, clipReviews: {}, campaignStatus: {}, campaignAllocations: {} };
+    finalizeStraightCampaignIfFulfilled(data, campaign.id, 1000);
+
+    const afterRefill = await refillStraightCampaign(data, campaign.id, 500, 1_000_000, {
+      now: 2000,
+      refilledBy: 'staff',
+      fetchMetadata: async () => ({ views: 1_300_000 })
+    });
+    assert.equal(afterRefill.budget, 1000);
+    assert.equal(afterRefill.viewCap, 2_000_000);
+    assert.equal(afterRefill.creditedViews, 1_000_000);
+    assert.equal(data.campaignStatus[campaign.id].status, 'active');
+    assert.equal(clip.straightTracking.lastPublicViews, 1_300_000);
+    assert.equal(getCampaignOperationalState(data, campaign).state, 'live');
+    assert.equal(shouldTrackClip(clip, campaign, data), true);
+
+    updateApprovedClipTracking(clip, { views: 1_300_000 }, data);
+    assert.equal(clip.campaignCreditedViews, 1_000_000);
+    updateApprovedClipTracking(clip, { views: 1_500_000 }, data);
+    assert.equal(clip.campaignCreditedViews, 1_200_000);
+    assert.equal(getStraightCampaignAccounting(data, campaign.id).creditedMoney, 600);
+
+    const fallbackData = { clips: { clip: makeStraightTestClip(1_000_000) }, clipReviews: {}, campaignStatus: {}, campaignAllocations: {} };
+    finalizeStraightCampaignIfFulfilled(fallbackData, campaign.id, 1000);
+    await refillStraightCampaign(fallbackData, campaign.id, 500, 1_000_000, {
+      now: 2000,
+      fetchMetadata: async () => { throw new Error('provider down'); }
+    });
+    const fallbackClip = fallbackData.clips.clip;
+    assert.equal(fallbackClip.straightTracking.baselinePending, true);
+    updateApprovedClipTracking(fallbackClip, { views: 1_400_000 }, fallbackData);
+    assert.equal(fallbackClip.campaignCreditedViews, 1_000_000);
+    assert.equal(fallbackClip.straightTracking.baselinePending, false);
+  } finally {
+    delete CAMPAIGNS[campaign.id];
+  }
+});
+
+test('straight campaign short panel is configuration-driven and omits weekly/monthly periods', () => {
+  const campaign = makeStraightTestCampaign();
+  const text = buildShortCampaignPanelText(campaign);
+  assert.equal(getCampaignPanelText(campaign), text);
+  assert.match(text, /Straight Test Campaign/);
+  assert.match(text, /Use approved campaign source content/);
+  assert.match(text, /TikTok/);
+  assert.match(text, /Tier 1, Tier 2/);
+  assert.match(text, /20 seconds/);
+  assert.match(text, /\$0\.50 per 1,000 views/);
+  assert.doesNotMatch(text, /Weekly|Monthly|Next .* Reset/i);
+});
+
+test('ICE is configured with fixed straight economics but remains non-operational until a valid UTC launchAt exists', () => {
+  const campaign = CAMPAIGNS.ice;
+  assert.equal(campaign.name, 'ICE');
+  assert.deepEqual(campaign.allowedPlatforms, ['tiktok', 'instagram', 'youtube']);
+  assert.deepEqual(campaign.countryTiers, ['Tier 1', 'Tier 2', 'Tier 3']);
+  assert.equal(campaign.minimumVideoDurationSeconds, 10);
+  assert.equal(campaign.budgetMode, 'straight');
+  assert.equal(campaign.earningCycle, 'straight');
+  assert.equal(campaign.accountMode, 'global_auto_verify');
+  assert.equal(campaign.source, 'internal');
+  assert.equal(campaign.campaignBudget, 500);
+  assert.equal(campaign.viewCap, 1_000_000);
+  assert.equal(campaign.ratePerMillion, 500);
+  assert.equal(campaign.payoutThresholdViews, 10_000);
+  assert.equal(campaign.maxPayoutPerClipPercent, 10);
+  assert.equal(campaign.refillable, true);
+  assert.equal(campaign.launchAt, null);
+  assert.equal(campaign.panelChannelId, null);
+  assert.equal(campaign.panelMessageId, null);
+  assert.equal(campaign.rulesChannelId, null);
+  assert.match(campaign.panelText, /Earn Money Posting Clips & Edits – ICE/);
+  assert.match(campaign.panelText, /Max Payout Per Clip:\*\* \$50/);
+
+  const data = { clips: {}, clipReviews: {}, campaignStatus: {}, campaignAllocations: {} };
+  assert.equal(getCampaignOperationalState(data, campaign).state, 'not_launched');
+  assert.match(getCampaignJoinBlockReason(campaign, data), /not live yet/i);
+  assert.equal(buildCampaignSubmitClipButton(campaign, data).data.disabled, true);
+  assert.equal(buildCampaignPanelButtons(campaign, data)[0].components[0].data.disabled, true);
+
+  const configured = { ...campaign, launchAt: '2026-08-10T12:00:00.000Z' };
+  assert.equal(getCampaignOperationalState(data, configured, new Date('2026-08-10T11:59:59.999Z')).state, 'not_launched');
+  assert.equal(getCampaignOperationalState(data, configured, new Date('2026-08-10T12:00:00.000Z')).state, 'live');
+  assert.equal(getCampaignOperationalState(data, { ...campaign, launchAt: '2026-08-10 12:00:00' }).state, 'not_launched');
+
+  const payoutLimit = getCampaignPerClipPayoutLimit(data, campaign);
+  assert.equal(payoutLimit.maxPayoutAmount, 50);
+  assert.equal(payoutLimit.maxCampaignCreditedViews, 100_000);
+});
+
+test('ICE duration and demographics gates reuse normalized provider metadata and approved Tier 1/2/3 state', () => {
+  const campaign = CAMPAIGNS.ice;
+  assert.equal(normalizeVideoDurationSeconds(10), 10);
+  assert.equal(normalizeVideoDurationSeconds('PT1M2.5S'), 62.5);
+  assert.equal(normalizeVideoDurationSeconds(null), null);
+  assert.equal(validateCampaignVideoDuration(campaign, { durationSeconds: 9.9 }).code, 'VIDEO_TOO_SHORT');
+  assert.equal(validateCampaignVideoDuration(campaign, { durationSeconds: 10 }).valid, true);
+  assert.equal(validateCampaignVideoDuration(campaign, {}).code, 'VIDEO_DURATION_UNAVAILABLE');
+
+  for (const tier of ['Tier 1', 'Tier 2', 'Tier 3']) {
+    assert.equal(getCampaignDemographicEligibility({ demographics: { status: 'approved', tier } }, campaign).eligible, true);
+  }
+  assert.equal(getCampaignDemographicEligibility({ demographics: { status: 'approved', tier: 'Tier 4' } }, campaign).eligible, false);
+  assert.equal(getCampaignDemographicEligibility({}, campaign).eligible, false);
+  assert.match(buildMissingCampaignDemographicsResponse('guild-1', campaign).embeds[0].data.title, /Demographics Required/);
+  assert.equal(getCampaignDemographicEligibility({}, CAMPAIGNS.elephant).eligible, true);
+});
+
+test('non-Monsterlab join success uses Creators Elite branding and the configured user-facing rules link', () => {
+  const campaign = makeStraightTestCampaign();
+  const interaction = {
+    member: { displayName: 'DailyClips' },
+    user: { username: 'dailyclips' },
+    guild: { iconURL: () => 'https://example.com/icon.png' }
+  };
+  const embed = buildCampaignJoinSuccessEmbed(interaction, campaign, { accountReady: true, alreadyJoined: false });
+  const description = embed.data.description;
+  assert.match(embed.data.title, /Let's Get Clipping, DailyClips/);
+  assert.match(description, /successfully joined/);
+  assert.match(description, /ready to start clipping/);
+  assert.match(description, /read the campaign rules/);
+  assert.doesNotMatch(description, /Connect Account|Clippy|Clip Money|clip\.tech/i);
+  assert.equal(embed.data.footer.text, 'Creators Elite');
+
+  assert.equal(getCampaignRulesLink('guild-1', campaign), 'https://discord.com/channels/guild-1/rules-channel');
+  const rulesButton = buildCampaignRulesRow('guild-1', campaign).components[0].data;
+  assert.equal(rulesButton.style, ButtonStyle.Link);
+  assert.equal(rulesButton.label, 'Campaign Rules');
+  assert.equal(buildCampaignRulesRow('guild-1', { ...campaign, rulesChannelId: null }), null);
+});
+
+test('non-Monsterlab publication validation rejects pre-launch videos, accepts the exact boundary, and fails closed without a provider date', () => {
+  const campaign = makeStraightTestCampaign({ launchAt: '2026-08-10T12:00:00.000Z' });
+  const before = validateCampaignPublicationDate(campaign, { publishedAt: '2026-08-10T10:00:00.000Z' });
+  assert.equal(before.valid, false);
+  assert.equal(before.code, 'VIDEO_PREDATES_CAMPAIGN');
+  const rejection = buildPreLaunchSubmissionEmbed(campaign, 'tiktok', before.publishedAt, before.campaignLaunch).data;
+  assert.match(rejection.title, /Video Posted Before Campaign Launch/);
+  assert.match(rejection.description, /not eligible/);
+  assert.equal(rejection.fields[0].value, 'TikTok');
+
+  assert.equal(validateCampaignPublicationDate(campaign, { publishedAt: campaign.launchAt }).valid, true);
+  assert.equal(validateCampaignPublicationDate(campaign, { publishedAt: '2026-08-10T12:01:00.000Z' }).valid, true);
+  const missing = validateCampaignPublicationDate(campaign, { publishedAt: null });
+  assert.equal(missing.valid, false);
+  assert.equal(missing.code, 'PUBLICATION_DATE_UNAVAILABLE');
+  assert.equal(validateCampaignPublicationDate(CAMPAIGNS.elephant, {}).valid, true);
+  assert.equal(getCampaignPerClipPayoutLimit({}, CAMPAIGNS.elephant), null);
+  assert.equal(getCampaignPayoutThresholdViews(CAMPAIGNS.elephant), CAMPAIGNS.elephant.payoutThreshold);
+});
+
+test('non-Monsterlab payout threshold aggregates current unpaid credited views across all platforms', () => {
+  const campaign = makeStraightTestCampaign({ allowedPlatforms: ['tiktok', 'instagram', 'youtube'] });
+  CAMPAIGNS[campaign.id] = campaign;
+  try {
+    const clips = {
+      tiktok: makeStraightTestClip(4_000, { id: 'tt', platform: 'tiktok' }),
+      instagram: makeStraightTestClip(3_000, { id: 'ig', platform: 'instagram' }),
+      youtube: makeStraightTestClip(3_000, { id: 'yt', platform: 'youtube' })
+    };
+    const data = { clips, clipReviews: {}, payoutTrackers: {}, campaignStatus: {}, campaignAllocations: {} };
+    const ready = buildCampaignStatsEmbed(data, {}, campaign.id, campaign.name, 'creator-a').data.description;
+    assert.equal(getCampaignPayoutThresholdViews(campaign), 10_000);
+    assert.match(ready, /Campaign Earned Views/);
+    assert.match(ready, /Ready for payout/);
+    assert.doesNotMatch(ready, /Current Week Views|Monthly Earned Views/);
+
+    for (const clip of Object.values(clips)) {
+      clip.payout.paidViews = clip.campaignCreditedViews;
+      clip.payout.paidMoney = clip.campaignCreditedViews / 1_000_000 * campaign.ratePerMillion;
+    }
+    const paid = buildCampaignStatsEmbed(data, {}, campaign.id, campaign.name, 'creator-a').data.description;
+    assert.match(paid, /Need \*\*10K\*\* more unpaid views/);
+  } finally {
+    delete CAMPAIGNS[campaign.id];
+  }
+});
+
+test('non-Monsterlab clips snapshot and enforce the 10 percent payout cap without clamping public views', () => {
+  const campaign = makeStraightTestCampaign({ maxPayoutPerClipPercent: 10 });
+  CAMPAIGNS[campaign.id] = campaign;
+  try {
+    assert.equal(getCampaignPerClipPayoutLimit({}, { ...campaign, maxPayoutPerClipPercent: undefined }), null);
+    assert.equal(getCampaignPerClipPayoutLimit({}, { ...campaign, maxPayoutPerClipPercent: 20 }).maxPayoutAmount, 100);
+    const clip = makeStraightTestClip(0, {
+      id: 'viral-clip', status: 'pending', payoutEligible: false,
+      publicViews: 500_000, currentViews: 500_000, submissionViews: 0, approvalViews: 0
+    });
+    const data = { clips: {}, clipReviews: { [clip.id]: clip }, campaignStatus: {}, campaignAllocations: {} };
+    const configuredLimit = getCampaignPerClipPayoutLimit(data, campaign);
+    assert.equal(configuredLimit.maxPayoutAmount, 50);
+    assert.equal(configuredLimit.maxCampaignCreditedViews, 100_000);
+
+    const credited = applyApprovalSnapshotAccounting(clip, campaign, data, 500_000, 1000);
+    assert.equal(credited, 100_000);
+    assert.equal(clip.publicViews, 500_000);
+    assert.equal(clip.currentViews, 500_000);
+    assert.equal(clip.approvalViews, 500_000);
+    assert.equal(clip.maxPayoutAmount, 50);
+    assert.equal(clip.maxCampaignCreditedViews, 100_000);
+    assert.equal(clip.totalMoneyMade, 50);
+    assert.equal(clip.clipPayoutCapReached, true);
+    assert.equal(clip.completedReason, 'clip_payout_cap_reached');
+    assert.match(buildClipStaffEmbed(clip).data.description, /Clip Payout Limit\*\*\n\$50\.00 — Reached/);
+
+    clip.status = 'approved';
+    clip.payoutEligible = true;
+    data.clips[clip.id] = clip;
+    delete data.clipReviews[clip.id];
+    applyStraightCampaignRefill(data, campaign.id, 500, 1_000_000, {
+      now: 2000,
+      baselineViews: { [clip.id]: 600_000 }
+    });
+    assert.equal(clip.maxPayoutAmount, 50);
+    assert.equal(clip.maxCampaignCreditedViews, 100_000);
+    assert.equal(clip.trackingStatus, 'completed');
+    assert.equal(clip.nextCheckAt, null);
+    updateApprovedClipTracking(clip, { views: 700_000 }, data);
+    assert.equal(clip.publicViews, 700_000);
+    assert.equal(clip.campaignCreditedViews, 100_000);
+  } finally {
+    delete CAMPAIGNS[campaign.id];
+  }
+});
+
+test('ten individually capped clips fulfill the shared straight campaign allocation', () => {
+  const campaign = makeStraightTestCampaign({ maxPayoutPerClipPercent: 10 });
+  CAMPAIGNS[campaign.id] = campaign;
+  try {
+    const data = { clips: {}, clipReviews: {}, campaignStatus: {}, campaignAllocations: {} };
+    for (let index = 0; index < 10; index++) {
+      const clip = makeStraightTestClip(0, {
+        id: `capped-${index}`, status: 'pending', payoutEligible: false,
+        publicViews: 500_000, currentViews: 500_000, submissionViews: 0
+      });
+      data.clipReviews[clip.id] = clip;
+      applyApprovalSnapshotAccounting(clip, campaign, data, 500_000, 1000 + index);
+    }
+    const accounting = getStraightCampaignAccounting(data, campaign.id);
+    assert.equal(accounting.creditedViews, 1_000_000);
+    assert.equal(accounting.creditedMoney, 500);
+    assert.equal(accounting.fulfilledPercent, 100);
+    assert.equal(accounting.capReached, true);
+    assert.equal(data.campaignStatus[campaign.id].status, 'finished_budget');
+  } finally {
+    delete CAMPAIGNS[campaign.id];
+  }
+});
+
+test('global social panel uses a typed platform modal and the existing demographics destination', () => {
+  const modal = buildGlobalSocialLinkModal('straight_test');
+  const modalJson = modal.toJSON();
+  assert.equal(modalJson.custom_id, 'global_social_link_modal:straight_test');
+  assert.deepEqual(modalJson.components.map(row => row.components[0].custom_id), ['global_social_platform', 'global_social_username']);
+  assert.equal(modalJson.components.every(row => row.components[0].type === 4), true);
+  assert.equal(JSON.stringify(modalJson).includes('select'), false);
+
+  const panel = buildGlobalSocialPanel('guild-1', 'demographics-1');
+  const buttons = panel.components[0].components.map(component => component.data);
+  assert.equal(buttons[0].custom_id, 'global_social_link:none');
+  assert.equal(buttons[3].style, ButtonStyle.Link);
+  assert.equal(buttons[3].url, 'https://discord.com/channels/guild-1/demographics-1');
+  assert.match(panel.embeds[0].data.description, /Manage Your Social Accounts|Link Account/);
+});
+
+test('global bio verification creates unique expiring codes, verifies only provider-confirmed bios, and blocks duplicate ownership', async () => {
+  const now = Date.parse('2026-08-09T12:00:00Z');
+  const data = {
+    users: { 'user-a': { socials: [] }, 'user-b': { socials: [] } },
+    globalSocialVerificationRequests: {}
+  };
+  const request = createGlobalSocialVerificationRequest(data, { userId: 'user-a', platform: 'TikTok', username: '@dailyclips', returnCampaignId: null, now });
+  const otherRequest = createGlobalSocialVerificationRequest(data, { userId: 'user-b', platform: 'yt', username: 'otherchannel', now: now + 1 });
+  assert.match(request.verificationCode, /^CE-[A-F0-9]{6}$/);
+  assert.notEqual(request.verificationCode, otherRequest.verificationCode);
+  assert.equal(request.expiresAt, now + (30 * 60 * 1000));
+  assert.equal(normalizeTypedSocialPlatform('IG'), 'instagram');
+  assert.equal(normalizeTypedSocialPlatform('TIKTOK'), 'tiktok');
+  assert.equal(normalizeTypedSocialPlatform('unsupported'), null);
+  const prompt = buildGlobalSocialVerificationPrompt(request);
+  assert.match(prompt.embeds[0].data.description, new RegExp(request.verificationCode));
+  assert.equal(prompt.components[0].components[0].data.custom_id, `global_social_verify:${request.id}`);
+
+  const wrongCreator = await verifyGlobalSocialVerificationRequest(data, request.id, {
+    now: now + 500,
+    requestingUserId: 'user-b',
+    fetchProfile: async () => ({ platform: 'tiktok', username: 'dailyclips', bio: request.verificationCode })
+  });
+  assert.equal(wrongCreator.verified, false);
+  assert.equal(wrongCreator.code, 'NOT_REQUEST_OWNER');
+
+  const success = await verifyGlobalSocialVerificationRequest(data, request.id, {
+    now: now + 1000,
+    fetchProfile: async () => ({
+      platform: 'tiktok', username: 'dailyclips', displayName: 'Daily Clips',
+      bio: `Creator verification ${request.verificationCode}`, profileUrl: 'https://www.tiktok.com/@dailyclips',
+      avatarUrl: null, followers: 100, externalAccountId: 'tt-1', rawProvider: 'test'
+    })
+  });
+  assert.equal(success.verified, true);
+  assert.equal(data.users['user-a'].socials.length, 1);
+  assert.equal(data.users['user-a'].socials[0].verificationMethod, 'bio_code_api');
+  assert.equal(data.users['user-a'].socials[0].status, 'verified');
+
+  const noCodeRequest = createGlobalSocialVerificationRequest(data, { userId: 'user-b', platform: 'youtube', username: 'otherchannel', now: now + 2000 });
+  const noCode = await verifyGlobalSocialVerificationRequest(data, noCodeRequest.id, {
+    now: now + 3000,
+    fetchProfile: async () => ({ platform: 'youtube', username: 'otherchannel', bio: 'No verification code here' })
+  });
+  assert.equal(noCode.verified, false);
+  assert.equal(noCode.code, 'CODE_NOT_FOUND');
+  assert.equal(data.users['user-b'].socials.length, 0);
+
+  const duplicate = createGlobalSocialVerificationRequest(data, { userId: 'user-b', platform: 'tiktok', username: 'dailyclips', now: now + 4000 });
+  const duplicateResult = await verifyGlobalSocialVerificationRequest(data, duplicate.id, {
+    now: now + 5000,
+    fetchProfile: async () => { throw new Error('must not be called'); }
+  });
+  assert.equal(duplicateResult.verified, false);
+  assert.equal(duplicateResult.code, 'OWNED_BY_ANOTHER_USER');
+});
+
+test('Instagram profile provider uses the documented Actor input and normalizes safe identity fields', async () => {
+  assert.deepEqual(buildApifyInstagramProfileInput('@Creators.Elite'), { usernames: ['creators.elite'] });
+  const actorItem = {
+    inputUrl: 'https://www.instagram.com/creators.elite',
+    id: '17841400000000123',
+    username: 'Creators.Elite',
+    url: 'https://www.instagram.com/creators.elite',
+    fullName: 'Creators Elite',
+    biography: 'Official creator profile',
+    followersCount: 12500,
+    private: false,
+    verified: true,
+    profilePicUrl: 'https://images.example/avatar.jpg',
+    profilePicUrlHD: 'https://images.example/avatar-hd.jpg'
+  };
+  let requestedUsername = null;
+  const profile = await fetchInstagramPublicProfile('@Creators.Elite', {
+    runActor: async username => {
+      requestedUsername = username;
+      return [actorItem];
+    }
+  });
+  assert.equal(requestedUsername, 'creators.elite');
+  assert.deepEqual(profile, {
+    platform: 'instagram',
+    username: 'Creators.Elite',
+    normalizedUsername: 'creators.elite',
+    platformAccountId: '17841400000000123',
+    displayName: 'Creators Elite',
+    bio: 'Official creator profile',
+    profileUrl: 'https://www.instagram.com/creators.elite',
+    avatarUrl: 'https://images.example/avatar-hd.jpg',
+    followers: 12500,
+    private: false,
+    verifiedBadge: true,
+    rawProvider: 'apify/instagram-profile-scraper'
+  });
+  assert.deepEqual(normalizeApifyInstagramProfile(actorItem, 'creators.elite'), profile);
+  await assert.rejects(
+    fetchInstagramPublicProfile('creators.elite', { runActor: async () => [{ username: 'creators.elite', error: 'upstream failed' }] }),
+    /usable Instagram profile data/
+  );
+});
+
+test('Instagram bio verification fails closed, preserves retryable requests, and enforces its cooldown', async () => {
+  const now = Date.parse('2026-08-09T13:00:00Z');
+  const makeData = () => ({ users: { creator: { socials: [] } }, globalSocialVerificationRequests: {} });
+  const makeProfile = (request, overrides = {}) => ({
+    platform: 'instagram',
+    username: request.username,
+    normalizedUsername: request.normalizedUsername,
+    platformAccountId: 'ig-profile-1',
+    displayName: 'Creator',
+    bio: `Creator ${request.verificationCode}`,
+    profileUrl: `https://www.instagram.com/${request.normalizedUsername}/`,
+    avatarUrl: null,
+    followers: 10,
+    private: false,
+    verifiedBadge: false,
+    rawProvider: 'apify/instagram-profile-scraper',
+    ...overrides
+  });
+
+  assert.equal(bioContainsExactVerificationCode('hello CE-ABC123 world', 'CE-ABC123'), true);
+  assert.equal(bioContainsExactVerificationCode('hello CE-ABC1234 world', 'CE-ABC123'), false);
+  assert.equal(bioContainsExactVerificationCode('hello ce-abc123 world', 'CE-ABC123'), false);
+  assert.equal(bioContainsExactVerificationCode(null, 'CE-ABC123'), false);
+
+  const successData = makeData();
+  const successRequest = createGlobalSocialVerificationRequest(successData, { userId: 'creator', platform: 'instagram', username: '@creator.ig', now });
+  const success = await verifyGlobalSocialVerificationRequest(successData, successRequest.id, {
+    now: now + 1000,
+    requestingUserId: 'creator',
+    fetchProfile: async () => makeProfile(successRequest)
+  });
+  assert.equal(success.verified, true);
+  assert.equal(success.social.platformAccountId, 'ig-profile-1');
+  assert.equal(success.social.provider, 'apify/instagram-profile-scraper');
+  assert.equal(successRequest.status, 'verified');
+  assert.equal(buildInstagramVerificationSuccessEmbed(success.social).data.title, 'Instagram Account Verified ✅');
+
+  const missingData = makeData();
+  const missingRequest = createGlobalSocialVerificationRequest(missingData, { userId: 'creator', platform: 'instagram', username: 'missingcode', now });
+  const missing = await verifyGlobalSocialVerificationRequest(missingData, missingRequest.id, {
+    now: now + 1000,
+    fetchProfile: async () => makeProfile(missingRequest, { bio: `prefix ${missingRequest.verificationCode}suffix` })
+  });
+  assert.equal(missing.code, 'CODE_NOT_FOUND');
+  assert.equal(missingRequest.status, 'pending');
+  assert.equal(missingRequest.usedAt, null);
+  const missingResponse = buildInstagramVerificationFailureResponse(missing);
+  assert.equal(missingResponse.embeds[0].data.title, 'Verification Code Not Found ❌');
+  assert.equal(missingResponse.components[0].components[0].data.custom_id, `global_social_verify:${missingRequest.id}`);
+
+  let cooldownProviderCalls = 0;
+  const cooldown = await verifyGlobalSocialVerificationRequest(missingData, missingRequest.id, {
+    now: now + 2000,
+    fetchProfile: async () => { cooldownProviderCalls++; return makeProfile(missingRequest); }
+  });
+  assert.equal(cooldown.code, 'COOLDOWN');
+  assert.equal(cooldownProviderCalls, 0);
+
+  const retry = await verifyGlobalSocialVerificationRequest(missingData, missingRequest.id, {
+    now: now + 21_000,
+    fetchProfile: async () => makeProfile(missingRequest)
+  });
+  assert.equal(retry.verified, true);
+
+  for (const scenario of [
+    { name: 'wrong username', overrides: { username: 'anotheraccount', normalizedUsername: 'anotheraccount' }, code: 'PROFILE_MISMATCH' },
+    { name: 'private profile', overrides: { private: true, bio: null }, code: 'PRIVATE_PROFILE' }
+  ]) {
+    const data = makeData();
+    const request = createGlobalSocialVerificationRequest(data, { userId: 'creator', platform: 'instagram', username: scenario.name.replace(' ', ''), now });
+    const result = await verifyGlobalSocialVerificationRequest(data, request.id, {
+      now: now + 1000,
+      fetchProfile: async () => makeProfile(request, scenario.overrides)
+    });
+    assert.equal(result.verified, false);
+    assert.equal(result.code, scenario.code);
+    assert.equal(request.status, 'pending');
+  }
+
+  const privateData = makeData();
+  const privateRequest = createGlobalSocialVerificationRequest(privateData, { userId: 'creator', platform: 'instagram', username: 'privatecreator', now });
+  const privateResult = await verifyGlobalSocialVerificationRequest(privateData, privateRequest.id, {
+    now: now + 1000,
+    fetchProfile: async () => makeProfile(privateRequest, { private: true, bio: null })
+  });
+  assert.equal(buildInstagramVerificationFailureResponse(privateResult).embeds[0].data.title, 'Private Instagram Account ❌');
+
+  const expiredData = makeData();
+  const expiredRequest = createGlobalSocialVerificationRequest(expiredData, { userId: 'creator', platform: 'instagram', username: 'expired', now });
+  let expiredProviderCalls = 0;
+  const expired = await verifyGlobalSocialVerificationRequest(expiredData, expiredRequest.id, {
+    now: expiredRequest.expiresAt + 1,
+    fetchProfile: async () => { expiredProviderCalls++; return makeProfile(expiredRequest); }
+  });
+  assert.equal(expired.code, 'EXPIRED');
+  assert.equal(expiredProviderCalls, 0);
+
+  const failureData = makeData();
+  const failureRequest = createGlobalSocialVerificationRequest(failureData, { userId: 'creator', platform: 'instagram', username: 'providerfailure', now });
+  const failure = await verifyGlobalSocialVerificationRequest(failureData, failureRequest.id, {
+    now: now + 1000,
+    fetchProfile: async () => { throw new Error('provider internals must stay private'); }
+  });
+  assert.equal(failure.code, 'PROFILE_UNAVAILABLE');
+  assert.equal(failure.message.includes('provider internals'), false);
+  assert.equal(failureRequest.status, 'pending');
+  assert.equal(failureRequest.usedAt, null);
+  assert.equal(buildInstagramVerificationFailureResponse(failure).embeds[0].data.title, 'Verification Temporarily Unavailable');
+});
+
+test('Instagram duplicate ownership prefers profile ID and does not overwrite historical identity', async () => {
+  const now = Date.parse('2026-08-09T14:00:00Z');
+  const data = {
+    users: {
+      owner: { socials: [{ id: 'existing', platform: 'instagram', username: 'oldhandle', normalizedUsername: 'oldhandle', platformAccountId: 'stable-ig-id', externalAccountId: 'stable-ig-id', status: 'verified', verified: true }] },
+      creator: { socials: [] }
+    },
+    globalSocialVerificationRequests: {}
+  };
+  const request = createGlobalSocialVerificationRequest(data, { userId: 'creator', platform: 'instagram', username: 'newhandle', now });
+  const result = await verifyGlobalSocialVerificationRequest(data, request.id, {
+    now: now + 1000,
+    fetchProfile: async () => ({
+      platform: 'instagram', username: 'newhandle', normalizedUsername: 'newhandle', platformAccountId: 'stable-ig-id',
+      bio: request.verificationCode, profileUrl: null, avatarUrl: null, followers: 0, private: false,
+      rawProvider: 'apify/instagram-profile-scraper'
+    })
+  });
+  assert.equal(result.verified, false);
+  assert.equal(result.code, 'OWNED_BY_ANOTHER_USER');
+  assert.equal(data.users.creator.socials.length, 0);
+  assert.equal(data.users.owner.socials[0].platformAccountId, 'stable-ig-id');
+});
+
+test('successful Instagram verification can auto-join live ICE through the shared join helper', async () => {
+  const originalIce = CAMPAIGNS.ice;
+  const now = Date.parse('2026-08-09T15:00:00Z');
+  CAMPAIGNS.ice = {
+    ...originalIce,
+    launchAt: '2026-08-09T14:00:00.000Z',
+    roleId: 'ice-role',
+    rulesChannelId: 'ice-rules'
+  };
+  try {
+    const data = {
+      users: { creator: { socials: [], campaigns: [], campaignAccounts: {}, demographics: { status: 'approved', tier: 'Tier 2' } } },
+      globalSocialVerificationRequests: {},
+      clips: {},
+      clipReviews: {},
+      campaignStatus: {}
+    };
+    const request = createGlobalSocialVerificationRequest(data, { userId: 'creator', platform: 'instagram', username: 'icecreator', returnCampaignId: 'ice', now });
+    const verified = await verifyGlobalSocialVerificationRequest(data, request.id, {
+      now: now + 1000,
+      fetchProfile: async () => ({
+        platform: 'instagram', username: 'icecreator', normalizedUsername: 'icecreator', platformAccountId: 'ice-ig-id',
+        bio: request.verificationCode, profileUrl: null, avatarUrl: null, followers: 0, private: false,
+        rawProvider: 'apify/instagram-profile-scraper'
+      })
+    });
+    assert.equal(verified.verified, true);
+
+    const heldRoles = new Set();
+    const roles = new Map([['ice-role', { id: 'ice-role' }], ['clipper-role', { id: 'clipper-role' }]]);
+    const member = {
+      id: 'creator',
+      user: { username: 'creator', tag: 'creator#0001', displayAvatarURL: () => null },
+      displayName: 'ICE Creator',
+      roles: { cache: { has: id => heldRoles.has(id) }, add: async role => heldRoles.add(role.id), remove: async role => heldRoles.delete(role.id) }
+    };
+    const autoJoin = await autoJoinReturnCampaignAfterGlobalVerification(
+      data,
+      { roles: { cache: roles } },
+      member,
+      verified.request,
+      { now: now + 2000, clipperRoleId: 'clipper-role' }
+    );
+    assert.equal(autoJoin.joinedCampaign?.id, 'ice');
+    assert.equal(data.users.creator.campaigns.includes('ice'), true);
+    assert.equal(heldRoles.has('ice-role'), true);
+    assert.equal(heldRoles.has('clipper-role'), true);
+  } finally {
+    CAMPAIGNS.ice = originalIce;
+  }
+});
+
+test('existing TikTok and YouTube global bio verification remains automatic and Monsterlab remains isolated', async () => {
+  const now = Date.parse('2026-08-09T16:00:00Z');
+  for (const platform of ['tiktok', 'youtube']) {
+    const data = { users: { creator: { socials: [] } }, globalSocialVerificationRequests: {} };
+    const request = createGlobalSocialVerificationRequest(data, { userId: 'creator', platform, username: `${platform}creator`, now });
+    const result = await verifyGlobalSocialVerificationRequest(data, request.id, {
+      now: now + 1000,
+      fetchProfile: async () => ({ platform, username: `${platform}creator`, bio: `Verified ${request.verificationCode}`, externalAccountId: `${platform}-id`, rawProvider: 'existing-provider' })
+    });
+    assert.equal(result.verified, true);
+    assert.equal(result.social.platform, platform);
+  }
+  assert.equal(getCampaignAccountMode(CAMPAIGNS.elephant), 'campaign_staff_code');
+  assert.equal(getCampaignAccountMode(CAMPAIGNS.crowder), 'campaign_staff_code');
+});
+
+test('global campaign eligibility is ANY-platform, drives submission account choices, and preserves history on unlink', async () => {
+  const campaign = makeStraightTestCampaign({ allowedPlatforms: ['tiktok', 'instagram', 'youtube'] });
+  CAMPAIGNS[campaign.id] = campaign;
+  try {
+    const socials = [
+      { id: 'ig-1', platform: 'instagram', username: 'otheraccount', normalizedUsername: 'otheraccount', status: 'verified', verified: true },
+      { id: 'tt-1', platform: 'tiktok', username: 'dailyclips', normalizedUsername: 'dailyclips', status: 'verified', verified: true },
+      { id: 'tt-2', platform: 'tiktok', username: 'dailyclips2', normalizedUsername: 'dailyclips2', status: 'verified', verified: true }
+    ];
+    const userRecord = { socials: structuredClone(socials), campaigns: [], campaignAccounts: {} };
+    assert.equal(userHasEligibleGlobalSocial(userRecord, campaign), true);
+    assert.equal(getVerifiedGlobalSocialsForPlatforms(userRecord, ['instagram']).length, 1);
+    assert.equal(getCampaignAccountEligibility(userRecord, campaign).eligible, true);
+    assert.equal(getCampaignSubmissionAccounts(userRecord, campaign).length, 3);
+    assert.equal(getCampaignAccountMode(campaign), 'global_auto_verify');
+    assert.equal(getCampaignAccountMode({ source: 'monsterlab' }), 'campaign_staff_code');
+    assert.equal(getCampaignAccountMode({ source: 'internal' }), 'global_auto_verify');
+    assert.equal(getCampaignAccountMode(CAMPAIGNS.elephant), 'campaign_staff_code');
+
+    const heldRoles = new Set();
+    const roles = new Map([['campaign-role', { id: 'campaign-role' }], ['clipper-role', { id: 'clipper-role' }]]);
+    const member = {
+      id: 'user-a',
+      user: { username: 'creator', tag: 'creator#0001', displayAvatarURL: () => null },
+      displayName: 'Creator',
+      roles: { cache: { has: id => heldRoles.has(id) }, add: async role => heldRoles.add(role.id), remove: async role => heldRoles.delete(role.id) }
+    };
+    const data = { users: { 'user-a': userRecord } };
+    const joinResult = await joinCampaignMember(data, { roles: { cache: roles } }, member, campaign, { clipperRoleId: 'clipper-role' });
+    assert.equal(joinResult.ok, true);
+    assert.equal(userRecord.campaigns.includes(campaign.id), true);
+    assert.equal(heldRoles.has('campaign-role'), true);
+    assert.equal(heldRoles.has('clipper-role'), true);
+
+    const noAccount = buildMissingGlobalAccountResponse(makeStraightTestCampaign({ allowedPlatforms: ['tiktok'] }));
+    assert.match(noAccount.embeds[0].data.title, /No TikTok Account Connected/);
+    assert.equal(noAccount.components[0].components[0].data.custom_id, 'global_social_link:straight_test');
+
+    const historical = { clips: { clip: { id: 'clip', payout: { paidMoney: 100 } } }, receipts: [{ amount: 100 }] };
+    const historyBefore = structuredClone(historical);
+    const removal = removeGlobalSocialAccount(userRecord, 'tt-1', 'user-a', 999);
+    assert.equal(removal.removed, true);
+    assert.deepEqual(historical, historyBefore);
+    assert.equal(getVerifiedGlobalSocials(userRecord).some(social => social.id === 'tt-1'), false);
+    assert.match(renderGlobalSocialAccounts(userRecord), /Instagram|dailyclips2/);
+  } finally {
+    delete CAMPAIGNS[campaign.id];
+  }
 });
