@@ -7937,7 +7937,7 @@ client.on(Events.MessageCreate, async message => {
             .setLabel('Social Accounts')
             .setEmoji('👥')
             .setStyle(ButtonStyle.Link)
-            .setURL(`https://discord.com/channels/${message.guild.id}/${CONNECT_ACCOUNTS_CHANNEL_ID}`)
+            .setURL(`https://discordapp.com/channels/${message.guild.id}/${CONNECT_ACCOUNTS_CHANNEL_ID}`)
         );
 
         await message.channel.send({
