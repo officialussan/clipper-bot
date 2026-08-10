@@ -1955,15 +1955,80 @@ function ensureUserSocials(data, userId) {
   return data.users[userId].socials;
 }
 
+const GLOBAL_SOCIAL_TERMINAL_STATUSES = new Set(['removed', 'unlinked', 'revoked']);
+const GLOBAL_SOCIAL_ACTIVE_STATUSES = new Set(['verified', 'connected', 'active']);
+
+function isActiveGlobalSocial(social) {
+  if (!social || typeof social !== 'object') return false;
+  const status = String(social.status || '').trim().toLowerCase();
+  if (GLOBAL_SOCIAL_TERMINAL_STATUSES.has(status) || social.unlinkedAt || social.removedAt || social.revokedAt) return false;
+  if (!normalizeTypedSocialPlatform(social.platform) || !normalizeSocialUsername(social.normalizedUsername || social.username)) return false;
+  return social.verified === true || GLOBAL_SOCIAL_ACTIVE_STATUSES.has(status);
+}
+
+function getActiveGlobalSocials(userRecord) {
+  const socials = Array.isArray(userRecord?.socials)
+    ? userRecord.socials
+    : Object.values(userRecord?.socials || {}).filter(Boolean);
+  return socials.filter(isActiveGlobalSocial);
+}
+
+function ensureGlobalSocialAccountIds(userRecord, now = Date.now()) {
+  if (!userRecord || typeof userRecord !== 'object') return { changed: false, socials: [] };
+  let changed = false;
+  if (!Array.isArray(userRecord.socials)) {
+    userRecord.socials = Object.values(userRecord.socials || {}).filter(Boolean);
+    changed = true;
+  }
+  const usedIds = new Set(userRecord.socials.map(social => String(social?.id || '')).filter(Boolean));
+  const idCounts = new Map();
+  for (const social of userRecord.socials) {
+    const id = String(social?.id || '');
+    if (id) idCounts.set(id, (idCounts.get(id) || 0) + 1);
+  }
+  for (const [index, social] of userRecord.socials.entries()) {
+    if (!social || typeof social !== 'object') continue;
+    if (!social.id) {
+      let id;
+      do {
+        id = `gsa_legacy_${Number(now)}_${crypto.randomBytes(4).toString('hex')}`;
+      } while (usedIds.has(id));
+      social.id = id;
+      usedIds.add(id);
+      idCounts.set(id, 1);
+      changed = true;
+    }
+    const id = String(social.id);
+    if ((!social.interactionId && (id.length > 55 || idCounts.get(id) > 1)) || String(social.interactionId || '').length > 55) {
+      const identity = `${id}:${index}:${social.platform || ''}:${social.normalizedUsername || social.username || ''}`;
+      social.interactionId = `gsi_${crypto.createHash('sha256').update(identity).digest('hex').slice(0, 24)}`;
+      changed = true;
+    }
+  }
+  return { changed, socials: userRecord.socials };
+}
+
+function getGlobalSocialInteractionId(social) {
+  return String(social?.interactionId || social?.id || '');
+}
+
+function findGlobalSocialByInteractionId(userRecord, interactionId, { activeOnly = false } = {}) {
+  const socials = Array.isArray(userRecord?.socials) ? userRecord.socials : [];
+  return socials.find(social =>
+    getGlobalSocialInteractionId(social) === String(interactionId) &&
+    (!activeOnly || isActiveGlobalSocial(social))
+  ) || null;
+}
+
 function getVerifiedGlobalSocials(userRecord) {
   const socials = Array.isArray(userRecord?.socials)
     ? userRecord.socials
     : Object.values(userRecord?.socials || {}).filter(Boolean);
   return socials.filter(social =>
     social &&
+    isActiveGlobalSocial(social) &&
     social.verified === true &&
     social.status === 'verified' &&
-    !social.unlinkedAt &&
     normalizeTypedSocialPlatform(social.platform) &&
     normalizeSocialUsername(social.normalizedUsername || social.username)
   );
@@ -2082,11 +2147,17 @@ function createGlobalSocialVerificationRequest(data, { userId, platform, usernam
 
 function removeGlobalSocialAccount(userRecord, socialId, removedBy = null, now = Date.now()) {
   const socials = Array.isArray(userRecord?.socials) ? userRecord.socials : [];
-  const index = socials.findIndex(social => String(social?.id) === String(socialId) && !social?.unlinkedAt);
-  if (index < 0) return { removed: false };
-  const [social] = socials.splice(index, 1);
-  userRecord.unlinkedSocials ||= [];
-  userRecord.unlinkedSocials.push({ ...social, verified: false, status: 'unlinked', unlinkedAt: Number(now), unlinkedBy: removedBy });
+  const social = socials.find(candidate =>
+    (String(candidate?.id) === String(socialId) || getGlobalSocialInteractionId(candidate) === String(socialId)) &&
+    isActiveGlobalSocial(candidate)
+  );
+  if (!social) return { removed: false };
+  social.status = 'unlinked';
+  social.verified = false;
+  social.unlinkedAt = Number(now);
+  social.unlinkedBy = removedBy;
+  social.removedAt = Number(now);
+  social.removedBy = removedBy;
   return { removed: true, social };
 }
 
@@ -2255,11 +2326,117 @@ function buildGlobalSocialPanel(guildId, demographicsChannelId = VERIFY_DEMOGRAP
 }
 
 function renderGlobalSocialAccounts(userRecord) {
-  const socials = Array.isArray(userRecord?.socials) ? userRecord.socials.filter(social => !social?.unlinkedAt) : [];
+  const socials = getActiveGlobalSocials(userRecord);
   if (!socials.length) return 'No global social accounts connected.';
-  return socials.map(social =>
-    `**${formatPlatform(social.platform)}**\n@${social.username}\n${social.verified ? '✅ Verified' : '⏳ Pending'}\nVerification: ${social.verificationMethod === 'bio_code_api' ? 'Bio Code / API' : social.verificationMethod || 'Pending'}`
-  ).join('\n\n');
+  const groups = new Map();
+  for (const social of socials) {
+    const platform = normalizeTypedSocialPlatform(social.platform);
+    if (!groups.has(platform)) groups.set(platform, []);
+    const status = social.verified === true ? '✅ Verified' : '🔗 Connected';
+    const method = social.verificationMethod === 'bio_code_api' ? '\nVerified via: Bio Code' : '';
+    groups.get(platform).push(`@${social.username}\n${status}${method}`);
+  }
+  return ['tiktok', 'instagram', 'youtube']
+    .filter(platform => groups.has(platform))
+    .map(platform => `**${formatPlatform(platform)}**\n\n${groups.get(platform).join('\n\n')}`)
+    .join('\n\n');
+}
+
+function buildGlobalSocialViewPage(userRecord, requestedPage = 0, pageSize = 10) {
+  const socials = getActiveGlobalSocials(userRecord);
+  if (!socials.length) {
+    return {
+      page: 0,
+      totalPages: 0,
+      totalAccounts: 0,
+      embeds: [new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle('No Social Accounts Connected')
+        .setDescription("You haven't connected any social accounts yet.\n\nConnect a TikTok, Instagram, or YouTube account to get started.")
+        .setFooter({ text: 'Creators Elite • Social Accounts' })],
+      components: [buildGlobalSocialLinkButtonRow(null)]
+    };
+  }
+  const totalPages = Math.ceil(socials.length / pageSize);
+  const page = Math.min(Math.max(Number(requestedPage) || 0, 0), totalPages - 1);
+  const pageSocials = socials.slice(page * pageSize, (page + 1) * pageSize);
+  const groups = new Map();
+  for (const social of pageSocials) {
+    const platform = normalizeTypedSocialPlatform(social.platform);
+    if (!groups.has(platform)) groups.set(platform, []);
+    const status = social.verified === true ? '✅ Verified' : '🔗 Connected';
+    const method = social.verificationMethod === 'bio_code_api' ? '\nVerified via: Bio Code' : '';
+    groups.get(platform).push(`@${social.username}\n${status}${method}`);
+  }
+  const fields = ['tiktok', 'instagram', 'youtube']
+    .filter(platform => groups.has(platform))
+    .map(platform => ({ name: formatPlatform(platform), value: groups.get(platform).join('\n\n'), inline: false }));
+  fields.push({ name: 'Total Connected Accounts', value: String(socials.length), inline: false });
+  const embed = new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setTitle('Your Connected Social Accounts')
+    .addFields(fields)
+    .setFooter({ text: `Creators Elite • Social Accounts${totalPages > 1 ? ` • Page ${page + 1}/${totalPages}` : ''}` });
+  const components = totalPages > 1
+    ? [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`global_social_view_page:${page - 1}`).setLabel('Previous').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+        new ButtonBuilder().setCustomId(`global_social_view_page:${page + 1}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page === totalPages - 1)
+      )]
+    : [];
+  return { page, totalPages, totalAccounts: socials.length, embeds: [embed], components };
+}
+
+function buildGlobalSocialRemovePage(userRecord, requestedPage = 0, pageSize = 25) {
+  const socials = getActiveGlobalSocials(userRecord);
+  if (!socials.length) {
+    return {
+      page: 0,
+      totalPages: 0,
+      totalAccounts: 0,
+      content: 'You do not have any connected global social accounts to remove.',
+      embeds: [],
+      components: [buildGlobalSocialLinkButtonRow(null)]
+    };
+  }
+  const totalPages = Math.ceil(socials.length / pageSize);
+  const page = Math.min(Math.max(Number(requestedPage) || 0, 0), totalPages - 1);
+  const pageSocials = socials.slice(page * pageSize, (page + 1) * pageSize);
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`global_social_remove_select:${page}`)
+    .setPlaceholder('Choose an account to unlink')
+    .addOptions(pageSocials.map(social => ({
+      label: `${formatPlatform(social.platform)} — @${social.username}`.slice(0, 100),
+      value: getGlobalSocialInteractionId(social)
+    })));
+  const components = [new ActionRowBuilder().addComponents(select)];
+  if (totalPages > 1) {
+    components.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`global_social_remove_page:${page - 1}`).setLabel('Previous').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+      new ButtonBuilder().setCustomId(`global_social_remove_page:${page + 1}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page === totalPages - 1)
+    ));
+  }
+  return {
+    page,
+    totalPages,
+    totalAccounts: socials.length,
+    content: `Select the global social account to unlink. Historical clips and payments will be preserved.${totalPages > 1 ? `\n\nPage ${page + 1} / ${totalPages}` : ''}`,
+    embeds: [],
+    components
+  };
+}
+
+function buildGlobalSocialRemoveConfirmation(social) {
+  return {
+    content: null,
+    embeds: [new EmbedBuilder()
+      .setColor(0xED4245)
+      .setTitle('Remove Social Account?')
+      .setDescription(`Are you sure you want to unlink:\n\n**${formatPlatform(social.platform)}**\n@${social.username}\n\nfrom your Creators Elite account?`)],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`global_social_remove_confirm:${getGlobalSocialInteractionId(social)}`).setLabel('Remove Account').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('global_social_remove_cancel').setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+    )]
+  };
 }
 
 function buildMissingGlobalAccountResponse(campaign) {
@@ -9932,48 +10109,85 @@ ${reason}
     if (interaction.isButton() && interaction.customId === 'global_social_view') {
       const data = loadData();
       const userRecord = data.users?.[interaction.user.id] || { socials: [] };
+      const viewPage = buildGlobalSocialViewPage(userRecord);
       await interaction.reply({
-        embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('Connected Social Accounts').setDescription(renderGlobalSocialAccounts(userRecord))],
+        embeds: viewPage.embeds,
+        components: viewPage.components,
         flags: MessageFlags.Ephemeral
       });
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('global_social_view_page:')) {
+      const page = Number(interaction.customId.split(':')[1]) || 0;
+      const data = loadData();
+      const userRecord = data.users?.[interaction.user.id] || { socials: [] };
+      const viewPage = buildGlobalSocialViewPage(userRecord, page);
+      await interaction.update({ embeds: viewPage.embeds, components: viewPage.components });
       return;
     }
 
     if (interaction.isButton() && interaction.customId === 'global_social_remove') {
       const data = loadData();
-      const socials = getVerifiedGlobalSocials(data.users?.[interaction.user.id]).slice(0, 25);
-      if (!socials.length) {
-        await interaction.reply({ content: 'You do not have any verified global social accounts to remove.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      const select = new StringSelectMenuBuilder()
-        .setCustomId('global_social_remove_select')
-        .setPlaceholder('Choose an account to unlink')
-        .addOptions(socials.map(social => ({
-          label: `${formatPlatform(social.platform)} - @${social.username}`.slice(0, 100),
-          value: social.id
-        })));
+      const userRecord = data.users?.[interaction.user.id] || { socials: [] };
+      const identityBackfill = ensureGlobalSocialAccountIds(userRecord);
+      if (data.users?.[interaction.user.id] && identityBackfill.changed) saveData(data);
+      const removePage = buildGlobalSocialRemovePage(userRecord);
       await interaction.reply({
-        content: 'Select the global social account to unlink. Historical clips and payments will be preserved.',
-        components: [new ActionRowBuilder().addComponents(select)],
+        content: removePage.content,
+        embeds: removePage.embeds,
+        components: removePage.components,
         flags: MessageFlags.Ephemeral
       });
       return;
     }
 
-    if (interaction.isStringSelectMenu() && interaction.customId === 'global_social_remove_select') {
+    if (interaction.isButton() && interaction.customId.startsWith('global_social_remove_page:')) {
+      const page = Number(interaction.customId.split(':')[1]) || 0;
+      const data = loadData();
+      const userRecord = data.users?.[interaction.user.id] || { socials: [] };
+      const identityBackfill = ensureGlobalSocialAccountIds(userRecord);
+      if (data.users?.[interaction.user.id] && identityBackfill.changed) saveData(data);
+      const removePage = buildGlobalSocialRemovePage(userRecord, page);
+      await interaction.update({ content: removePage.content, embeds: removePage.embeds, components: removePage.components });
+      return;
+    }
+
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('global_social_remove_select:')) {
       const data = loadData();
       const userRecord = data.users?.[interaction.user.id];
-      const removal = removeGlobalSocialAccount(userRecord, interaction.values[0], interaction.user.id);
+      const social = findGlobalSocialByInteractionId(userRecord, interaction.values[0], { activeOnly: true });
+      if (!social) {
+        await interaction.update({ content: '❌ Social account not found or already unlinked.', embeds: [], components: [] });
+        return;
+      }
+      await interaction.update(buildGlobalSocialRemoveConfirmation(social));
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('global_social_remove_confirm:')) {
+      const socialInteractionId = interaction.customId.slice('global_social_remove_confirm:'.length);
+      const data = loadData();
+      const userRecord = data.users?.[interaction.user.id];
+      const social = findGlobalSocialByInteractionId(userRecord, socialInteractionId, { activeOnly: true });
+      const removal = social
+        ? removeGlobalSocialAccount(userRecord, social.id, interaction.user.id)
+        : { removed: false };
       if (!removal.removed) {
-        await interaction.reply({ content: '❌ Social account not found.', flags: MessageFlags.Ephemeral });
+        await interaction.update({ content: '❌ Social account not found or already unlinked.', embeds: [], components: [] });
         return;
       }
       saveData(data);
-      await interaction.reply({
+      await interaction.update({
         content: `✅ Unlinked **${formatPlatform(removal.social.platform)} @${removal.social.username}**. Historical clips, payments, and analytics were preserved.`,
-        flags: MessageFlags.Ephemeral
+        embeds: [],
+        components: []
       });
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId === 'global_social_remove_cancel') {
+      await interaction.update({ content: 'Account removal cancelled.', embeds: [], components: [] });
       return;
     }
 
@@ -13160,6 +13374,9 @@ module.exports.__clipLifecycleTest = {
   buildClipStaffButtons,
   buildGlobalSocialLinkModal,
   buildGlobalSocialPanel,
+  buildGlobalSocialRemoveConfirmation,
+  buildGlobalSocialRemovePage,
+  buildGlobalSocialViewPage,
   buildGlobalSocialVerificationPrompt,
   buildInstagramVerificationFailureResponse,
   buildInstagramVerificationSuccessEmbed,
@@ -13211,9 +13428,11 @@ module.exports.__clipLifecycleTest = {
   repairApprovalSnapshotInvariants,
   repairAugustFirstWeekLegacyWeeklyAccounting,
   getVerifiedCampaignPlatforms,
+  getActiveGlobalSocials,
   getVerifiedGlobalSocials,
   getVerifiedGlobalSocialsForPlatforms,
   ensureCampaignAccount,
+  ensureGlobalSocialAccountIds,
   removeCampaignAccount,
   removeGlobalSocialAccount,
   refillStraightCampaign,

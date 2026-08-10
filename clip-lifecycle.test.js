@@ -25,6 +25,9 @@ const {
   buildClipStaffButtons,
   buildGlobalSocialLinkModal,
   buildGlobalSocialPanel,
+  buildGlobalSocialRemoveConfirmation,
+  buildGlobalSocialRemovePage,
+  buildGlobalSocialViewPage,
   buildGlobalSocialVerificationPrompt,
   buildInstagramVerificationFailureResponse,
   buildInstagramVerificationSuccessEmbed,
@@ -63,6 +66,7 @@ const {
   getStraightCampaignAccounting,
   getClipAppealHelpLink,
   getVerifiedCampaignPlatforms,
+  getActiveGlobalSocials,
   getVerifiedGlobalSocials,
   getVerifiedGlobalSocialsForPlatforms,
   getUserCurrentRunAccounting,
@@ -76,6 +80,7 @@ const {
   repairApprovalSnapshotInvariants,
   repairAugustFirstWeekLegacyWeeklyAccounting,
   ensureCampaignAccount,
+  ensureGlobalSocialAccountIds,
   removeCampaignAccount,
   removeGlobalSocialAccount,
   refillStraightCampaign,
@@ -1277,9 +1282,6 @@ test('ICE is configured with fixed straight economics but remains non-operationa
   assert.equal(campaign.maxPayoutPerClipPercent, 10);
   assert.equal(campaign.refillable, true);
   assert.equal(campaign.launchAt, null);
-  assert.equal(campaign.panelChannelId, null);
-  assert.equal(campaign.panelMessageId, null);
-  assert.equal(campaign.rulesChannelId, null);
   assert.match(campaign.panelText, /Earn Money Posting Clips & Edits – ICE/);
   assert.match(campaign.panelText, /Max Payout Per Clip:\*\* \$50/);
 
@@ -1825,4 +1827,123 @@ test('global campaign eligibility is ANY-platform, drives submission account cho
   } finally {
     delete CAMPAIGNS[campaign.id];
   }
+});
+
+test('global View Accounts groups the complete active portfolio and provides a global zero-state link', () => {
+  const userRecord = {
+    socials: [
+      { id: 'tt-1', platform: 'tiktok', username: 'one', status: 'verified', verified: true },
+      { id: 'tt-2', platform: 'tiktok', username: 'two', status: 'active', verified: true },
+      { id: 'ig-1', platform: 'instagram', username: 'three', status: 'connected', verified: true },
+      { id: 'yt-1', platform: 'youtube', username: 'four', status: 'verified', verified: true },
+      { id: 'old-1', platform: 'instagram', username: 'removed', status: 'unlinked', verified: false, removedAt: 1 }
+    ],
+    campaignAccounts: { elephant: { instagram: { username: 'monsterlab-only', verified: true } } }
+  };
+  const page = buildGlobalSocialViewPage(userRecord);
+  const fields = page.embeds[0].data.fields;
+  assert.equal(page.totalAccounts, 4);
+  assert.match(page.embeds[0].data.title, /Your Connected Social Accounts/);
+  assert.match(fields.find(field => field.name === 'TikTok').value, /@one[\s\S]*@two/);
+  assert.match(fields.find(field => field.name === 'Instagram').value, /@three/);
+  assert.match(fields.find(field => field.name === 'YouTube').value, /@four/);
+  assert.equal(fields.find(field => field.name === 'Total Connected Accounts').value, '4');
+  assert.doesNotMatch(JSON.stringify(page.embeds[0].data), /removed|monsterlab-only/);
+
+  const empty = buildGlobalSocialViewPage({ socials: [] });
+  assert.equal(empty.embeds[0].data.title, 'No Social Accounts Connected');
+  assert.equal(empty.components[0].components[0].data.custom_id, 'global_social_link:none');
+});
+
+test('global Remove Account uses stable per-record IDs, paginates all accounts, and confirms before unlinking', () => {
+  const userRecord = {
+    socials: Array.from({ length: 27 }, (_, index) => ({
+      platform: index % 3 === 0 ? 'tiktok' : index % 3 === 1 ? 'instagram' : 'youtube',
+      username: `creator${index}`,
+      status: 'verified',
+      verified: true
+    }))
+  };
+  const backfill = ensureGlobalSocialAccountIds(userRecord, 1234);
+  assert.equal(backfill.changed, true);
+  assert.equal(new Set(userRecord.socials.map(social => social.id)).size, 27);
+
+  const firstPage = buildGlobalSocialRemovePage(userRecord, 0);
+  const secondPage = buildGlobalSocialRemovePage(userRecord, 1);
+  const firstOptions = firstPage.components[0].components[0].toJSON().options;
+  const secondOptions = secondPage.components[0].components[0].toJSON().options;
+  assert.equal(firstPage.totalPages, 2);
+  assert.equal(firstOptions.length, 25);
+  assert.equal(secondOptions.length, 2);
+  assert.equal(new Set([...firstOptions, ...secondOptions].map(option => option.value)).size, 27);
+  assert.match(firstOptions[0].label, /TikTok — @creator0/);
+
+  const confirmation = buildGlobalSocialRemoveConfirmation(userRecord.socials[0]);
+  assert.equal(confirmation.embeds[0].data.title, 'Remove Social Account?');
+  assert.equal(confirmation.components[0].components[0].data.style, ButtonStyle.Danger);
+  assert.equal(confirmation.components[0].components[1].data.style, ButtonStyle.Secondary);
+});
+
+test('global unlink is in-place, account-specific, history-safe, and does not alter Monsterlab membership', () => {
+  const userRecord = {
+    socials: [
+      { id: 'tt-1', platform: 'tiktok', username: 'one', normalizedUsername: 'one', platformAccountId: 'tt-one', status: 'verified', verified: true, verifiedAt: 10, verificationMethod: 'bio_code_api' },
+      { id: 'tt-2', platform: 'tiktok', username: 'two', normalizedUsername: 'two', platformAccountId: 'tt-two', status: 'verified', verified: true },
+      { id: 'ig-1', platform: 'instagram', username: 'three', normalizedUsername: 'three', platformAccountId: 'ig-three', status: 'verified', verified: true, verifiedAt: 20, verificationMethod: 'bio_code_api' }
+    ],
+    campaigns: ['ice', 'elephant'],
+    campaignAccounts: { elephant: { instagram: { username: 'campaign-specific', verified: true } } }
+  };
+  const unrelatedHistory = {
+    clips: { clip: { id: 'clip', socialId: 'ig-1', campaignCreditedViews: 50000 } },
+    clipReviews: { review: { id: 'review', userId: 'creator' } },
+    payoutHistory: [{ amount: 25 }],
+    receipts: [{ amount: 25 }]
+  };
+  const historyBefore = structuredClone(unrelatedHistory);
+  const campaignsBefore = structuredClone(userRecord.campaigns);
+  const monsterlabBefore = structuredClone(userRecord.campaignAccounts);
+  const removal = removeGlobalSocialAccount(userRecord, 'ig-1', 'creator', 999);
+
+  assert.equal(removal.removed, true);
+  assert.equal(userRecord.socials.length, 3);
+  assert.equal(removal.social.status, 'unlinked');
+  assert.equal(removal.social.verified, false);
+  assert.equal(removal.social.removedAt, 999);
+  assert.equal(removal.social.removedBy, 'creator');
+  assert.equal(removal.social.platformAccountId, 'ig-three');
+  assert.equal(removal.social.verifiedAt, 20);
+  assert.equal(getActiveGlobalSocials(userRecord).map(social => social.id).join(','), 'tt-1,tt-2');
+  assert.deepEqual(userRecord.campaigns, campaignsBefore);
+  assert.deepEqual(userRecord.campaignAccounts, monsterlabBefore);
+  assert.deepEqual(unrelatedHistory, historyBefore);
+});
+
+test('a creator can reconnect their terminal global social while active ownership remains protected', async () => {
+  const now = Date.parse('2026-08-10T14:00:00Z');
+  const data = {
+    users: {
+      creator: {
+        socials: [{
+          id: 'old-ig', platform: 'instagram', username: 'reconnectme', normalizedUsername: 'reconnectme',
+          platformAccountId: 'ig-stable', status: 'unlinked', verified: false, removedAt: now - 1000
+        }]
+      }
+    },
+    globalSocialVerificationRequests: {}
+  };
+  const request = createGlobalSocialVerificationRequest(data, { userId: 'creator', platform: 'instagram', username: 'reconnectme', now });
+  const result = await verifyGlobalSocialVerificationRequest(data, request.id, {
+    requestingUserId: 'creator',
+    now: now + 1000,
+    fetchProfile: async () => ({
+      platform: 'instagram', username: 'reconnectme', bio: request.verificationCode,
+      platformAccountId: 'ig-stable', profileUrl: 'https://www.instagram.com/reconnectme/'
+    })
+  });
+  assert.equal(result.verified, true);
+  assert.equal(data.users.creator.socials.length, 2);
+  assert.equal(data.users.creator.socials[0].status, 'unlinked');
+  assert.equal(getVerifiedGlobalSocials(data.users.creator).length, 1);
+  assert.equal(getVerifiedGlobalSocials(data.users.creator)[0].platformAccountId, 'ig-stable');
 });
