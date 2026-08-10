@@ -528,7 +528,7 @@ based on performance.
 
 • **Clips:** Any clips and edits that follow the campaign rules → <#1492184654864842963>
 • **Platforms:** TikTok, Instagram Reels & YouTube Shorts
-• **Country Tier:** Tier 1
+• **Country Tier:** Tier 1 countries only
 • **Minimum Video Duration:** 10 seconds
 
 ## <a:Cash1:1504871843419521115> Payment Details
