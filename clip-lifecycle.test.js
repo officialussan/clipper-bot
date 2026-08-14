@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { ButtonStyle } = require('discord.js');
+const { ButtonStyle, ComponentType, MessageFlags } = require('discord.js');
 
 const {
   applyCampaignMembership,
@@ -104,6 +104,23 @@ const {
   validateAccountSubmission,
   verifyGlobalSocialVerificationRequest
 } = require('./index.js').__clipLifecycleTest;
+
+function getComponentsV2ContainerJson(page) {
+  return page.components[0].toJSON();
+}
+
+function getComponentsV2Text(page) {
+  return getComponentsV2ContainerJson(page).components
+    .filter(component => component.type === ComponentType.TextDisplay)
+    .map(component => component.content)
+    .join('\n');
+}
+
+function getComponentsV2Select(page) {
+  return getComponentsV2ContainerJson(page).components
+    .flatMap(component => component.type === ComponentType.ActionRow ? component.components : [])
+    .find(component => component.type === ComponentType.StringSelect);
+}
 
 const currentSubmittedTimestamp = Date.parse('2026-08-07T12:00:00.000Z');
 
@@ -1514,20 +1531,35 @@ test('campaign Connect Accounts uses the same native modal and one-account previ
     }
   };
   const page = buildCampaignAccountViewPage(userRecord, campaign, 0, { data, userId: 'creator' });
-  const fields = page.embeds[0].data.fields;
+  const description = getComponentsV2Text(page);
+  const container = getComponentsV2ContainerJson(page);
+  const actionRows = container.components.filter(component => component.type === ComponentType.ActionRow);
+  const disconnectButton = actionRows[0].components[0];
+  const switchSelect = getComponentsV2Select(page);
   assert.equal(page.totalPages, 2);
-  assert.equal(page.embeds[0].data.title, 'Your Connected Campaign Accounts');
-  assert.match(page.embeds[0].data.description, /@campaignone/);
-  assert.equal(fields.find(field => field.name === 'Verification Status').value, '✅ Fully Verified');
-  assert.equal(fields.find(field => field.name === 'Total Clips').value, '2');
-  assert.equal(fields.find(field => field.name === 'Total Views').value, '1.5K');
-  assert.equal(fields.find(field => field.name === 'Total Likes').value, '100');
-  assert.equal(fields.find(field => field.name === 'Total Comments').value, '15');
-  assert.equal(page.components[0].components[0].data.label, 'Disconnect');
-  assert.equal(page.components[0].components[1].data.label, 'Link Another Account');
-  assert.equal(page.components[1].components[0].data.placeholder, 'Click here to switch account preview');
+  assert.equal(page.embeds.length, 0);
+  assert.equal(page.flags, MessageFlags.IsComponentsV2);
+  assert.equal(container.type, ComponentType.Container);
+  assert.match(description, /Your Connected Campaign Accounts/);
+  assert.match(description, /@campaignone/);
+  assert.match(description, /\*\*Verification Status:\*\* ✅ Verified/);
+  assert.match(description, /\*\*Total Clips:\*\* 2/);
+  assert.match(description, /\*\*Total Views:\*\* 1,500/);
+  assert.match(description, /\*\*Total Likes:\*\* 100/);
+  assert.match(description, /\*\*Total Comments:\*\* 15/);
+  assert.equal(disconnectButton.label, 'Disconnect');
+  assert.equal(disconnectButton.style, ButtonStyle.Danger);
+  assert.equal(disconnectButton.emoji.name, '🗑️');
+  assert.equal(actionRows[0].components.length, 1);
+  assert.doesNotMatch(JSON.stringify(container), /Link Another Account|campaign_connect_link/);
+  assert.equal(switchSelect.placeholder, 'Click here to switch account preview');
   const confirmation = buildCampaignAccountDisconnectConfirmation(campaign, page.account, 0);
-  assert.match(confirmation.components[0].components[0].data.custom_id, /^campaign_connect_disconnect_confirm:/);
+  const confirmationButton = getComponentsV2ContainerJson(confirmation).components
+    .flatMap(component => component.type === ComponentType.ActionRow ? component.components : [])
+    .find(component => component.style === ButtonStyle.Danger);
+  assert.match(confirmationButton.custom_id, /^campaign_connect_disconnect_confirm:/);
+  assert.equal(confirmationButton.label, 'Disconnect');
+  assert.equal(confirmationButton.emoji.name, '🗑️');
 });
 
 test('global bio verification creates unique expiring codes, verifies only provider-confirmed bios, and blocks duplicate ownership', async () => {
@@ -1883,7 +1915,7 @@ test('global campaign eligibility is ANY-platform, drives submission account cho
   }
 });
 
-test('global View Accounts renders one metric-rich account card and provides a global zero-state link', () => {
+test('global View Accounts renders one Components V2 account card with an internal danger Disconnect control', () => {
   const userRecord = {
     socials: [
       { id: 'tt-1', platform: 'tiktok', username: 'one', status: 'verified', verified: true },
@@ -1902,35 +1934,52 @@ test('global View Accounts renders one metric-rich account card and provides a g
     }
   };
   const page = buildGlobalSocialViewPage(userRecord, 0, { data, userId: 'creator' });
-  const fields = page.embeds[0].data.fields;
+  const description = getComponentsV2Text(page);
+  const container = getComponentsV2ContainerJson(page);
+  const actionRows = container.components.filter(component => component.type === ComponentType.ActionRow);
+  const disconnectButton = actionRows[0].components[0];
+  const switchSelect = getComponentsV2Select(page);
   assert.equal(page.totalAccounts, 4);
   assert.equal(page.totalPages, 4);
-  assert.equal(page.embeds[0].data.title, 'Your Connected Social Accounts');
-  assert.match(page.embeds[0].data.description, /@one/);
-  assert.equal(fields.find(field => field.name === 'Verification Status').value, '✅ Verified');
-  assert.equal(fields.find(field => field.name === 'Tier').value, 'Tier 2');
-  assert.equal(fields.find(field => field.name === 'Page Type').value, 'Creator');
-  assert.equal(fields.find(field => field.name === 'Campaigns Participated').value, '1');
-  assert.equal(fields.find(field => field.name === 'Total Clips').value, '2');
-  assert.equal(fields.find(field => field.name === 'Total Views').value, '1.5K');
-  assert.equal(fields.find(field => field.name === 'Total Likes').value, '100');
-  assert.equal(fields.find(field => field.name === 'Total Comments').value, '15');
-  assert.equal(page.components[0].components[0].data.label, 'Disconnect');
-  assert.equal(page.components[0].components[1].data.label, 'Link Another Account');
-  assert.equal(page.components[1].components[0].data.placeholder, 'Click here to switch account preview');
-  assert.equal(page.components[1].components[0].toJSON().options.length, 4);
-  assert.match(buildGlobalSocialViewPage(userRecord, 1).embeds[0].data.description, /@two/);
-  assert.doesNotMatch(JSON.stringify(page.embeds[0].data), /removed|monsterlab-only/);
+  assert.equal(page.embeds.length, 0);
+  assert.equal(page.flags, MessageFlags.IsComponentsV2);
+  assert.equal(container.type, ComponentType.Container);
+  assert.match(description, /Your Connected Social Accounts/);
+  assert.match(description, /🎵 \*\*TikTok\*\*[\s\S]*@one/);
+  assert.match(description, /\*\*Verification Status:\*\* ✅ Verified/);
+  assert.match(description, /\*\*Tier:\*\* Tier 2/);
+  assert.match(description, /\*\*Page Type:\*\* Creator/);
+  assert.match(description, /\*\*Campaigns Participated:\*\* 1/);
+  assert.match(description, /\*\*Total Clips:\*\* 2/);
+  assert.match(description, /\*\*Total Views:\*\* 1,500/);
+  assert.match(description, /\*\*Total Likes:\*\* 100/);
+  assert.match(description, /\*\*Total Comments:\*\* 15/);
+  assert.match(description, /Showing account 1 of 4/);
+  assert.match(description, /Powered by Creators Elite/);
+  assert.equal(disconnectButton.label, 'Disconnect');
+  assert.equal(disconnectButton.style, ButtonStyle.Danger);
+  assert.equal(disconnectButton.emoji.name, '🗑️');
+  assert.equal(actionRows[0].components.length, 1);
+  assert.doesNotMatch(JSON.stringify(container), /Link Another Account|global_social_link_from_view/);
+  assert.equal(switchSelect.placeholder, 'Click here to switch account preview');
+  assert.equal(switchSelect.options.length, 4);
+  assert.match(getComponentsV2Text(buildGlobalSocialViewPage(userRecord, 1)), /@two/);
+  assert.doesNotMatch(JSON.stringify(container), /removed|monsterlab-only/);
   const confirmation = buildGlobalSocialRemoveConfirmation(userRecord.socials[0], { fromView: true, page: 0 });
-  assert.match(confirmation.components[0].components[0].data.custom_id, /^global_social_disconnect_confirm:/);
+  const confirmationButton = getComponentsV2ContainerJson(confirmation).components
+    .flatMap(component => component.type === ComponentType.ActionRow ? component.components : [])
+    .find(component => component.style === ButtonStyle.Danger);
+  assert.match(confirmationButton.custom_id, /^global_social_disconnect_confirm:/);
+  assert.equal(confirmationButton.label, 'Disconnect');
+  assert.equal(confirmationButton.emoji.name, '🗑️');
   assert.equal(removeGlobalSocialAccount(userRecord, 'tt-1', 'creator', 999).removed, true);
   const afterDisconnect = buildGlobalSocialViewPage(userRecord, 0, { data, userId: 'creator' });
   assert.equal(afterDisconnect.totalAccounts, 3);
-  assert.match(afterDisconnect.embeds[0].data.description, /@two/);
+  assert.match(getComponentsV2Text(afterDisconnect), /@two/);
 
   const empty = buildGlobalSocialViewPage({ socials: [] });
-  assert.equal(empty.embeds[0].data.title, 'No Social Accounts Connected');
-  assert.equal(empty.components[0].components[0].data.custom_id, 'global_social_link_from_view:none');
+  assert.match(getComponentsV2Text(empty), /No Social Accounts Connected/);
+  assert.doesNotMatch(JSON.stringify(getComponentsV2ContainerJson(empty)), /global_social_link_from_view|Link Account.*style/);
 });
 
 test('global View Accounts uses only verified CE demographics and exact CE-tracked account activity', () => {
@@ -1972,29 +2021,29 @@ test('global View Accounts uses only verified CE demographics and exact CE-track
     };
     const payoutBefore = structuredClone(clipOne.payout);
     const page = buildGlobalSocialViewPage(userRecord, 0, { data, userId: 'creator' });
-    const fields = page.embeds[0].data.fields;
-    assert.equal(fields.find(field => field.name === 'Tier').value, '--');
-    assert.equal(fields.find(field => field.name === 'Page Type').value, '--');
-    assert.equal(fields.find(field => field.name === 'Campaigns Participated').value, '2');
-    assert.equal(fields.find(field => field.name === 'Total Clips').value, '3');
-    assert.equal(fields.find(field => field.name === 'Total Views').value, '350');
-    assert.equal(fields.find(field => field.name === 'Total Likes').value, '35');
-    assert.equal(fields.find(field => field.name === 'Total Comments').value, '6');
+    const description = getComponentsV2Text(page);
+    assert.match(description, /\*\*Tier:\*\* --/);
+    assert.match(description, /\*\*Page Type:\*\* --/);
+    assert.match(description, /\*\*Campaigns Participated:\*\* 2/);
+    assert.match(description, /\*\*Total Clips:\*\* 3/);
+    assert.match(description, /\*\*Total Views:\*\* 350/);
+    assert.match(description, /\*\*Total Likes:\*\* 35/);
+    assert.match(description, /\*\*Total Comments:\*\* 6/);
     assert.deepEqual(clipOne.payout, payoutBefore);
 
     const emptyAccount = buildGlobalSocialViewPage(userRecord, 2, { data, userId: 'creator' });
-    const emptyFields = emptyAccount.embeds[0].data.fields;
-    assert.equal(emptyFields.find(field => field.name === 'Campaigns Participated').value, '0');
-    assert.equal(emptyFields.find(field => field.name === 'Total Clips').value, '0');
-    assert.equal(emptyFields.find(field => field.name === 'Total Views').value, '0');
-    assert.equal(emptyFields.find(field => field.name === 'Total Likes').value, '0');
-    assert.equal(emptyFields.find(field => field.name === 'Total Comments').value, '0');
+    const emptyDescription = getComponentsV2Text(emptyAccount);
+    assert.match(emptyDescription, /\*\*Campaigns Participated:\*\* 0/);
+    assert.match(emptyDescription, /\*\*Total Clips:\*\* 0/);
+    assert.match(emptyDescription, /\*\*Total Views:\*\* 0/);
+    assert.match(emptyDescription, /\*\*Total Likes:\*\* 0/);
+    assert.match(emptyDescription, /\*\*Total Comments:\*\* 0/);
 
     userRecord.demographics = { status: 'approved', tier: 'Tier 1', pageType: 'Creator' };
     const approvedPage = buildGlobalSocialViewPage(userRecord, 0, { data, userId: 'creator' });
-    const approvedFields = approvedPage.embeds[0].data.fields;
-    assert.equal(approvedFields.find(field => field.name === 'Tier').value, 'Tier 1');
-    assert.equal(approvedFields.find(field => field.name === 'Page Type').value, 'Creator');
+    const approvedDescription = getComponentsV2Text(approvedPage);
+    assert.match(approvedDescription, /\*\*Tier:\*\* Tier 1/);
+    assert.match(approvedDescription, /\*\*Page Type:\*\* Creator/);
   } finally {
     delete CAMPAIGNS[futureCampaign.id];
   }
@@ -2117,13 +2166,13 @@ test('unlimited global portfolio preserves 60 accounts, paginates every UI, allo
   assert.equal(firstViewPage.totalPages, 60);
   for (let page = 0; page < firstViewPage.totalPages; page++) {
     const rendered = buildGlobalSocialViewPage(userRecord, page);
-    for (const match of String(rendered.embeds[0].data.description).matchAll(/@([a-z0-9]+)/gi)) viewed.add(match[1].toLowerCase());
+    for (const match of getComponentsV2Text(rendered).matchAll(/@([a-z0-9]+)/gi)) viewed.add(match[1].toLowerCase());
   }
   assert.equal(viewed.size, 60);
   const switchableIds = new Set();
   for (const accountIndex of [0, 25, 50]) {
     const rendered = buildGlobalSocialViewPage(userRecord, accountIndex);
-    for (const option of rendered.components[1].components[0].toJSON().options) switchableIds.add(option.value);
+    for (const option of getComponentsV2Select(rendered).options) switchableIds.add(option.value);
   }
   assert.equal(switchableIds.size, 60);
 
@@ -2203,11 +2252,11 @@ test('Monsterlab campaign accounts are unlimited per platform and remain indepen
   const campaignViewReachable = new Set();
   for (let page = 0; page < campaignViewFirst.totalPages; page++) {
     const rendered = buildCampaignAccountViewPage(userRecord, CAMPAIGNS.elephant, page);
-    assert.match(rendered.embeds[0].data.description, /@/);
+    assert.match(getComponentsV2Text(rendered), /@/);
   }
   for (const page of [0, 25, 50]) {
     const rendered = buildCampaignAccountViewPage(userRecord, CAMPAIGNS.elephant, page);
-    for (const option of rendered.components[1].components[0].toJSON().options) campaignViewReachable.add(option.value);
+    for (const option of getComponentsV2Select(rendered).options) campaignViewReachable.add(option.value);
   }
   assert.equal(campaignViewReachable.size, 61);
 

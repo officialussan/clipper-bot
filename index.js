@@ -6,6 +6,9 @@ const {
   Client,
   GatewayIntentBits,
   ActionRowBuilder,
+  ContainerBuilder,
+  TextDisplayBuilder,
+  SeparatorBuilder,
   ButtonBuilder,
   ButtonStyle,
   ModalBuilder,
@@ -2408,22 +2411,41 @@ function getVerifiedCeDemographicDisplay(userRecord) {
   };
 }
 
+function formatAccountCardMetric(value) {
+  return Math.max(0, Math.round(Number(value) || 0)).toLocaleString('en-US');
+}
+
+function buildGlobalSocialViewNotice(title, description, color = 0xED4245) {
+  return {
+    content: null,
+    embeds: [],
+    components: [new ContainerBuilder()
+      .setAccentColor(color)
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(`## ${title}`),
+        new TextDisplayBuilder().setContent(description)
+      )]
+  };
+}
+
 function buildGlobalSocialViewPage(userRecord, requestedPage = 0, options = {}) {
   ensureGlobalSocialAccountIds(userRecord);
   const socials = getActiveGlobalSocials(userRecord);
   if (!socials.length) {
+    const emptyContainer = new ContainerBuilder()
+      .setAccentColor(0x5865F2)
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent('## No Social Accounts Connected'),
+        new TextDisplayBuilder().setContent("You haven't connected any social accounts yet.\n\nUse **Link Account** on the Connect Socials panel to get started."),
+        new TextDisplayBuilder().setContent('-# Powered by Creators Elite')
+      );
     return {
       page: 0,
       totalPages: 0,
       totalAccounts: 0,
-      embeds: [new EmbedBuilder()
-        .setColor(0x5865F2)
-        .setTitle('No Social Accounts Connected')
-        .setDescription("You haven't connected any social accounts yet.\n\nConnect a TikTok, Instagram, or YouTube account to get started.")
-        .setFooter({ text: 'Creators Elite • Social Accounts' })],
-      components: [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('global_social_link_from_view:none').setLabel('Link Account').setStyle(ButtonStyle.Success)
-      )]
+      embeds: [],
+      components: [emptyContainer],
+      flags: MessageFlags.IsComponentsV2
     };
   }
   const totalPages = socials.length;
@@ -2434,33 +2456,37 @@ function buildGlobalSocialViewPage(userRecord, requestedPage = 0, options = {}) 
   const status = social.verified === true ? '✅ Verified' : '🔗 Connected';
   const safeProfileUrl = typeof social.profileUrl === 'string' && /^https:\/\//i.test(social.profileUrl) ? social.profileUrl : null;
   const usernameDisplay = safeProfileUrl ? `[@${social.username}](${safeProfileUrl})` : `@${social.username}`;
-  const embed = new EmbedBuilder()
-    .setColor(0x00D26A)
-    .setTitle('Your Connected Social Accounts')
-    .setDescription(`## ${usernameDisplay}`)
-    .addFields(
-      { name: 'Platform', value: formatPlatform(social.platform), inline: true },
-      { name: 'Username', value: `@${social.username}`, inline: true },
-      { name: 'Verification Status', value: status, inline: true },
-      { name: 'Tier', value: String(demographicDisplay.tier), inline: true },
-      { name: 'Page Type', value: String(demographicDisplay.pageType), inline: true },
-      { name: 'Campaigns Participated', value: formatNumber(analytics.campaignCount), inline: false },
-      { name: 'Total Clips', value: formatNumber(analytics.totalClips), inline: true },
-      { name: 'Total Views', value: formatNumber(analytics.totalViews), inline: true },
-      { name: 'Total Likes', value: formatNumber(analytics.totalLikes), inline: true },
-      { name: 'Total Comments', value: formatNumber(analytics.totalComments), inline: true }
+  const platformEmoji = { tiktok: '🎵', instagram: '📸', youtube: '▶️' }[normalizeTypedSocialPlatform(social.platform)] || '🔗';
+  const accountText =
+      `${platformEmoji} **${formatPlatform(social.platform)}**\n` +
+      `${usernameDisplay}\n\n` +
+      `**Verification Status:** ${status}\n` +
+      `**Tier:** ${demographicDisplay.tier}\n` +
+      `**Page Type:** ${demographicDisplay.pageType}\n` +
+      `**Campaigns Participated:** ${formatAccountCardMetric(analytics.campaignCount)}\n` +
+      `**Total Clips:** ${formatAccountCardMetric(analytics.totalClips)}\n` +
+      `**Total Views:** ${formatAccountCardMetric(analytics.totalViews)}\n` +
+      `**Total Likes:** ${formatAccountCardMetric(analytics.totalLikes)}\n` +
+      `**Total Comments:** ${formatAccountCardMetric(analytics.totalComments)}`;
+  const container = new ContainerBuilder()
+    .setAccentColor(0x00D26A)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent('## Your Connected Social Accounts'),
+      new TextDisplayBuilder().setContent(accountText)
     )
-    .setFooter({ text: `Creators Elite • Social Accounts • Showing account ${page + 1} of ${totalPages}` });
-  if (typeof social.avatarUrl === 'string' && /^https:\/\//i.test(social.avatarUrl)) embed.setThumbnail(social.avatarUrl);
-  const components = [new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`global_social_disconnect:${getGlobalSocialInteractionId(social)}:${page}`).setLabel('Disconnect').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId('global_social_link_from_view:none').setLabel('Link Another Account').setStyle(ButtonStyle.Success)
-  )];
+    .addActionRowComponents(new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`global_social_disconnect:${getGlobalSocialInteractionId(social)}:${page}`)
+        .setLabel('Disconnect')
+        .setEmoji('🗑️')
+        .setStyle(ButtonStyle.Danger)
+    ))
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(true));
   const optionPageSize = 25;
   const optionPage = Math.floor(page / optionPageSize);
   const optionPageCount = Math.ceil(socials.length / optionPageSize);
   const optionPageSocials = socials.slice(optionPage * optionPageSize, (optionPage + 1) * optionPageSize);
-  components.push(new ActionRowBuilder().addComponents(
+  container.addActionRowComponents(new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(`global_social_view_select:${optionPage}`)
       .setPlaceholder('Click here to switch account preview')
@@ -2472,12 +2498,25 @@ function buildGlobalSocialViewPage(userRecord, requestedPage = 0, options = {}) 
       })))
   ));
   if (optionPageCount > 1) {
-    components.push(new ActionRowBuilder().addComponents(
+    container.addActionRowComponents(new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`global_social_view_options_page:${optionPage - 1}`).setLabel('Previous Accounts').setStyle(ButtonStyle.Secondary).setDisabled(optionPage === 0),
       new ButtonBuilder().setCustomId(`global_social_view_options_page:${optionPage + 1}`).setLabel('Next Accounts').setStyle(ButtonStyle.Secondary).setDisabled(optionPage === optionPageCount - 1)
     ));
   }
-  return { page, totalPages, totalAccounts: socials.length, social, analytics, embeds: [embed], components };
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(`Showing account ${page + 1} of ${totalPages}`),
+    new TextDisplayBuilder().setContent('-# Powered by Creators Elite')
+  );
+  return {
+    page,
+    totalPages,
+    totalAccounts: socials.length,
+    social,
+    analytics,
+    embeds: [],
+    components: [container],
+    flags: MessageFlags.IsComponentsV2
+  };
 }
 
 function buildGlobalSocialRemovePage(userRecord, requestedPage = 0, pageSize = 25) {
@@ -2525,6 +2564,19 @@ function buildGlobalSocialRemoveConfirmation(social, options = {}) {
     ? `global_social_disconnect_confirm:${getGlobalSocialInteractionId(social)}:${page}`
     : `global_social_remove_confirm:${getGlobalSocialInteractionId(social)}`;
   const cancelCustomId = options.fromView ? `global_social_view_page:${page}` : 'global_social_remove_cancel';
+  if (options.fromView) {
+    const container = new ContainerBuilder()
+      .setAccentColor(0xED4245)
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent('## Disconnect Social Account?'),
+        new TextDisplayBuilder().setContent(`Are you sure you want to disconnect **${formatPlatform(social.platform)} @${social.username}**?\n\nHistorical clips, payments, and analytics will be preserved.`)
+      )
+      .addActionRowComponents(new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(confirmCustomId).setLabel('Disconnect').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(cancelCustomId).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+      ));
+    return { content: null, embeds: [], components: [container], flags: MessageFlags.IsComponentsV2 };
+  }
   return {
     content: null,
     embeds: [new EmbedBuilder()
@@ -6556,22 +6608,37 @@ function getCampaignAccountAnalytics(data, userId, campaignId, account) {
   };
 }
 
+function buildCampaignAccountViewNotice(title, description, color = 0xED4245) {
+  return {
+    content: null,
+    embeds: [],
+    components: [new ContainerBuilder()
+      .setAccentColor(color)
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(`## ${title}`),
+        new TextDisplayBuilder().setContent(description)
+      )]
+  };
+}
+
 function buildCampaignAccountViewPage(userRecord, campaign, requestedPage = 0, options = {}) {
   ensureCampaignAccountIds(userRecord, campaign.id);
   const accounts = getAllCampaignAccounts(userRecord, campaign.id, { activeOnly: true });
   if (!accounts.length) {
+    const emptyContainer = new ContainerBuilder()
+      .setAccentColor(0x5865F2)
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent('## No Campaign Accounts Connected'),
+        new TextDisplayBuilder().setContent(`You haven't connected any accounts to **${campaign.name}** yet.\n\nUse **Link Account** on the campaign Connect Accounts panel to get started.`),
+        new TextDisplayBuilder().setContent('-# Powered by Creators Elite')
+      );
     return {
       page: 0,
       totalPages: 0,
       totalAccounts: 0,
-      embeds: [new EmbedBuilder()
-        .setColor(0x5865F2)
-        .setTitle('No Campaign Accounts Connected')
-        .setDescription(`You haven't connected any accounts to **${campaign.name}** yet.`)
-        .setFooter({ text: 'Creators Elite • Campaign Accounts' })],
-      components: [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`campaign_connect_link:${campaign.id}`).setLabel('Link Account').setStyle(ButtonStyle.Success)
-      )]
+      embeds: [],
+      components: [emptyContainer],
+      flags: MessageFlags.IsComponentsV2
     };
   }
   const totalPages = accounts.length;
@@ -6588,34 +6655,38 @@ function buildCampaignAccountViewPage(userRecord, campaign, requestedPage = 0, o
     youtube: `https://www.youtube.com/@${cleanUsername}`
   }[normalizeTypedSocialPlatform(account.platform)];
   const usernameDisplay = profileUrl ? `[@${cleanUsername}](${profileUrl})` : `@${cleanUsername}`;
-  const embed = new EmbedBuilder()
-    .setColor(0x00D26A)
-    .setTitle('Your Connected Campaign Accounts')
-    .setDescription(`## ${usernameDisplay}`)
-    .addFields(
-      { name: 'Campaign', value: campaign.name.replace(/<a?:\w+:\d+>/g, '').trim(), inline: true },
-      { name: 'Platform', value: formatPlatform(account.platform), inline: true },
-      { name: 'Username', value: `@${cleanUsername}`, inline: true },
-      { name: 'Verification Status', value: verified ? '✅ Fully Verified' : '⏳ Pending Verification', inline: true },
-      { name: 'Tier', value: String(tier), inline: true },
-      { name: 'Page Type', value: String(pageType), inline: true },
-      { name: 'Total Clips', value: formatNumber(analytics.totalClips), inline: true },
-      { name: 'Total Views', value: formatNumber(analytics.totalViews), inline: true },
-      { name: 'Total Likes', value: formatNumber(analytics.totalLikes), inline: true },
-      { name: 'Total Comments', value: formatNumber(analytics.totalComments), inline: true }
-    )
-    .setFooter({ text: `Creators Elite • Campaign Accounts • Showing account ${page + 1} of ${totalPages}` });
-  if (typeof account.avatarUrl === 'string' && /^https:\/\//i.test(account.avatarUrl)) embed.setThumbnail(account.avatarUrl);
+  const platformEmoji = { tiktok: '🎵', instagram: '📸', youtube: '▶️' }[normalizeTypedSocialPlatform(account.platform)] || '🔗';
+  const accountText =
+    `${platformEmoji} **${formatPlatform(account.platform)}**\n` +
+    `${usernameDisplay}\n\n` +
+    `**Campaign:** ${campaign.name.replace(/<a?:\w+:\d+>/g, '').trim()}\n` +
+    `**Verification Status:** ${verified ? '✅ Verified' : '⏳ Pending Verification'}\n` +
+    `**Tier:** ${tier}\n` +
+    `**Page Type:** ${pageType}\n` +
+    `**Total Clips:** ${formatAccountCardMetric(analytics.totalClips)}\n` +
+    `**Total Views:** ${formatAccountCardMetric(analytics.totalViews)}\n` +
+    `**Total Likes:** ${formatAccountCardMetric(analytics.totalLikes)}\n` +
+    `**Total Comments:** ${formatAccountCardMetric(analytics.totalComments)}`;
   const accountId = getCampaignAccountStableId(account.source, campaign.id, account.platform);
-  const components = [new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`campaign_connect_disconnect:${campaign.id}:${account.platform}:${accountId}:${page}`).setLabel('Disconnect').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId(`campaign_connect_link:${campaign.id}`).setLabel('Link Another Account').setStyle(ButtonStyle.Success)
-  )];
+  const container = new ContainerBuilder()
+    .setAccentColor(0x00D26A)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent('## Your Connected Campaign Accounts'),
+      new TextDisplayBuilder().setContent(accountText)
+    )
+    .addActionRowComponents(new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`campaign_connect_disconnect:${campaign.id}:${account.platform}:${accountId}:${page}`)
+        .setLabel('Disconnect')
+        .setEmoji('🗑️')
+        .setStyle(ButtonStyle.Danger)
+    ))
+    .addSeparatorComponents(new SeparatorBuilder().setDivider(true));
   const optionPageSize = 25;
   const optionPage = Math.floor(page / optionPageSize);
   const optionPageCount = Math.ceil(accounts.length / optionPageSize);
   const optionPageAccounts = accounts.slice(optionPage * optionPageSize, (optionPage + 1) * optionPageSize);
-  components.push(new ActionRowBuilder().addComponents(
+  container.addActionRowComponents(new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(`campaign_connect_view_select:${campaign.id}:${optionPage}`)
       .setPlaceholder('Click here to switch account preview')
@@ -6624,32 +6695,50 @@ function buildCampaignAccountViewPage(userRecord, campaign, requestedPage = 0, o
         return {
           label: `${formatPlatform(candidate.platform)} — @${candidate.username}`.slice(0, 100),
           value: `${candidate.platform}|${candidateId}`,
-          emoji: { tiktok: '🎵', instagram: '📸', youtube: '▶️' }[normalizeTypedSocialPlatform(candidate.platform)],
+          emoji: { tiktok: '<:tiktok1:1504871476485029979>', instagram: '<:ig1:1504871708664922162>', youtube: '<:Yt1:1504872145464070245>' }[normalizeTypedSocialPlatform(candidate.platform)],
           default: candidateId === accountId
         };
       }))
   ));
   if (optionPageCount > 1) {
-    components.push(new ActionRowBuilder().addComponents(
+    container.addActionRowComponents(new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`campaign_connect_view_options_page:${campaign.id}:${optionPage - 1}`).setLabel('Previous Accounts').setStyle(ButtonStyle.Secondary).setDisabled(optionPage === 0),
       new ButtonBuilder().setCustomId(`campaign_connect_view_options_page:${campaign.id}:${optionPage + 1}`).setLabel('Next Accounts').setStyle(ButtonStyle.Secondary).setDisabled(optionPage === optionPageCount - 1)
     ));
   }
-  return { page, totalPages, totalAccounts: accounts.length, account, analytics, embeds: [embed], components };
+  container.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(`Showing account ${page + 1} of ${totalPages}`),
+    new TextDisplayBuilder().setContent('-# Powered by Creators Elite')
+  );
+  return {
+    page,
+    totalPages,
+    totalAccounts: accounts.length,
+    account,
+    analytics,
+    embeds: [],
+    components: [container],
+    flags: MessageFlags.IsComponentsV2
+  };
 }
 
 function buildCampaignAccountDisconnectConfirmation(campaign, account, page = 0) {
   const accountId = getCampaignAccountStableId(account.source || account, campaign.id, account.platform);
+  const container = new ContainerBuilder()
+    .setAccentColor(0xED4245)
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent('## Disconnect Campaign Account?'),
+      new TextDisplayBuilder().setContent(`Are you sure you want to disconnect **${formatPlatform(account.platform)} @${account.username}** from **${campaign.name}**?\n\nHistorical clips and payments will be preserved.`)
+    )
+    .addActionRowComponents(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`campaign_connect_disconnect_confirm:${campaign.id}:${account.platform}:${accountId}:${page}`).setLabel('Disconnect').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`campaign_connect_view_page:${campaign.id}:${page}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+    ));
   return {
     content: null,
-    embeds: [new EmbedBuilder()
-      .setColor(0xED4245)
-      .setTitle('Remove Campaign Account?')
-      .setDescription(`Are you sure you want to unlink:\n\n**${formatPlatform(account.platform)}**\n@${account.username}\n\nfrom **${campaign.name}**? Historical clips and payments will be preserved.`)],
-    components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`campaign_connect_disconnect_confirm:${campaign.id}:${account.platform}:${accountId}:${page}`).setLabel('Remove Account').setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId(`campaign_connect_view_page:${campaign.id}:${page}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
-    )]
+    embeds: [],
+    components: [container],
+    flags: MessageFlags.IsComponentsV2
   };
 }
 
@@ -10571,7 +10660,7 @@ ${reason}
       await interaction.reply({
         embeds: viewPage.embeds,
         components: viewPage.components,
-        flags: MessageFlags.Ephemeral
+        flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2
       });
       return;
     }
@@ -10594,7 +10683,7 @@ ${reason}
       if (data.users?.[interaction.user.id] && identityBackfill.changed) saveData(data);
       const socials = getActiveGlobalSocials(userRecord);
       const selectedIndex = socials.findIndex(social => getGlobalSocialInteractionId(social) === String(interaction.values[0]));
-      if (selectedIndex < 0) return interaction.update({ content: '❌ Social account not found or already unlinked.', embeds: [], components: [] });
+      if (selectedIndex < 0) return interaction.update(buildGlobalSocialViewNotice('Account Unavailable', 'This social account was not found or has already been disconnected.'));
       const viewPage = buildGlobalSocialViewPage(userRecord, selectedIndex, { data, userId: interaction.user.id });
       await interaction.update({ content: null, embeds: viewPage.embeds, components: viewPage.components });
       return;
@@ -10616,7 +10705,7 @@ ${reason}
       const data = loadData();
       const userRecord = data.users?.[interaction.user.id];
       const social = findGlobalSocialByInteractionId(userRecord, socialInteractionId, { activeOnly: true });
-      if (!social) return interaction.update({ content: '❌ Social account not found or already unlinked.', embeds: [], components: [] });
+      if (!social) return interaction.update(buildGlobalSocialViewNotice('Account Unavailable', 'This social account was not found or has already been disconnected.'));
       await interaction.update(buildGlobalSocialRemoveConfirmation(social, { fromView: true, page: Number(pageValue) || 0 }));
       return;
     }
@@ -10627,11 +10716,11 @@ ${reason}
       const userRecord = data.users?.[interaction.user.id];
       const social = findGlobalSocialByInteractionId(userRecord, socialInteractionId, { activeOnly: true });
       const removal = social ? removeGlobalSocialAccount(userRecord, social.id, interaction.user.id) : { removed: false };
-      if (!removal.removed) return interaction.update({ content: '❌ Social account not found or already unlinked.', embeds: [], components: [] });
+      if (!removal.removed) return interaction.update(buildGlobalSocialViewNotice('Account Unavailable', 'This social account was not found or has already been disconnected.'));
       saveData(data);
       const viewPage = buildGlobalSocialViewPage(userRecord, Number(pageValue) || 0, { data, userId: interaction.user.id });
       await interaction.update({
-        content: `✅ Disconnected **${formatPlatform(removal.social.platform)} @${removal.social.username}**.`,
+        content: null,
         embeds: viewPage.embeds,
         components: viewPage.components
       });
@@ -10724,7 +10813,7 @@ ${reason}
       await interaction.reply({
         embeds: viewPage.embeds,
         components: viewPage.components,
-        flags: MessageFlags.Ephemeral
+        flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2
       });
 
       return;
@@ -10733,7 +10822,7 @@ ${reason}
     if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_view_page:')) {
       const [, campaignId, pageValue] = interaction.customId.split(':');
       const campaign = CAMPAIGNS[campaignId];
-      if (!campaign) return interaction.update({ content: '❌ Campaign not found.', embeds: [], components: [] });
+      if (!campaign) return interaction.update(buildCampaignAccountViewNotice('Campaign Unavailable', 'This campaign could not be found.'));
       const data = loadData();
       const userRecord = data.users?.[interaction.user.id] || { campaignAccounts: {} };
       const viewPage = buildCampaignAccountViewPage(userRecord, campaign, Number(pageValue) || 0, { data, userId: interaction.user.id });
@@ -10744,7 +10833,7 @@ ${reason}
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('campaign_connect_view_select:')) {
       const [, campaignId] = interaction.customId.split(':');
       const campaign = CAMPAIGNS[campaignId];
-      if (!campaign) return interaction.update({ content: '❌ Campaign not found.', embeds: [], components: [] });
+      if (!campaign) return interaction.update(buildCampaignAccountViewNotice('Campaign Unavailable', 'This campaign could not be found.'));
       const [platform, accountId] = interaction.values[0].split('|');
       const data = loadData();
       const userRecord = data.users?.[interaction.user.id] || { campaignAccounts: {} };
@@ -10753,7 +10842,7 @@ ${reason}
         account.platform === platform &&
         getCampaignAccountStableId(account.source, campaignId, account.platform) === accountId
       );
-      if (page < 0) return interaction.update({ content: '❌ Campaign account not found or already removed.', embeds: [], components: [] });
+      if (page < 0) return interaction.update(buildCampaignAccountViewNotice('Account Unavailable', 'This campaign account was not found or has already been disconnected.'));
       const viewPage = buildCampaignAccountViewPage(userRecord, campaign, page, { data, userId: interaction.user.id });
       await interaction.update({ content: null, embeds: viewPage.embeds, components: viewPage.components });
       return;
@@ -10762,7 +10851,7 @@ ${reason}
     if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_view_options_page:')) {
       const [, campaignId, optionPageValue] = interaction.customId.split(':');
       const campaign = CAMPAIGNS[campaignId];
-      if (!campaign) return interaction.update({ content: '❌ Campaign not found.', embeds: [], components: [] });
+      if (!campaign) return interaction.update(buildCampaignAccountViewNotice('Campaign Unavailable', 'This campaign could not be found.'));
       const data = loadData();
       const userRecord = data.users?.[interaction.user.id] || { campaignAccounts: {} };
       const accountPage = Math.max(0, (Number(optionPageValue) || 0) * 25);
@@ -10774,12 +10863,12 @@ ${reason}
     if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_disconnect:')) {
       const [, campaignId, platform, accountId, pageValue] = interaction.customId.split(':');
       const campaign = CAMPAIGNS[campaignId];
-      if (!campaign) return interaction.update({ content: '❌ Campaign not found.', embeds: [], components: [] });
+      if (!campaign) return interaction.update(buildCampaignAccountViewNotice('Campaign Unavailable', 'This campaign could not be found.'));
       const data = loadData();
       const userRecord = data.users?.[interaction.user.id];
       const account = getCampaignAccountCandidates(userRecord, campaignId, platform, { activeOnly: true })
         .find(candidate => getCampaignAccountStableId(candidate, campaignId, platform) === accountId);
-      if (!account) return interaction.update({ content: '❌ Campaign account not found or already removed.', embeds: [], components: [] });
+      if (!account) return interaction.update(buildCampaignAccountViewNotice('Account Unavailable', 'This campaign account was not found or has already been disconnected.'));
       await interaction.update(buildCampaignAccountDisconnectConfirmation(campaign, { ...account, platform }, Number(pageValue) || 0));
       return;
     }
@@ -10787,7 +10876,7 @@ ${reason}
     if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_disconnect_confirm:')) {
       const [, campaignId, platform, accountId, pageValue] = interaction.customId.split(':');
       const campaign = CAMPAIGNS[campaignId];
-      if (!campaign) return interaction.update({ content: '❌ Campaign not found.', embeds: [], components: [] });
+      if (!campaign) return interaction.update(buildCampaignAccountViewNotice('Campaign Unavailable', 'This campaign could not be found.'));
       const data = loadData();
       const removal = removeCampaignAccount({
         data,
@@ -10797,7 +10886,7 @@ ${reason}
         accountId,
         removedBy: interaction.user.id
       });
-      if (!removal.removed) return interaction.update({ content: '❌ Campaign account not found or already removed.', embeds: [], components: [] });
+      if (!removal.removed) return interaction.update(buildCampaignAccountViewNotice('Account Unavailable', 'This campaign account was not found or has already been disconnected.'));
       saveData(data);
       const userRecord = data.users?.[interaction.user.id] || { campaignAccounts: {} };
       const nextPage = Math.min(Math.max(Number(pageValue) || 0, 0), Math.max(0, getAllCampaignAccounts(userRecord, campaignId, { activeOnly: true }).length - 1));
