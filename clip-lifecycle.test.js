@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { ButtonStyle, ComponentType, MessageFlags } = require('discord.js');
 
 const {
+  applyDemographicsApprovalToAccount,
   applyCampaignMembership,
   applyApprovalSnapshotAccounting,
   applyStraightCampaignRefill,
@@ -17,6 +18,7 @@ const {
   buildCampaignAccountLinkModal,
   buildCampaignAccountRemovePage,
   buildCampaignAccountViewPage,
+  buildDemographicsAccountSelectionPage,
   buildCampaignConnectAccountRow,
   buildCampaignRulesRow,
   buildCampaignJoinSuccessEmbed,
@@ -55,6 +57,7 @@ const {
   getCampaignConnectAccountLink,
   getCampaignRulesLink,
   getCampaignAccountEligibility,
+  getAccountDemographics,
   getCampaignDemographicEligibility,
   getCampaignAccountMode,
   getCampaignBudgetMode,
@@ -90,6 +93,7 @@ const {
   ensureGlobalSocialAccountIds,
   removeCampaignAccount,
   removeGlobalSocialAccount,
+  resolveDemographicsSubmissionAccount,
   refillStraightCampaign,
   renderGlobalSocialAccounts,
   normalizeTypedSocialPlatform,
@@ -585,8 +589,12 @@ test('account removal A/C/D/E/F: shared removal preserves membership and all his
     removedAt: 123456789
   });
 
-  assert.deepEqual(result, { removed: true, username: 'dailyclp_', requestsMarkedRemoved: 1 });
-  assert.equal(data.users['user-1'].campaignAccounts.crowder, undefined);
+  assert.deepEqual(result, { removed: true, username: 'dailyclp_', requestsMarkedRemoved: 1, demographicsPreserved: false });
+  const removedStored = data.users['user-1'].campaignAccounts.crowder.instagram;
+  const removedAccount = Array.isArray(removedStored) ? removedStored[0] : removedStored;
+  assert.equal(removedAccount.status, 'unlinked');
+  assert.equal(removedAccount.verified, false);
+  assert.equal(removedAccount.removedAt, 123456789);
   assert.deepEqual(data.users['user-1'].campaigns, preserved.campaigns);
   assert.deepEqual(data.users['user-1'].campaignStats, preserved.campaignStats);
   assert.deepEqual(data.users['user-1'].paymentReceipts, preserved.paymentReceipts);
@@ -1335,12 +1343,91 @@ test('ICE duration and demographics gates reuse normalized provider metadata and
   assert.equal(validateCampaignVideoDuration(campaign, {}).code, 'VIDEO_DURATION_UNAVAILABLE');
 
   for (const tier of ['Tier 1', 'Tier 2', 'Tier 3']) {
-    assert.equal(getCampaignDemographicEligibility({ demographics: { status: 'approved', tier } }, campaign).eligible, true);
+    const account = { id: `account-${tier}`, demographics: { verified: true, status: 'approved', tier } };
+    assert.equal(getCampaignDemographicEligibility({ socials: [account] }, campaign, account).eligible, true);
   }
-  assert.equal(getCampaignDemographicEligibility({ demographics: { status: 'approved', tier: 'Tier 4' } }, campaign).eligible, false);
+  const ineligibleAccount = { id: 'tier-4', demographics: { verified: true, status: 'approved', tier: 'Tier 4' } };
+  assert.equal(getCampaignDemographicEligibility({ socials: [ineligibleAccount] }, campaign, ineligibleAccount).eligible, false);
+  assert.equal(getCampaignDemographicEligibility({ demographics: { status: 'approved', tier: 'Tier 1' } }, campaign).eligible, false);
   assert.equal(getCampaignDemographicEligibility({}, campaign).eligible, false);
   assert.match(buildMissingCampaignDemographicsResponse('guild-1', campaign).embeds[0].data.title, /Demographics Required/);
   assert.equal(getCampaignDemographicEligibility({}, CAMPAIGNS.elephant).eligible, true);
+});
+
+test('demographics approvals are isolated to the exact global or campaign account', () => {
+  const userRecord = {
+    socials: [
+      { id: 'global-a', platform: 'tiktok', username: 'accountA', normalizedUsername: 'accounta', verified: true, status: 'verified' },
+      { id: 'global-b', platform: 'tiktok', username: 'accountB', normalizedUsername: 'accountb', verified: true, status: 'verified' }
+    ],
+    campaignAccounts: {},
+    demographics: { status: 'approved', tier: 'Tier 2', pageType: 'Legacy User Value' }
+  };
+  const campaignA = ensureCampaignAccount(userRecord, 'elephant', 'instagram', 'campaignA');
+  campaignA.verified = true;
+  campaignA.status = 'approved';
+  const campaignB = ensureCampaignAccount(userRecord, 'elephant', 'instagram', 'campaignB');
+  campaignB.verified = true;
+  campaignB.status = 'approved';
+  const data = { users: { creator: userRecord }, demographicsSubmissions: {}, campaignAccountRequests: {} };
+
+  const globalAApproval = applyDemographicsApprovalToAccount(data, {
+    id: 'demo-global-a', userId: 'creator', country: 'us',
+    account: { kind: 'global', socialId: 'global-a', platform: 'tiktok', username: 'accountA' }
+  }, { tier: 'Tier 1', pageType: 'Theme Page', approvedAt: 100, approvedBy: 'staff' });
+  assert.equal(globalAApproval.applied, true);
+  assert.equal(getAccountDemographics(userRecord.socials[0]).rawTier, 'Tier 1');
+  assert.equal(getAccountDemographics(userRecord.socials[0]).pageType, 'Theme Page');
+  assert.equal(getAccountDemographics(userRecord.socials[1]).verified, false);
+
+  const globalBApproval = applyDemographicsApprovalToAccount(data, {
+    id: 'demo-global-b', userId: 'creator', country: 'ca',
+    account: { kind: 'global', socialId: 'global-b', platform: 'tiktok', username: 'accountB' }
+  }, { tier: 'Tier 3', approvedAt: 200, approvedBy: 'staff' });
+  assert.equal(globalBApproval.applied, true);
+  assert.equal(getAccountDemographics(userRecord.socials[0]).rawTier, 'Tier 1');
+  assert.equal(getAccountDemographics(userRecord.socials[1]).rawTier, 'Tier 3');
+
+  assert.equal(applyDemographicsApprovalToAccount(data, {
+    id: 'demo-campaign-a', userId: 'creator',
+    account: { kind: 'campaign', campaignId: 'elephant', campaignAccountId: campaignA.id, platform: 'instagram', username: 'campaignA' }
+  }, { tier: 'Tier 1', pageType: 'Creator', approvedAt: 300 }).applied, true);
+  assert.equal(applyDemographicsApprovalToAccount(data, {
+    id: 'demo-campaign-b', userId: 'creator',
+    account: { kind: 'campaign', campaignId: 'elephant', campaignAccountId: campaignB.id, platform: 'instagram', username: 'campaignB' }
+  }, { tier: 'Tier 3', approvedAt: 400 }).applied, true);
+  assert.equal(getAccountDemographics(campaignA).rawTier, 'Tier 1');
+  assert.equal(getAccountDemographics(campaignB).rawTier, 'Tier 3');
+
+  const newGlobalC = { id: 'global-c', platform: 'tiktok', username: 'accountC', normalizedUsername: 'accountc', verified: true, status: 'verified' };
+  userRecord.socials.push(newGlobalC);
+  assert.equal(getAccountDemographics(newGlobalC).verified, false);
+  assert.equal(getCampaignDemographicEligibility(userRecord, CAMPAIGNS.ice, userRecord.socials[0]).eligible, true);
+  assert.equal(getCampaignDemographicEligibility(userRecord, CAMPAIGNS.ice, newGlobalC).eligible, false);
+
+  const globalBRemoval = removeGlobalSocialAccount(userRecord, 'global-b', 'creator', 500);
+  assert.equal(globalBRemoval.removed, true);
+  assert.equal(userRecord.socials[1].demographics.tier, 'Tier 3');
+  const campaignBRemoval = removeCampaignAccount({ data, userId: 'creator', campaignId: 'elephant', platform: 'instagram', accountId: campaignB.id, removedBy: 'creator', removedAt: 600 });
+  assert.equal(campaignBRemoval.demographicsPreserved, true);
+  assert.equal(campaignB.demographics.tier, 'Tier 3');
+  assert.equal(campaignA.demographics.tier, 'Tier 1');
+
+  const globalPageA = buildGlobalSocialViewPage(userRecord, 0, { data: { clips: {} }, userId: 'creator' });
+  const globalPageC = buildGlobalSocialViewPage(userRecord, 1, { data: { clips: {} }, userId: 'creator' });
+  assert.match(getComponentsV2Text(globalPageA), /\*\*Tier:\*\* Tier 1/);
+  assert.match(getComponentsV2Text(globalPageC), /\*\*Tier:\*\* --/);
+  const campaignPageA = buildCampaignAccountViewPage(userRecord, CAMPAIGNS.elephant, 0, { data: { clips: {} }, userId: 'creator' });
+  assert.match(getComponentsV2Text(campaignPageA), /\*\*Tier:\*\* Tier 1/);
+
+  const selectionPage = buildDemographicsAccountSelectionPage(userRecord, 0);
+  const selectionValues = selectionPage.components[0].components[0].toJSON().options.map(option => option.value);
+  assert.ok(selectionValues.includes('g|global-a'));
+  assert.ok(selectionValues.some(value => value.includes(campaignA.id)));
+
+  userRecord.socials.push({ id: 'global-a-duplicate', platform: 'tiktok', username: 'accountA', verified: false, status: 'unlinked' });
+  assert.equal(resolveDemographicsSubmissionAccount(userRecord, { campaignId: 'global', platform: 'tiktok', username: 'accountA' }), null);
+  assert.equal(userRecord.demographics.tier, 'Tier 2');
 });
 
 test('non-Monsterlab join success uses Creators Elite branding and the configured user-facing rules link', () => {
@@ -1517,17 +1604,22 @@ test('campaign Connect Accounts uses the same native modal and one-account previ
   assert.equal(modalJson.components[1].component.custom_id, 'campaign_username');
   assert.equal(modalJson.components[1].component.placeholder, '@username');
 
-  const userRecord = { demographics: { tier: 'Tier 1' }, campaignAccounts: {} };
+  const userRecord = { demographics: { status: 'approved', tier: 'Tier 3' }, campaignAccounts: {} };
   const first = ensureCampaignAccount(userRecord, campaign.id, 'tiktok', 'campaignone');
   first.verified = true;
   first.status = 'approved';
+  first.demographics = { verified: true, status: 'approved', tier: 'Tier 1', pageType: 'Theme Page' };
+  first.totalViews = 9_000_000_000;
+  first.totalLikes = 8_000_000_000;
   const second = ensureCampaignAccount(userRecord, campaign.id, 'instagram', 'campaigntwo');
   second.verified = true;
   second.status = 'approved';
   const data = {
     clips: {
-      one: { id: 'one', userId: 'creator', campaignId: campaign.id, platform: 'tiktok', username: 'campaignone', publicViews: 1200, likes: 80, comments: 12 },
-      two: { id: 'two', userId: 'creator', campaignId: campaign.id, platform: 'tiktok', username: 'campaignone', currentViews: 300, likes: 20, commentCount: 3 }
+      one: { id: 'one', userId: 'creator', campaignId: campaign.id, platform: 'tiktok', username: 'campaignone', publicViews: 1200, views: 5_000_000, campaignCreditedViews: 5_000_000, likes: 80, comments: 12 },
+      two: { id: 'two', userId: 'creator', campaignId: campaign.id, platform: 'tiktok', username: 'campaignone', currentViews: 300, likes: 20, commentCount: 3 },
+      stable: { id: 'stable', userId: 'creator', campaignId: campaign.id, platform: 'tiktok', username: 'renamed', campaignAccountId: first.id, publicViews: 100, likes: 5, comments: 1 },
+      differentAccount: { id: 'different', userId: 'creator', campaignId: campaign.id, platform: 'tiktok', username: 'campaignone', campaignAccountId: second.id, publicViews: 900, likes: 90, comments: 9 }
     }
   };
   const page = buildCampaignAccountViewPage(userRecord, campaign, 0, { data, userId: 'creator' });
@@ -1543,10 +1635,13 @@ test('campaign Connect Accounts uses the same native modal and one-account previ
   assert.match(description, /Your Connected Campaign Accounts/);
   assert.match(description, /@campaignone/);
   assert.match(description, /\*\*Verification Status:\*\* ✅ Verified/);
-  assert.match(description, /\*\*Total Clips:\*\* 2/);
-  assert.match(description, /\*\*Total Views:\*\* 1,500/);
-  assert.match(description, /\*\*Total Likes:\*\* 100/);
-  assert.match(description, /\*\*Total Comments:\*\* 15/);
+  assert.match(description, /\*\*Tier:\*\* Tier 1/);
+  assert.match(description, /\*\*Page Type:\*\* Theme Page/);
+  assert.match(description, /\*\*Total Clips:\*\* 3/);
+  assert.match(description, /\*\*Total Views:\*\* 1,600/);
+  assert.match(description, /\*\*Total Likes:\*\* 105/);
+  assert.match(description, /\*\*Total Comments:\*\* 16/);
+  assert.doesNotMatch(description, /9,000,000,000|5,000,000/);
   assert.equal(disconnectButton.label, 'Disconnect');
   assert.equal(disconnectButton.style, ButtonStyle.Danger);
   assert.equal(disconnectButton.emoji.name, '🗑️');
@@ -1824,6 +1919,7 @@ test('successful Instagram verification can auto-join live ICE through the share
       })
     });
     assert.equal(verified.verified, true);
+    verified.social.demographics = { verified: true, status: 'approved', tier: 'Tier 2', pageType: 'Creator' };
 
     const heldRoles = new Set();
     const roles = new Map([['ice-role', { id: 'ice-role' }], ['clipper-role', { id: 'clipper-role' }]]);
@@ -1918,13 +2014,13 @@ test('global campaign eligibility is ANY-platform, drives submission account cho
 test('global View Accounts renders one Components V2 account card with an internal danger Disconnect control', () => {
   const userRecord = {
     socials: [
-      { id: 'tt-1', platform: 'tiktok', username: 'one', status: 'verified', verified: true },
+      { id: 'tt-1', platform: 'tiktok', username: 'one', status: 'verified', verified: true, demographics: { verified: true, status: 'approved', tier: 'Tier 2', pageType: 'Creator' } },
       { id: 'tt-2', platform: 'tiktok', username: 'two', status: 'active', verified: true },
       { id: 'ig-1', platform: 'instagram', username: 'three', status: 'connected', verified: true },
       { id: 'yt-1', platform: 'youtube', username: 'four', status: 'verified', verified: true },
       { id: 'old-1', platform: 'instagram', username: 'removed', status: 'unlinked', verified: false, removedAt: 1 }
     ],
-    demographics: { status: 'approved', tier: 'Tier 2', pageType: 'Creator' },
+    demographics: { status: 'approved', tier: 'Tier 3', pageType: 'Should Not Leak' },
     campaignAccounts: { elephant: { instagram: { username: 'monsterlab-only', verified: true } } }
   };
   const data = {
@@ -1945,7 +2041,7 @@ test('global View Accounts renders one Components V2 account card with an intern
   assert.equal(page.flags, MessageFlags.IsComponentsV2);
   assert.equal(container.type, ComponentType.Container);
   assert.match(description, /Your Connected Social Accounts/);
-  assert.match(description, /🎵 \*\*TikTok\*\*[\s\S]*@one/);
+  assert.match(description, /\*\*TikTok\*\*[\s\S]*@one/);
   assert.match(description, /\*\*Verification Status:\*\* ✅ Verified/);
   assert.match(description, /\*\*Tier:\*\* Tier 2/);
   assert.match(description, /\*\*Page Type:\*\* Creator/);
@@ -2039,7 +2135,8 @@ test('global View Accounts uses only verified CE demographics and exact CE-track
     assert.match(emptyDescription, /\*\*Total Likes:\*\* 0/);
     assert.match(emptyDescription, /\*\*Total Comments:\*\* 0/);
 
-    userRecord.demographics = { status: 'approved', tier: 'Tier 1', pageType: 'Creator' };
+    userRecord.demographics = { status: 'approved', tier: 'Tier 3', pageType: 'Must Not Leak' };
+    userRecord.socials[0].demographics = { verified: true, status: 'approved', tier: 'Tier 1', pageType: 'Creator' };
     const approvedPage = buildGlobalSocialViewPage(userRecord, 0, { data, userId: 'creator' });
     const approvedDescription = getComponentsV2Text(approvedPage);
     assert.match(approvedDescription, /\*\*Tier:\*\* Tier 1/);
@@ -2280,6 +2377,7 @@ test('Monsterlab campaign accounts are unlimited per platform and remain indepen
   };
   assert.equal(validateAccountSubmission('creator', 'elephant', 'tiktok', '@TIKTOKMONSTER1', data).isValid, false);
   assert.equal(validateAccountSubmission('creator', 'elephant', 'tiktok', 'brandnewhandle', data).isValid, true);
+  created[0].demographics = { verified: true, status: 'approved', tier: 'Tier 1', pageType: 'Theme Page' };
   const removed = removeCampaignAccount({
     data,
     userId: 'creator',
@@ -2291,5 +2389,7 @@ test('Monsterlab campaign accounts are unlimited per platform and remain indepen
   assert.equal(removed.removed, true);
   assert.equal(removed.username, 'tiktokmonster0');
   assert.equal(getCampaignSubmissionAccounts(userRecord, CAMPAIGNS.elephant).length, 60);
-  assert.equal(userRecord.campaignAccounts.elephant.tiktok.length, 29);
+  assert.equal(userRecord.campaignAccounts.elephant.tiktok.length, 30);
+  assert.equal(created[0].status, 'unlinked');
+  assert.equal(created[0].demographics.tier, 'Tier 1');
 });

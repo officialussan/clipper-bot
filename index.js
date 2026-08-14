@@ -644,7 +644,7 @@ function loadData() {
   if (!raw && mirrorDataFilePath !== primaryDataFilePath) raw = readJsonFileSafely(mirrorDataFilePath), recovered = !!raw;
   if (!raw) { raw = { users: {}, applications: {}, campaignAccountRequests: {}, clips: {}, campaignStatus: {}, payoutTrackers: {} }; recovered = true; }
 
-  raw.users ||= {}; raw.applications ||= {}; raw.campaignAccountRequests ||= {}; raw.globalSocialVerificationRequests ||= {}; raw.campaignAllocations ||= {}; raw.clips ||= {}; raw.clipReviews ||= {}; raw.campaignStatus ||= {}; raw.payoutTrackers ||= {}; raw.storageMigrations ||= {};
+  raw.users ||= {}; raw.applications ||= {}; raw.campaignAccountRequests ||= {}; raw.globalSocialVerificationRequests ||= {}; raw.demographicsSubmissions ||= {}; raw.campaignAllocations ||= {}; raw.clips ||= {}; raw.clipReviews ||= {}; raw.campaignStatus ||= {}; raw.payoutTrackers ||= {}; raw.storageMigrations ||= {};
   for (const request of Object.values(raw.payoutRequests || {})) {
     if (!request?.campaignId || !request?.userId) continue;
     const id = request.id || request.campaignId + '_' + request.userId;
@@ -955,6 +955,40 @@ function loadData() {
     }
     raw.storageMigrations.globalSocialAccountsV1 = { completedAt: Date.now(), initializedUsers };
     migrationChanged = true;
+  }
+  if (!raw.storageMigrations.accountSpecificDemographicsV1) {
+    let migrated = 0;
+    let alreadyAccountSpecific = 0;
+    let unresolved = 0;
+    for (const userRecord of Object.values(raw.users || {})) {
+      ensureGlobalSocialAccountIds(userRecord);
+      for (const campaignId of Object.keys(userRecord.campaignAccounts || {})) ensureCampaignAccountIds(userRecord, campaignId);
+    }
+    for (const submission of Object.values(raw.demographicsSubmissions || {})) {
+      if (String(submission?.status || '').toLowerCase() !== 'approved' || !submission?.demographicTier) continue;
+      const resolved = resolveDemographicsSubmissionAccount(raw.users?.[String(submission.userId)], submission.account);
+      if (resolved?.account?.demographics?.verified === true) {
+        alreadyAccountSpecific++;
+        continue;
+      }
+      const result = applyDemographicsApprovalToAccount(raw, submission, {
+        tier: submission.demographicTier,
+        pageType: submission.pageType || null,
+        approvedAt: submission.approvedAt || submission.tierAssignedAt || Date.now(),
+        approvedBy: submission.approvedBy || submission.tierAssignedBy || null
+      });
+      if (result.applied) migrated++;
+      else unresolved++;
+    }
+    raw.storageMigrations.accountSpecificDemographicsV1 = {
+      completedAt: Date.now(),
+      migrated,
+      alreadyAccountSpecific,
+      unresolved,
+      userLevelRecordsCopied: 0
+    };
+    migrationChanged = true;
+    console.log('[Account-Specific Demographics Migration]', raw.storageMigrations.accountSpecificDemographicsV1);
   }
   const outOfRunCompletion = finalizeOutOfRunClips(raw, Date.now());
   if (outOfRunCompletion.changed) {
@@ -1783,18 +1817,35 @@ function normalizeDemographicTier(value) {
   const match = String(value || '').trim().match(/(?:tier\s*)?([1-3])$/i);
   return match ? `Tier ${match[1]}` : null;
 }
-function getCampaignDemographicEligibility(userRecord, campaign) {
+function getAccountDemographics(account) {
+  const source = account?.source || account;
+  const demographics = source?.demographics;
+  const status = String(demographics?.status || '').trim().toLowerCase();
+  const verified = demographics?.verified === true || status === 'approved' || status === 'verified';
+  return {
+    verified,
+    tier: verified ? normalizeDemographicTier(demographics?.tier) : null,
+    rawTier: verified ? demographics?.tier ?? null : null,
+    pageType: verified ? demographics?.pageType ?? null : null,
+    demographics: demographics || null
+  };
+}
+function getCampaignDemographicEligibility(userRecord, campaign, selectedAccount = null) {
   const allowedTiers = new Set((campaign?.countryTiers || []).map(normalizeDemographicTier).filter(Boolean));
   if (!allowedTiers.size) return { required: false, eligible: true, tier: null, allowedTiers: [] };
-  const approvedTier = normalizeDemographicTier(
-    userRecord?.demographics?.status === 'approved'
-      ? userRecord.demographics.tier
-      : userRecord?.demographicTier
-  );
+  const accounts = selectedAccount
+    ? [selectedAccount]
+    : getCampaignAccountEligibility(userRecord, campaign).accounts;
+  const eligibleAccount = accounts.find(account => {
+    const demographics = getAccountDemographics(account);
+    return demographics.verified && demographics.tier && allowedTiers.has(demographics.tier);
+  });
+  const approvedTier = eligibleAccount ? getAccountDemographics(eligibleAccount).tier : null;
   return {
     required: true,
     eligible: Boolean(approvedTier && allowedTiers.has(approvedTier)),
     tier: approvedTier,
+    accountId: eligibleAccount?.id || eligibleAccount?.source?.id || null,
     allowedTiers: [...allowedTiers]
   };
 }
@@ -2189,9 +2240,9 @@ function buildGlobalSocialLinkModal(returnCampaignId = null, selectedPlatform = 
     .setMinValues(1)
     .setMaxValues(1)
     .addOptions(
-      { label: 'Connect TikTok', value: 'tiktok', emoji: '🎵', default: normalizedSelectedPlatform === 'tiktok' },
-      { label: 'Connect Instagram', value: 'instagram', emoji: '📸', default: normalizedSelectedPlatform === 'instagram' },
-      { label: 'Connect YouTube', value: 'youtube', emoji: '▶️', default: normalizedSelectedPlatform === 'youtube' }
+      { label: 'Connect TikTok', value: 'tiktok', emoji: '<:tiktok1:1504871476485029979>', default: normalizedSelectedPlatform === 'tiktok' },
+      { label: 'Connect Instagram', value: 'instagram', emoji: '<:ig1:1504871708664922162>', default: normalizedSelectedPlatform === 'instagram' },
+      { label: 'Connect YouTube', value: 'youtube', emoji: '<:Yt1:1504872145464070245>', default: normalizedSelectedPlatform === 'youtube' }
     );
   const modal = new ModalBuilder()
     .setCustomId(`global_social_link_modal:${returnCampaignId || 'none'}`)
@@ -2400,14 +2451,13 @@ function getGlobalSocialAccountAnalytics(data, userId, social) {
   };
 }
 
-function getVerifiedCeDemographicDisplay(userRecord) {
-  const demographics = userRecord?.demographics;
-  const explicitStatus = String(demographics?.status || '').trim().toLowerCase();
-  const approved = explicitStatus === 'approved' || (!explicitStatus && Boolean(userRecord?.demographicTier));
-  if (!approved) return { tier: '--', pageType: '--' };
+function getVerifiedCeDemographicDisplay(account) {
+  const demographics = getAccountDemographics(account);
+  if (!demographics.verified) return { verified: false, tier: '--', pageType: '--' };
   return {
-    tier: demographics?.tier || userRecord?.demographicTier || '--',
-    pageType: demographics?.pageType || demographics?.accountPageType || demographics?.accountType || userRecord?.demographicPageType || '--'
+    verified: true,
+    tier: demographics.rawTier || '--',
+    pageType: demographics.pageType || '--'
   };
 }
 
@@ -2452,7 +2502,7 @@ function buildGlobalSocialViewPage(userRecord, requestedPage = 0, options = {}) 
   const page = Math.min(Math.max(Number(requestedPage) || 0, 0), totalPages - 1);
   const social = socials[page];
   const analytics = getGlobalSocialAccountAnalytics(options.data, options.userId, social);
-  const demographicDisplay = getVerifiedCeDemographicDisplay(userRecord);
+  const demographicDisplay = getVerifiedCeDemographicDisplay(social);
   const status = social.verified === true ? '✅ Verified' : '🔗 Connected';
   const safeProfileUrl = typeof social.profileUrl === 'string' && /^https:\/\//i.test(social.profileUrl) ? social.profileUrl : null;
   const usernameDisplay = safeProfileUrl ? `[@${social.username}](${safeProfileUrl})` : `@${social.username}`;
@@ -2659,6 +2709,149 @@ function getCampaignAccountStableId(account, campaignId, platform) {
   return `cga_${crypto.createHash('sha256').update(identity).digest('hex').slice(0, 24)}`;
 }
 
+function getDemographicsAccountOptions(userRecord) {
+  const options = [];
+  for (const social of getVerifiedGlobalSocials(userRecord)) {
+    const platform = normalizeTypedSocialPlatform(social.platform);
+    options.push({
+      label: `${formatPlatform(platform)} — @${social.username}`.slice(0, 100),
+      description: 'Global social account',
+      value: `g|${getGlobalSocialInteractionId(social)}`
+    });
+  }
+  for (const campaignId of Object.keys(userRecord?.campaignAccounts || {})) {
+    for (const account of getAllCampaignAccounts(userRecord, campaignId, { activeOnly: true, verifiedOnly: true })) {
+      const accountId = getCampaignAccountStableId(account.source, campaignId, account.platform);
+      const campaignName = cleanDropdownLabel(CAMPAIGNS[campaignId]?.name || campaignId);
+      options.push({
+        label: `${formatPlatform(account.platform)} — @${account.username}`.slice(0, 100),
+        description: `${campaignName} campaign account`.slice(0, 100),
+        value: `c|${campaignId}|${account.platform}|${accountId}`
+      });
+    }
+  }
+  return options;
+}
+
+function buildDemographicsAccountSelectionPage(userRecord, requestedPage = 0, pageSize = 25) {
+  const options = getDemographicsAccountOptions(userRecord);
+  if (!options.length) return { page: 0, totalPages: 0, totalAccounts: 0, content: '❌ You have no verified social accounts yet.', components: [] };
+  const totalPages = Math.ceil(options.length / pageSize);
+  const page = Math.min(Math.max(Number(requestedPage) || 0, 0), totalPages - 1);
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('demographics_account')
+    .setPlaceholder('Select account')
+    .addOptions(options.slice(page * pageSize, (page + 1) * pageSize));
+  const components = [new ActionRowBuilder().addComponents(select)];
+  if (totalPages > 1) {
+    components.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`demographics_account_page:${page - 1}`).setLabel('Previous Accounts').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+      new ButtonBuilder().setCustomId(`demographics_account_page:${page + 1}`).setLabel('Next Accounts').setStyle(ButtonStyle.Secondary).setDisabled(page === totalPages - 1)
+    ));
+  }
+  return {
+    page,
+    totalPages,
+    totalAccounts: options.length,
+    content: `✅ Country selected. Now select the exact account to verify.${totalPages > 1 ? `\n\nPage ${page + 1} / ${totalPages}` : ''}`,
+    components
+  };
+}
+
+function resolveDemographicsAccountSelection(userRecord, selectionValue) {
+  const value = String(selectionValue || '');
+  if (value.startsWith('g|')) {
+    const social = findGlobalSocialByInteractionId(userRecord, value.slice(2), { activeOnly: true });
+    if (!social || social.verified !== true) return null;
+    return {
+      account: social,
+      identity: {
+        kind: 'global',
+        socialId: social.id,
+        socialInteractionId: getGlobalSocialInteractionId(social),
+        platform: normalizeTypedSocialPlatform(social.platform),
+        username: social.username,
+        normalizedUsername: normalizeSocialUsername(social.username),
+        platformAccountId: social.platformAccountId || social.externalAccountId || null
+      }
+    };
+  }
+  if (value.startsWith('c|')) {
+    const [, campaignId, platform, accountId] = value.split('|');
+    const account = getCampaignAccountCandidates(userRecord, campaignId, platform, { activeOnly: true, verifiedOnly: true })
+      .find(candidate => getCampaignAccountStableId(candidate, campaignId, platform) === accountId);
+    if (!account) return null;
+    return {
+      account,
+      identity: {
+        kind: 'campaign',
+        campaignId,
+        campaignAccountId: accountId,
+        platform: normalizeTypedSocialPlatform(platform),
+        username: account.username,
+        normalizedUsername: normalizeSocialUsername(account.username),
+        platformAccountId: account.externalAccountId || null
+      }
+    };
+  }
+  return null;
+}
+
+function resolveDemographicsSubmissionAccount(userRecord, accountReference) {
+  const reference = accountReference || {};
+  if (reference.kind === 'global' || reference.socialId || reference.socialInteractionId) {
+    const socials = Array.isArray(userRecord?.socials) ? userRecord.socials : [];
+    const social = socials.find(candidate =>
+      (reference.socialId && String(candidate.id) === String(reference.socialId)) ||
+      (reference.socialInteractionId && getGlobalSocialInteractionId(candidate) === String(reference.socialInteractionId))
+    );
+    return social ? { account: social, kind: 'global' } : null;
+  }
+  if (reference.kind === 'campaign' || reference.campaignAccountId) {
+    const campaignId = reference.campaignId;
+    const platform = normalizeTypedSocialPlatform(reference.platform) || reference.platform;
+    const account = getCampaignAccountCandidates(userRecord, campaignId, platform)
+      .find(candidate => getCampaignAccountStableId(candidate, campaignId, platform) === String(reference.campaignAccountId));
+    return account ? { account, kind: 'campaign' } : null;
+  }
+
+  const platform = normalizeTypedSocialPlatform(reference.platform);
+  const username = normalizeSocialUsername(reference.username);
+  if (!platform || !username) return null;
+  if (reference.campaignId === 'global') {
+    const matches = (Array.isArray(userRecord?.socials) ? userRecord.socials : []).filter(social =>
+      normalizeTypedSocialPlatform(social.platform) === platform &&
+      normalizeSocialUsername(social.username) === username
+    );
+    return matches.length === 1 ? { account: matches[0], kind: 'global', legacyResolved: true } : null;
+  }
+  const matches = getCampaignAccountCandidates(userRecord, reference.campaignId, platform)
+    .filter(account => normalizeSocialUsername(account.username) === username);
+  return matches.length === 1 ? { account: matches[0], kind: 'campaign', legacyResolved: true } : null;
+}
+
+function applyDemographicsApprovalToAccount(data, submission, approval = {}) {
+  const userRecord = data?.users?.[String(submission?.userId)];
+  if (!userRecord) return { applied: false, reason: 'USER_NOT_FOUND' };
+  const resolved = resolveDemographicsSubmissionAccount(userRecord, submission?.account);
+  if (!resolved) return { applied: false, reason: 'ACCOUNT_IDENTITY_UNRESOLVED' };
+  const approvedAt = Number(approval.approvedAt) || Date.now();
+  const previous = resolved.account.demographics || {};
+  resolved.account.demographics = {
+    ...previous,
+    verified: true,
+    status: 'approved',
+    tier: approval.tier,
+    pageType: approval.pageType ?? previous.pageType ?? null,
+    verifiedAt: approvedAt,
+    approvedAt,
+    approvedBy: approval.approvedBy || null,
+    submissionId: submission.id || null,
+    country: submission.country || previous.country || null
+  };
+  return { applied: true, account: resolved.account, kind: resolved.kind, legacyResolved: resolved.legacyResolved === true };
+}
+
 function getApprovedCampaignAccounts(data, userId, campaignId, platform) {
   const userRecord = data.users?.[String(userId)];
   return getCampaignAccountCandidates(userRecord, campaignId, platform, { activeOnly: true, verifiedOnly: true })
@@ -2767,11 +2960,6 @@ async function validateClipBeforeSubmission({ data, userId, campaignId, submitte
   const campaignState = getCampaignOperationalState(data, campaign);
   const submissionBlockMessage = getCampaignSubmissionBlockMessage(campaignState);
   if (submissionBlockMessage) return { valid: false, message: submissionBlockMessage, metadata: null };
-  const demographicEligibility = getCampaignDemographicEligibility(data.users?.[String(userId)], campaign);
-  if (!demographicEligibility.eligible) {
-    return { valid: false, code: 'DEMOGRAPHICS_NOT_ELIGIBLE', message: '❌ Approved audience demographics for this campaign are required before submitting clips.', metadata: null };
-  }
-
   try {
     const instagramReel = parsePublicInstagramReelUrl(submittedUrl);
     const expanded = instagramReel
@@ -2818,6 +3006,11 @@ async function validateClipBeforeSubmission({ data, userId, campaignId, submitte
     if (!ownership.valid) {
       const author = metadata.authorUsername || metadata.authorDisplayName || 'an unlinked account';
       return { valid: false, message: `❌ This video was posted by **@${author}**, but that account is not linked and approved for this campaign.`, metadata };
+    }
+
+    const demographicEligibility = getCampaignDemographicEligibility(data.users?.[String(userId)], campaign, ownership.matchedAccount);
+    if (!demographicEligibility.eligible) {
+      return { valid: false, code: 'DEMOGRAPHICS_NOT_ELIGIBLE', message: `❌ Approved audience demographics for **@${ownership.matchedAccount.username}** are required before submitting clips.`, metadata };
     }
 
     const durationValidation = validateCampaignVideoDuration(campaign, metadata);
@@ -6406,18 +6599,12 @@ function removeCampaignAccount({ data, userId, campaignId, platform, accountId =
   }
 
   const username = account.username;
-  const stored = userRecord.campaignAccounts[campaignId][normalizedPlatform];
-  if (Array.isArray(stored)) {
-    const index = stored.indexOf(account);
-    if (index >= 0) stored.splice(index, 1);
-    if (!stored.length) delete userRecord.campaignAccounts[campaignId][normalizedPlatform];
-  } else {
-    delete userRecord.campaignAccounts[campaignId][normalizedPlatform];
-  }
-
-  if (Object.keys(userRecord.campaignAccounts[campaignId]).length === 0) {
-    delete userRecord.campaignAccounts[campaignId];
-  }
+  account.status = 'unlinked';
+  account.verified = false;
+  account.unlinkedAt = removedAt;
+  account.unlinkedBy = removedBy;
+  account.removedAt = removedAt;
+  account.removedBy = removedBy;
 
   const normalizedUsername = normalizeSocialKey(platform, username);
   let requestsMarkedRemoved = 0;
@@ -6440,7 +6627,7 @@ function removeCampaignAccount({ data, userId, campaignId, platform, accountId =
     requestsMarkedRemoved += 1;
   }
 
-  return { removed: true, username, requestsMarkedRemoved };
+  return { removed: true, username, requestsMarkedRemoved, demographicsPreserved: Boolean(account.demographics) };
 }
 
 function ensureCampaignPlatformStats(userRecord, campaignId, platform, username = '') {
@@ -6498,7 +6685,7 @@ function buildCampaignAccountLinkModal(campaign, selectedPlatform = null) {
     .addOptions(allowedPlatforms.map(platform => ({
       label: `Connect ${formatPlatform(platform)}`,
       value: platform,
-      emoji: { tiktok: '🎵', instagram: '📸', youtube: '▶️' }[platform],
+      emoji: { tiktok: '<:tiktok1:1504871476485029979>', instagram: '<:ig1:1504871708664922162>', youtube: '<:Yt1:1504872145464070245>' }[platform],
       default: normalizedSelectedPlatform === platform
     })));
   const modal = new ModalBuilder()
@@ -6590,11 +6777,17 @@ function buildLegacyCampaignAccountViewPage(userRecord, campaign, requestedPage 
 function getCampaignAccountAnalytics(data, userId, campaignId, account) {
   const platform = normalizeTypedSocialPlatform(account?.platform);
   const username = normalizeSocialUsername(account?.username);
+  const accountId = getCampaignAccountStableId(account?.source || account, campaignId, platform);
   const uniqueClips = new Map();
   for (const clip of [...Object.values(data?.clips || {}), ...Object.values(data?.clipReviews || {})]) {
     if (!clip || String(clip.userId) !== String(userId) || String(clip.campaignId) !== String(campaignId)) continue;
-    if (normalizeTypedSocialPlatform(clip.platform) !== platform) continue;
-    if (normalizeSocialUsername(clip.username || clip.platformAuthorName) !== username) continue;
+    const storedAccountId = clip.campaignAccountId || clip.selectedCampaignAccountId || null;
+    const clipPlatform = normalizeTypedSocialPlatform(clip.platform);
+    const linkedByAccountId = storedAccountId && clipPlatform === platform && String(storedAccountId) === String(accountId);
+    const linkedByLegacyIdentity = !storedAccountId &&
+      clipPlatform === platform &&
+      normalizeSocialUsername(clip.username || clip.platformAuthorName) === username;
+    if (!linkedByAccountId && !linkedByLegacyIdentity) continue;
     const key = String(clip.id || clip.clipId || clip.videoUrl || clip.url || uniqueClips.size);
     uniqueClips.set(key, clip);
   }
@@ -6602,7 +6795,7 @@ function getCampaignAccountAnalytics(data, userId, campaignId, account) {
   const sumMetric = resolver => clips.reduce((total, clip) => total + Math.max(0, Number(resolver(clip)) || 0), 0);
   return {
     totalClips: clips.length,
-    totalViews: sumMetric(clip => Math.max(Number(clip.publicViews) || 0, Number(clip.currentViews) || 0, Number(clip.views) || 0)),
+    totalViews: sumMetric(clip => getStoredPublicViews(clip)),
     totalLikes: sumMetric(clip => clip.likes ?? clip.likeCount ?? clip.likesCount),
     totalComments: sumMetric(clip => clip.comments ?? clip.commentCount ?? clip.commentsCount)
   };
@@ -6645,8 +6838,7 @@ function buildCampaignAccountViewPage(userRecord, campaign, requestedPage = 0, o
   const page = Math.min(Math.max(Number(requestedPage) || 0, 0), totalPages - 1);
   const account = accounts[page];
   const analytics = getCampaignAccountAnalytics(options.data, options.userId, campaign.id, account);
-  const tier = account.tier || account.demographicTier || userRecord?.demographics?.tier || 'Not available';
-  const pageType = account.pageType || account.accountType || account.profileType || 'Not available';
+  const demographicDisplay = getVerifiedCeDemographicDisplay(account);
   const verified = account.verified === true || ['approved', 'verified'].includes(String(account.status || '').toLowerCase());
   const cleanUsername = normalizeUsername(account.username);
   const profileUrl = {
@@ -6661,8 +6853,8 @@ function buildCampaignAccountViewPage(userRecord, campaign, requestedPage = 0, o
     `${usernameDisplay}\n\n` +
     `**Campaign:** ${campaign.name.replace(/<a?:\w+:\d+>/g, '').trim()}\n` +
     `**Verification Status:** ${verified ? '✅ Verified' : '⏳ Pending Verification'}\n` +
-    `**Tier:** ${tier}\n` +
-    `**Page Type:** ${pageType}\n` +
+    `**Tier:** ${demographicDisplay.tier}\n` +
+    `**Page Type:** ${demographicDisplay.pageType}\n` +
     `**Total Clips:** ${formatAccountCardMetric(analytics.totalClips)}\n` +
     `**Total Views:** ${formatAccountCardMetric(analytics.totalViews)}\n` +
     `**Total Likes:** ${formatAccountCardMetric(analytics.totalLikes)}\n` +
@@ -9697,56 +9889,30 @@ ${reason}
  
       session.country = interaction.values[0];
       session.status = 'pending_account';
-      saveData(data);
-
       const userRecord = ensureUser(data, interaction.member);
-      const accounts = [];
-      const seenAccounts = new Set();
-
-      for (const social of getVerifiedGlobalSocials(userRecord)) {
-        const platform = normalizeTypedSocialPlatform(social.platform);
-        const username = normalizeUsername(social.username);
-        const key = `${platform}:${normalizeSocialUsername(username)}`;
-        if (!platform || !username || seenAccounts.has(key)) continue;
-        seenAccounts.add(key);
-        accounts.push({
-          label: `${formatPlatform(platform)} — @${username}`,
-          value: `global|${platform}|${username}`
-        });
+      ensureGlobalSocialAccountIds(userRecord);
+      for (const campaignId of Object.keys(userRecord.campaignAccounts || {})) {
+        ensureCampaignAccountIds(userRecord, campaignId);
       }
-
-      for (const [campaignId, platforms] of Object.entries(userRecord.campaignAccounts || {})) {
-        for (const platform of Object.keys(platforms || {})) {
-          for (const account of getCampaignAccountCandidates(userRecord, campaignId, platform, { activeOnly: true, verifiedOnly: true })) {
-          const key = `${normalizeTypedSocialPlatform(platform) || platform}:${normalizeSocialUsername(account.username)}`;
-          if (seenAccounts.has(key)) continue;
-          seenAccounts.add(key);
-          accounts.push({
-            label: `${formatPlatform(platform)} — @${account.username}`,
-            value: `${campaignId}|${platform}|${account.username}`
-          });
-          }
-        }
-      }
-
-      if (!accounts.length) {
-        await interaction.update({
-          content: '❌ You have no verified campaign accounts yet.',
-          components: []
-        });
-        return;
-      }
-
-      const accountMenu = new StringSelectMenuBuilder()
-        .setCustomId('demographics_account')
-        .setPlaceholder('Select account')
-        .addOptions(accounts.slice(0, 25));
+      saveData(data);
+      const accountPage = buildDemographicsAccountSelectionPage(userRecord, 0);
 
       await interaction.update({
-        content: `✅ Country selected: **${session.country}**\nNow select account.`,
-        components: [new ActionRowBuilder().addComponents(accountMenu)]
+        content: accountPage.content,
+        components: accountPage.components
       });
 
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('demographics_account_page:')) {
+      const data = loadData();
+      const session = data.demographicsSessions?.[interaction.user.id];
+      if (!session) return interaction.update({ content: '❌ Session expired.', components: [] });
+      const userRecord = data.users?.[interaction.user.id] || { socials: [], campaignAccounts: {} };
+      const page = Number(interaction.customId.split(':')[1]) || 0;
+      const accountPage = buildDemographicsAccountSelectionPage(userRecord, page);
+      await interaction.update({ content: accountPage.content, components: accountPage.components });
       return;
     }
 
@@ -9759,9 +9925,14 @@ ${reason}
         return;
       }
 
-      const [campaignId, platform, username] = interaction.values[0].split('|');
+      const userRecord = data.users?.[interaction.user.id] || { socials: [], campaignAccounts: {} };
+      const resolved = resolveDemographicsAccountSelection(userRecord, interaction.values[0]);
+      if (!resolved) {
+        await interaction.update({ content: '❌ That account is no longer available. Start again.', components: [] });
+        return;
+      }
 
-      session.account = { campaignId, platform, username };
+      session.account = resolved.identity;
       session.status = 'pending_campaign';
 
       saveData(data);
@@ -9780,7 +9951,7 @@ ${reason}
         .addOptions(campaigns);
 
       await interaction.update({
-        content: `✅ Account selected: **${formatPlatform(platform)} @${username}**\nNow select campaign.`,
+        content: `✅ Account selected: **${formatPlatform(session.account.platform)} @${session.account.username}**\nNow select campaign.`,
         components: [new ActionRowBuilder().addComponents(campaignMenu)]
       });
 
@@ -10019,25 +10190,26 @@ ${reason}
       }
 
       const approvedAt = Date.now();
+      const targetMember = await interaction.guild.members.fetch(submission.userId).catch(() => null);
+      if (targetMember) ensureUser(data, targetMember);
+      const accountApproval = applyDemographicsApprovalToAccount(data, submission, {
+        tier: selectedTier,
+        pageType: submission.pageType || null,
+        approvedAt,
+        approvedBy: interaction.user.id
+      });
+      if (!accountApproval.applied) {
+        return interaction.update({
+          content: '❌ Could not safely associate this demographics submission with one exact account. Nothing was approved.',
+          components: []
+        });
+      }
       submission.demographicTier = selectedTier;
       submission.tierAssignedBy = interaction.user.id;
       submission.tierAssignedAt = approvedAt;
       submission.status = 'approved';
       submission.approvedBy = interaction.user.id;
       submission.approvedAt = approvedAt;
-
-      const targetMember = await interaction.guild.members.fetch(submission.userId).catch(() => null);
-      const userRecord = targetMember
-        ? ensureUser(data, targetMember)
-        : (data.users[submission.userId] ||= { discordId: submission.userId, stats: {}, campaigns: [] });
-      userRecord.demographicTier = selectedTier;
-      userRecord.demographics = {
-        ...(userRecord.demographics || {}),
-        status: 'approved',
-        tier: selectedTier,
-        approvedAt,
-        approvedBy: interaction.user.id
-      };
 
       saveData(data);
       await updateDemographicStaffReviewMessage(interaction.guild, submission, interaction.user).catch(error => {
@@ -11528,16 +11700,17 @@ ${reason}
         await interaction.reply({ content: '❌ Join this campaign before submitting clips.', flags: MessageFlags.Ephemeral });
         return;
       }
-      const demographicEligibility = getCampaignDemographicEligibility(userRecord, campaign);
-      if (!demographicEligibility.eligible) {
-        await interaction.reply({ ...buildMissingCampaignDemographicsResponse(interaction.guild.id, campaign), flags: MessageFlags.Ephemeral });
-        return;
-      }
       const accountIdsChanged = getCampaignAccountMode(campaign) === 'global_auto_verify'
         ? ensureGlobalSocialAccountIds(userRecord).changed
         : ensureCampaignAccountIds(userRecord, campaignId);
       if (accountIdsChanged) saveData(data);
-      const submissionAccounts = getCampaignSubmissionAccounts(userRecord, campaign);
+      const allSubmissionAccounts = getCampaignSubmissionAccounts(userRecord, campaign);
+      const submissionAccounts = allSubmissionAccounts.filter(account => getCampaignDemographicEligibility(userRecord, campaign, account).eligible);
+
+      if (allSubmissionAccounts.length > 0 && submissionAccounts.length === 0) {
+        await interaction.reply({ ...buildMissingCampaignDemographicsResponse(interaction.guild.id, campaign), flags: MessageFlags.Ephemeral });
+        return;
+      }
 
       if (submissionAccounts.length === 0) {
         const connectButtonRow = getCampaignAccountMode(campaign) === 'global_auto_verify'
@@ -11696,11 +11869,6 @@ ${reason}
             await interaction.reply({ content: '❌ Join this campaign before submitting clips.', flags: MessageFlags.Ephemeral });
             return;
         }
-        const demographicEligibility = getCampaignDemographicEligibility(userRecord, campaign);
-        if (!demographicEligibility.eligible) {
-            await interaction.reply({ ...buildMissingCampaignDemographicsResponse(interaction.guild.id, campaign), flags: MessageFlags.Ephemeral });
-            return;
-        }
         const submissionAccounts = getCampaignSubmissionAccounts(userRecord, campaign).filter(account => account.platform === platform);
         let selectedAccount = selectedAccountIdValue
             ? submissionAccounts.find(account => String(account.id) === String(selectedAccountIdValue))
@@ -11716,6 +11884,12 @@ ${reason}
                 components: connectButtonRow ? [connectButtonRow] : [],
                 flags: MessageFlags.Ephemeral
             });
+            return;
+        }
+
+        const demographicEligibility = getCampaignDemographicEligibility(userRecord, campaign, selectedAccount);
+        if (!demographicEligibility.eligible) {
+            await interaction.reply({ ...buildMissingCampaignDemographicsResponse(interaction.guild.id, campaign), flags: MessageFlags.Ephemeral });
             return;
         }
 
@@ -11792,6 +11966,7 @@ ${reason}
                 platform: validation.platform,
                 username: matchedAccount?.username || metadata.authorUsername || metadata.authorDisplayName || selectedAccount.username,
                 globalSocialId: getCampaignAccountMode(campaign) === 'global_auto_verify' ? selectedAccount.id : null,
+                campaignAccountId: getCampaignAccountMode(campaign) === 'campaign_staff_code' ? selectedAccount.id : null,
                 url: validation.canonicalUrl,
                 videoUrl: validation.canonicalUrl,
                 originalSubmittedUrl: originalLink,
@@ -13983,6 +14158,7 @@ function buildPaymentReceiptPage(interaction, payments, page) {
 if (require.main === module) client.login(process.env.TOKEN);
 
 module.exports.__clipLifecycleTest = {
+  applyDemographicsApprovalToAccount,
   applyCampaignMembership,
   applyApprovalSnapshotAccounting,
   applyStraightCampaignRefill,
@@ -13999,6 +14175,7 @@ module.exports.__clipLifecycleTest = {
   buildCampaignAccountLinkModal,
   buildCampaignAccountRemovePage,
   buildCampaignAccountViewPage,
+  buildDemographicsAccountSelectionPage,
   buildCampaignJoinSuccessEmbed,
   buildCampaignPanelButtons,
   buildCampaignSubmitClipButton,
@@ -14037,6 +14214,7 @@ module.exports.__clipLifecycleTest = {
   getCampaignConnectAccountLink,
   getCampaignRulesLink,
   getCampaignAccountEligibility,
+  getAccountDemographics,
   getCampaignDemographicEligibility,
   getCampaignAccountMode,
   getCampaignBudgetMode,
@@ -14074,6 +14252,7 @@ module.exports.__clipLifecycleTest = {
   ensureGlobalSocialAccountIds,
   removeCampaignAccount,
   removeGlobalSocialAccount,
+  resolveDemographicsSubmissionAccount,
   refillStraightCampaign,
   renderGlobalSocialAccounts,
   normalizeTypedSocialPlatform,
