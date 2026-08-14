@@ -9,6 +9,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
   ModalBuilder,
+  LabelBuilder,
   TextInputBuilder,
   TextInputStyle,
   StringSelectMenuBuilder,
@@ -2177,41 +2178,32 @@ function buildGlobalSocialLinkButtonRow(returnCampaignId = null) {
   );
 }
 
-function buildGlobalSocialConnectChooser(returnCampaignId = null) {
-  const campaignValue = returnCampaignId || 'none';
-  return {
-    embeds: [new EmbedBuilder()
-      .setColor(0x5865F2)
-      .setTitle('Connect your account')
-      .setDescription(
-        'Choose the social platform you want to connect. You will only be asked for the public username or handle.\n\n' +
-        '**Never share a password or other sensitive information.**'
-      )
-      .setFooter({ text: 'Creators Elite • Social Accounts' })],
-    components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`global_social_link_platform:tiktok:${campaignValue}`).setLabel('Connect TikTok').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`global_social_link_platform:instagram:${campaignValue}`).setLabel('Connect Instagram').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`global_social_link_platform:youtube:${campaignValue}`).setLabel('Connect YouTube').setStyle(ButtonStyle.Secondary)
-    )]
-  };
-}
-
-function buildGlobalSocialLinkModal(platform, returnCampaignId = null) {
-  const normalizedPlatform = normalizeTypedSocialPlatform(platform);
-  if (!normalizedPlatform) throw new Error('Unsupported global social platform.');
-  const platformName = formatPlatform(normalizedPlatform);
+function buildGlobalSocialLinkModal(returnCampaignId = null, selectedPlatform = null) {
+  const normalizedSelectedPlatform = normalizeTypedSocialPlatform(selectedPlatform);
+  const platformSelect = new StringSelectMenuBuilder()
+    .setCustomId('global_social_platform')
+    .setPlaceholder('Select a platform')
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(
+      { label: 'Connect TikTok', value: 'tiktok', emoji: '🎵', default: normalizedSelectedPlatform === 'tiktok' },
+      { label: 'Connect Instagram', value: 'instagram', emoji: '📸', default: normalizedSelectedPlatform === 'instagram' },
+      { label: 'Connect YouTube', value: 'youtube', emoji: '▶️', default: normalizedSelectedPlatform === 'youtube' }
+    );
   const modal = new ModalBuilder()
-    .setCustomId(`global_social_link_modal:${normalizedPlatform}:${returnCampaignId || 'none'}`)
-    .setTitle(`Connect ${platformName}`);
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
+    .setCustomId(`global_social_link_modal:${returnCampaignId || 'none'}`)
+    .setTitle('Connect your account');
+  modal.addLabelComponents(
+    new LabelBuilder()
+      .setLabel('Select a platform to connect your account')
+      .setStringSelectMenuComponent(platformSelect),
+    new LabelBuilder()
+      .setLabel('Enter your account name')
+      .setTextInputComponent(new TextInputBuilder()
         .setCustomId('global_social_username')
-        .setLabel(`Enter your ${platformName} username`)
         .setPlaceholder('@username')
         .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-    )
+        .setRequired(true))
   );
   return modal;
 }
@@ -2416,11 +2408,13 @@ function buildGlobalSocialViewPage(userRecord, requestedPage = 0, options = {}) 
   const analytics = getGlobalSocialAccountAnalytics(options.data, options.userId, social);
   const tier = social.tier || social.demographicTier || userRecord?.demographics?.tier || 'Not available';
   const pageType = social.pageType || social.accountType || social.profileType || 'Not available';
-  const status = social.verified === true ? '✅ Verified' : '🔗 Connected';
+  const status = social.verified === true ? '✅ Fully Verified' : '🔗 Connected';
+  const safeProfileUrl = typeof social.profileUrl === 'string' && /^https:\/\//i.test(social.profileUrl) ? social.profileUrl : null;
+  const usernameDisplay = safeProfileUrl ? `[@${social.username}](${safeProfileUrl})` : `@${social.username}`;
   const embed = new EmbedBuilder()
-    .setColor(0x5865F2)
-    .setTitle(`${formatPlatform(social.platform)} Account`)
-    .setDescription(`## @${social.username}\n${status}`)
+    .setColor(0x00D26A)
+    .setTitle('Your Connected Social Accounts')
+    .setDescription(`## ${usernameDisplay}`)
     .addFields(
       { name: 'Platform', value: formatPlatform(social.platform), inline: true },
       { name: 'Username', value: `@${social.username}`, inline: true },
@@ -2436,11 +2430,30 @@ function buildGlobalSocialViewPage(userRecord, requestedPage = 0, options = {}) 
     .setFooter({ text: `Creators Elite • Social Accounts • Showing account ${page + 1} of ${totalPages}` });
   if (typeof social.avatarUrl === 'string' && /^https:\/\//i.test(social.avatarUrl)) embed.setThumbnail(social.avatarUrl);
   const components = [new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`global_social_view_page:${page - 1}`).setLabel('Previous').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
-    new ButtonBuilder().setCustomId(`global_social_view_page:${page + 1}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page === totalPages - 1),
     new ButtonBuilder().setCustomId(`global_social_disconnect:${getGlobalSocialInteractionId(social)}:${page}`).setLabel('Disconnect').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId('global_social_link_from_view:none').setLabel('Link Another Account').setStyle(ButtonStyle.Success)
   )];
+  const optionPageSize = 25;
+  const optionPage = Math.floor(page / optionPageSize);
+  const optionPageCount = Math.ceil(socials.length / optionPageSize);
+  const optionPageSocials = socials.slice(optionPage * optionPageSize, (optionPage + 1) * optionPageSize);
+  components.push(new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`global_social_view_select:${optionPage}`)
+      .setPlaceholder('Click here to switch account preview')
+      .addOptions(optionPageSocials.map(account => ({
+        label: `${formatPlatform(account.platform)} — @${account.username}`.slice(0, 100),
+        value: getGlobalSocialInteractionId(account),
+        emoji: { tiktok: '🎵', instagram: '📸', youtube: '▶️' }[normalizeTypedSocialPlatform(account.platform)],
+        default: getGlobalSocialInteractionId(account) === getGlobalSocialInteractionId(social)
+      })))
+  ));
+  if (optionPageCount > 1) {
+    components.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`global_social_view_options_page:${optionPage - 1}`).setLabel('Previous Accounts').setStyle(ButtonStyle.Secondary).setDisabled(optionPage === 0),
+      new ButtonBuilder().setCustomId(`global_social_view_options_page:${optionPage + 1}`).setLabel('Next Accounts').setStyle(ButtonStyle.Secondary).setDisabled(optionPage === optionPageCount - 1)
+    ));
+  }
   return { page, totalPages, totalAccounts: socials.length, social, analytics, embeds: [embed], components };
 }
 
@@ -6397,6 +6410,40 @@ function getVerifiedCampaignPlatforms(userRecord, campaignId) {
   return [...new Set(getAllCampaignAccounts(userRecord, campaignId, { activeOnly: true, verifiedOnly: true }).map(account => account.platform))];
 }
 
+function buildCampaignAccountLinkModal(campaign, selectedPlatform = null) {
+  const normalizedSelectedPlatform = normalizeTypedSocialPlatform(selectedPlatform);
+  const allowedPlatforms = (campaign?.allowedPlatforms || [])
+    .map(normalizeTypedSocialPlatform)
+    .filter(Boolean);
+  const platformSelect = new StringSelectMenuBuilder()
+    .setCustomId('campaign_social_platform')
+    .setPlaceholder('Select a platform')
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(allowedPlatforms.map(platform => ({
+      label: `Connect ${formatPlatform(platform)}`,
+      value: platform,
+      emoji: { tiktok: '🎵', instagram: '📸', youtube: '▶️' }[platform],
+      default: normalizedSelectedPlatform === platform
+    })));
+  const modal = new ModalBuilder()
+    .setCustomId(`campaign_connect_modal:${campaign.id}`)
+    .setTitle('Connect your account');
+  modal.addLabelComponents(
+    new LabelBuilder()
+      .setLabel('Select a platform to connect your account')
+      .setStringSelectMenuComponent(platformSelect),
+    new LabelBuilder()
+      .setLabel('Enter your account name')
+      .setTextInputComponent(new TextInputBuilder()
+        .setCustomId('campaign_username')
+        .setPlaceholder('@username')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true))
+  );
+  return modal;
+}
+
 function buildCampaignAccountRemovePage(userRecord, campaign, requestedPage = 0, pageSize = 25) {
   const accounts = getAllCampaignAccounts(userRecord, campaign.id, { activeOnly: true });
   if (!accounts.length) {
@@ -6429,7 +6476,7 @@ function buildCampaignAccountRemovePage(userRecord, campaign, requestedPage = 0,
   };
 }
 
-function buildCampaignAccountViewPage(userRecord, campaign, requestedPage = 0, pageSize = 10) {
+function buildLegacyCampaignAccountViewPage(userRecord, campaign, requestedPage = 0, pageSize = 10) {
   const accounts = getAllCampaignAccounts(userRecord, campaign.id, { activeOnly: true });
   if (!accounts.length) {
     return {
@@ -6463,6 +6510,124 @@ function buildCampaignAccountViewPage(userRecord, campaign, requestedPage = 0, p
       )]
     : [];
   return { page, totalPages, totalAccounts: accounts.length, embeds: [embed], components };
+}
+
+function getCampaignAccountAnalytics(data, userId, campaignId, account) {
+  const platform = normalizeTypedSocialPlatform(account?.platform);
+  const username = normalizeSocialUsername(account?.username);
+  const uniqueClips = new Map();
+  for (const clip of [...Object.values(data?.clips || {}), ...Object.values(data?.clipReviews || {})]) {
+    if (!clip || String(clip.userId) !== String(userId) || String(clip.campaignId) !== String(campaignId)) continue;
+    if (normalizeTypedSocialPlatform(clip.platform) !== platform) continue;
+    if (normalizeSocialUsername(clip.username || clip.platformAuthorName) !== username) continue;
+    const key = String(clip.id || clip.clipId || clip.videoUrl || clip.url || uniqueClips.size);
+    uniqueClips.set(key, clip);
+  }
+  const clips = [...uniqueClips.values()];
+  const sumMetric = resolver => clips.reduce((total, clip) => total + Math.max(0, Number(resolver(clip)) || 0), 0);
+  return {
+    totalClips: clips.length,
+    totalViews: sumMetric(clip => Math.max(Number(clip.publicViews) || 0, Number(clip.currentViews) || 0, Number(clip.views) || 0)),
+    totalLikes: sumMetric(clip => clip.likes ?? clip.likeCount ?? clip.likesCount),
+    totalComments: sumMetric(clip => clip.comments ?? clip.commentCount ?? clip.commentsCount)
+  };
+}
+
+function buildCampaignAccountViewPage(userRecord, campaign, requestedPage = 0, options = {}) {
+  ensureCampaignAccountIds(userRecord, campaign.id);
+  const accounts = getAllCampaignAccounts(userRecord, campaign.id, { activeOnly: true });
+  if (!accounts.length) {
+    return {
+      page: 0,
+      totalPages: 0,
+      totalAccounts: 0,
+      embeds: [new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle('No Campaign Accounts Connected')
+        .setDescription(`You haven't connected any accounts to **${campaign.name}** yet.`)
+        .setFooter({ text: 'Creators Elite • Campaign Accounts' })],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`campaign_connect_link:${campaign.id}`).setLabel('Link Account').setStyle(ButtonStyle.Success)
+      )]
+    };
+  }
+  const totalPages = accounts.length;
+  const page = Math.min(Math.max(Number(requestedPage) || 0, 0), totalPages - 1);
+  const account = accounts[page];
+  const analytics = getCampaignAccountAnalytics(options.data, options.userId, campaign.id, account);
+  const tier = account.tier || account.demographicTier || userRecord?.demographics?.tier || 'Not available';
+  const pageType = account.pageType || account.accountType || account.profileType || 'Not available';
+  const verified = account.verified === true || ['approved', 'verified'].includes(String(account.status || '').toLowerCase());
+  const cleanUsername = normalizeUsername(account.username);
+  const profileUrl = {
+    tiktok: `https://www.tiktok.com/@${cleanUsername}`,
+    instagram: `https://www.instagram.com/${cleanUsername}`,
+    youtube: `https://www.youtube.com/@${cleanUsername}`
+  }[normalizeTypedSocialPlatform(account.platform)];
+  const usernameDisplay = profileUrl ? `[@${cleanUsername}](${profileUrl})` : `@${cleanUsername}`;
+  const embed = new EmbedBuilder()
+    .setColor(0x00D26A)
+    .setTitle('Your Connected Campaign Accounts')
+    .setDescription(`## ${usernameDisplay}`)
+    .addFields(
+      { name: 'Campaign', value: campaign.name.replace(/<a?:\w+:\d+>/g, '').trim(), inline: true },
+      { name: 'Platform', value: formatPlatform(account.platform), inline: true },
+      { name: 'Username', value: `@${cleanUsername}`, inline: true },
+      { name: 'Verification Status', value: verified ? '✅ Fully Verified' : '⏳ Pending Verification', inline: true },
+      { name: 'Tier', value: String(tier), inline: true },
+      { name: 'Page Type', value: String(pageType), inline: true },
+      { name: 'Total Clips', value: formatNumber(analytics.totalClips), inline: true },
+      { name: 'Total Views', value: formatNumber(analytics.totalViews), inline: true },
+      { name: 'Total Likes', value: formatNumber(analytics.totalLikes), inline: true },
+      { name: 'Total Comments', value: formatNumber(analytics.totalComments), inline: true }
+    )
+    .setFooter({ text: `Creators Elite • Campaign Accounts • Showing account ${page + 1} of ${totalPages}` });
+  if (typeof account.avatarUrl === 'string' && /^https:\/\//i.test(account.avatarUrl)) embed.setThumbnail(account.avatarUrl);
+  const accountId = getCampaignAccountStableId(account.source, campaign.id, account.platform);
+  const components = [new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`campaign_connect_disconnect:${campaign.id}:${account.platform}:${accountId}:${page}`).setLabel('Disconnect').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`campaign_connect_link:${campaign.id}`).setLabel('Link Another Account').setStyle(ButtonStyle.Success)
+  )];
+  const optionPageSize = 25;
+  const optionPage = Math.floor(page / optionPageSize);
+  const optionPageCount = Math.ceil(accounts.length / optionPageSize);
+  const optionPageAccounts = accounts.slice(optionPage * optionPageSize, (optionPage + 1) * optionPageSize);
+  components.push(new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`campaign_connect_view_select:${campaign.id}:${optionPage}`)
+      .setPlaceholder('Click here to switch account preview')
+      .addOptions(optionPageAccounts.map(candidate => {
+        const candidateId = getCampaignAccountStableId(candidate.source, campaign.id, candidate.platform);
+        return {
+          label: `${formatPlatform(candidate.platform)} — @${candidate.username}`.slice(0, 100),
+          value: `${candidate.platform}|${candidateId}`,
+          emoji: { tiktok: '🎵', instagram: '📸', youtube: '▶️' }[normalizeTypedSocialPlatform(candidate.platform)],
+          default: candidateId === accountId
+        };
+      }))
+  ));
+  if (optionPageCount > 1) {
+    components.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`campaign_connect_view_options_page:${campaign.id}:${optionPage - 1}`).setLabel('Previous Accounts').setStyle(ButtonStyle.Secondary).setDisabled(optionPage === 0),
+      new ButtonBuilder().setCustomId(`campaign_connect_view_options_page:${campaign.id}:${optionPage + 1}`).setLabel('Next Accounts').setStyle(ButtonStyle.Secondary).setDisabled(optionPage === optionPageCount - 1)
+    ));
+  }
+  return { page, totalPages, totalAccounts: accounts.length, account, analytics, embeds: [embed], components };
+}
+
+function buildCampaignAccountDisconnectConfirmation(campaign, account, page = 0) {
+  const accountId = getCampaignAccountStableId(account.source || account, campaign.id, account.platform);
+  return {
+    content: null,
+    embeds: [new EmbedBuilder()
+      .setColor(0xED4245)
+      .setTitle('Remove Campaign Account?')
+      .setDescription(`Are you sure you want to unlink:\n\n**${formatPlatform(account.platform)}**\n@${account.username}\n\nfrom **${campaign.name}**? Historical clips and payments will be preserved.`)],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`campaign_connect_disconnect_confirm:${campaign.id}:${account.platform}:${accountId}:${page}`).setLabel('Remove Account').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`campaign_connect_view_page:${campaign.id}:${page}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+    )]
+  };
 }
 
 function buildSubmitClipAccountSelectionPage(submissionAccounts, campaignId, requestedPage = 0, pageSize = 25) {
@@ -10257,31 +10422,30 @@ ${reason}
 
     if (interaction.isButton() && interaction.customId.startsWith('global_social_link:')) {
       const returnCampaignId = interaction.customId.split(':')[1];
-      await interaction.reply({
-        ...buildGlobalSocialConnectChooser(returnCampaignId === 'none' ? null : returnCampaignId),
-        flags: MessageFlags.Ephemeral
-      });
+      await interaction.showModal(buildGlobalSocialLinkModal(returnCampaignId === 'none' ? null : returnCampaignId));
       return;
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('global_social_link_from_view:')) {
       const returnCampaignId = interaction.customId.split(':')[1];
-      await interaction.update(buildGlobalSocialConnectChooser(returnCampaignId === 'none' ? null : returnCampaignId));
+      await interaction.showModal(buildGlobalSocialLinkModal(returnCampaignId === 'none' ? null : returnCampaignId));
       return;
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('global_social_link_platform:')) {
       const [, platform, returnCampaignIdValue] = interaction.customId.split(':');
       const returnCampaignId = returnCampaignIdValue === 'none' ? null : returnCampaignIdValue;
-      await interaction.showModal(buildGlobalSocialLinkModal(platform, returnCampaignId));
+      await interaction.showModal(buildGlobalSocialLinkModal(returnCampaignId, platform));
       return;
     }
 
     if (interaction.isModalSubmit() && interaction.customId.startsWith('global_social_link_modal:')) {
-      const [, platformValue, returnCampaignIdValue] = interaction.customId.split(':');
+      const modalIdParts = interaction.customId.split(':');
+      const legacyPlatform = modalIdParts.length >= 3 ? normalizeTypedSocialPlatform(modalIdParts[1]) : null;
+      const returnCampaignIdValue = legacyPlatform ? modalIdParts[2] : modalIdParts[1];
       const returnCampaignId = returnCampaignIdValue === 'none' ? null : returnCampaignIdValue;
       const username = normalizeUsername(interaction.fields.getTextInputValue('global_social_username'));
-      const platform = normalizeTypedSocialPlatform(platformValue);
+      const platform = legacyPlatform || normalizeTypedSocialPlatform(interaction.fields.getStringSelectValues('global_social_platform')[0]);
       if (!platform) {
         await interaction.reply({ content: 'Unsupported platform. Please enter TikTok, Instagram, or YouTube.', flags: MessageFlags.Ephemeral });
         return;
@@ -10400,6 +10564,30 @@ ${reason}
       return;
     }
 
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('global_social_view_select:')) {
+      const data = loadData();
+      const userRecord = data.users?.[interaction.user.id] || { socials: [] };
+      const identityBackfill = ensureGlobalSocialAccountIds(userRecord);
+      if (data.users?.[interaction.user.id] && identityBackfill.changed) saveData(data);
+      const socials = getActiveGlobalSocials(userRecord);
+      const selectedIndex = socials.findIndex(social => getGlobalSocialInteractionId(social) === String(interaction.values[0]));
+      if (selectedIndex < 0) return interaction.update({ content: '❌ Social account not found or already unlinked.', embeds: [], components: [] });
+      const viewPage = buildGlobalSocialViewPage(userRecord, selectedIndex, { data, userId: interaction.user.id });
+      await interaction.update({ content: null, embeds: viewPage.embeds, components: viewPage.components });
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('global_social_view_options_page:')) {
+      const optionPage = Math.max(Number(interaction.customId.split(':')[1]) || 0, 0);
+      const data = loadData();
+      const userRecord = data.users?.[interaction.user.id] || { socials: [] };
+      const identityBackfill = ensureGlobalSocialAccountIds(userRecord);
+      if (data.users?.[interaction.user.id] && identityBackfill.changed) saveData(data);
+      const viewPage = buildGlobalSocialViewPage(userRecord, optionPage * 25, { data, userId: interaction.user.id });
+      await interaction.update({ content: null, embeds: viewPage.embeds, components: viewPage.components });
+      return;
+    }
+
     if (interaction.isButton() && interaction.customId.startsWith('global_social_disconnect:')) {
       const [, socialInteractionId, pageValue] = interaction.customId.split(':');
       const data = loadData();
@@ -10509,7 +10697,7 @@ ${reason}
       }
 
       const userRecord = ensureUser(data, member);
-      const viewPage = buildCampaignAccountViewPage(userRecord, campaign);
+      const viewPage = buildCampaignAccountViewPage(userRecord, campaign, 0, { data, userId: interaction.user.id });
       await interaction.reply({
         embeds: viewPage.embeds,
         components: viewPage.components,
@@ -10525,7 +10713,72 @@ ${reason}
       if (!campaign) return interaction.update({ content: '❌ Campaign not found.', embeds: [], components: [] });
       const data = loadData();
       const userRecord = data.users?.[interaction.user.id] || { campaignAccounts: {} };
-      const viewPage = buildCampaignAccountViewPage(userRecord, campaign, Number(pageValue) || 0);
+      const viewPage = buildCampaignAccountViewPage(userRecord, campaign, Number(pageValue) || 0, { data, userId: interaction.user.id });
+      await interaction.update({ content: null, embeds: viewPage.embeds, components: viewPage.components });
+      return;
+    }
+
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('campaign_connect_view_select:')) {
+      const [, campaignId] = interaction.customId.split(':');
+      const campaign = CAMPAIGNS[campaignId];
+      if (!campaign) return interaction.update({ content: '❌ Campaign not found.', embeds: [], components: [] });
+      const [platform, accountId] = interaction.values[0].split('|');
+      const data = loadData();
+      const userRecord = data.users?.[interaction.user.id] || { campaignAccounts: {} };
+      const accounts = getAllCampaignAccounts(userRecord, campaignId, { activeOnly: true });
+      const page = accounts.findIndex(account =>
+        account.platform === platform &&
+        getCampaignAccountStableId(account.source, campaignId, account.platform) === accountId
+      );
+      if (page < 0) return interaction.update({ content: '❌ Campaign account not found or already removed.', embeds: [], components: [] });
+      const viewPage = buildCampaignAccountViewPage(userRecord, campaign, page, { data, userId: interaction.user.id });
+      await interaction.update({ content: null, embeds: viewPage.embeds, components: viewPage.components });
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_view_options_page:')) {
+      const [, campaignId, optionPageValue] = interaction.customId.split(':');
+      const campaign = CAMPAIGNS[campaignId];
+      if (!campaign) return interaction.update({ content: '❌ Campaign not found.', embeds: [], components: [] });
+      const data = loadData();
+      const userRecord = data.users?.[interaction.user.id] || { campaignAccounts: {} };
+      const accountPage = Math.max(0, (Number(optionPageValue) || 0) * 25);
+      const viewPage = buildCampaignAccountViewPage(userRecord, campaign, accountPage, { data, userId: interaction.user.id });
+      await interaction.update({ content: null, embeds: viewPage.embeds, components: viewPage.components });
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_disconnect:')) {
+      const [, campaignId, platform, accountId, pageValue] = interaction.customId.split(':');
+      const campaign = CAMPAIGNS[campaignId];
+      if (!campaign) return interaction.update({ content: '❌ Campaign not found.', embeds: [], components: [] });
+      const data = loadData();
+      const userRecord = data.users?.[interaction.user.id];
+      const account = getCampaignAccountCandidates(userRecord, campaignId, platform, { activeOnly: true })
+        .find(candidate => getCampaignAccountStableId(candidate, campaignId, platform) === accountId);
+      if (!account) return interaction.update({ content: '❌ Campaign account not found or already removed.', embeds: [], components: [] });
+      await interaction.update(buildCampaignAccountDisconnectConfirmation(campaign, { ...account, platform }, Number(pageValue) || 0));
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_disconnect_confirm:')) {
+      const [, campaignId, platform, accountId, pageValue] = interaction.customId.split(':');
+      const campaign = CAMPAIGNS[campaignId];
+      if (!campaign) return interaction.update({ content: '❌ Campaign not found.', embeds: [], components: [] });
+      const data = loadData();
+      const removal = removeCampaignAccount({
+        data,
+        userId: interaction.user.id,
+        campaignId,
+        platform,
+        accountId,
+        removedBy: interaction.user.id
+      });
+      if (!removal.removed) return interaction.update({ content: '❌ Campaign account not found or already removed.', embeds: [], components: [] });
+      saveData(data);
+      const userRecord = data.users?.[interaction.user.id] || { campaignAccounts: {} };
+      const nextPage = Math.min(Math.max(Number(pageValue) || 0, 0), Math.max(0, getAllCampaignAccounts(userRecord, campaignId, { activeOnly: true }).length - 1));
+      const viewPage = buildCampaignAccountViewPage(userRecord, campaign, nextPage, { data, userId: interaction.user.id });
       await interaction.update({ content: null, embeds: viewPage.embeds, components: viewPage.components });
       return;
     }
@@ -10562,21 +10815,7 @@ ${reason}
         return;
       }
 
-      const select = new StringSelectMenuBuilder()
-        .setCustomId(`campaign_connect_platform:${campaignId}`)
-        .setPlaceholder('Choose platform')
-        .addOptions(
-          campaign.allowedPlatforms.map(platform => ({
-            label: formatPlatform(platform),
-            value: platform
-          }))
-        );
-
-      await interaction.reply({
-        content: `Choose platform for **${campaign.name}**`,
-        components: [new ActionRowBuilder().addComponents(select)],
-        flags: MessageFlags.Ephemeral
-      });
+      await interaction.showModal(buildCampaignAccountLinkModal(campaign));
 
       return;
     }
@@ -10591,27 +10830,12 @@ ${reason}
         return;
       }
 
-      const modal = new ModalBuilder()
-        .setCustomId(`campaign_connect_modal:${campaignId}:${platform}`)
-        .setTitle('Add Campaign Account');
-
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('campaign_username')
-            .setLabel('Username')
-            .setPlaceholder('@username')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-        )
-      );
-
-      await interaction.showModal(modal);
+      await interaction.showModal(buildCampaignAccountLinkModal(campaign, platform));
       return;
     }
 
     if (interaction.isModalSubmit() && interaction.customId.startsWith('campaign_connect_modal:')) {
-      const [, campaignId, platform] = interaction.customId.split(':');
+      const [, campaignId, legacyPlatform] = interaction.customId.split(':');
       const campaign = CAMPAIGNS[campaignId];
 
       if (!campaign) {
@@ -10619,6 +10843,7 @@ ${reason}
         return;
       }
 
+      const platform = normalizeTypedSocialPlatform(legacyPlatform || interaction.fields.getStringSelectValues('campaign_social_platform')[0]);
       const username = normalizeUsername(
         interaction.fields.getTextInputValue('campaign_username')
       );
@@ -13658,6 +13883,8 @@ module.exports.__clipLifecycleTest = {
   buildCampaignRulesRow,
   buildCampaignAccountApprovedEmbed,
   buildCampaignAccountRejectedEmbed,
+  buildCampaignAccountDisconnectConfirmation,
+  buildCampaignAccountLinkModal,
   buildCampaignAccountRemovePage,
   buildCampaignAccountViewPage,
   buildCampaignJoinSuccessEmbed,
@@ -13669,11 +13896,11 @@ module.exports.__clipLifecycleTest = {
   buildClipStaffEmbed,
   buildClipStaffButtons,
   buildGlobalSocialLinkModal,
-  buildGlobalSocialConnectChooser,
   buildGlobalSocialPanel,
   buildGlobalSocialRemoveConfirmation,
   buildGlobalSocialRemovePage,
   buildGlobalSocialViewPage,
+  getCampaignAccountAnalytics,
   getGlobalSocialAccountAnalytics,
   buildGlobalSocialVerificationPrompt,
   buildInstagramVerificationFailureResponse,
