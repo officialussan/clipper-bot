@@ -26,10 +26,12 @@ const {
   buildClipStaffEmbed,
   buildClipStaffButtons,
   buildGlobalSocialLinkModal,
+  buildGlobalSocialConnectChooser,
   buildGlobalSocialPanel,
   buildGlobalSocialRemoveConfirmation,
   buildGlobalSocialRemovePage,
   buildGlobalSocialViewPage,
+  getGlobalSocialAccountAnalytics,
   buildGlobalSocialVerificationPrompt,
   buildInstagramVerificationFailureResponse,
   buildInstagramVerificationSuccessEmbed,
@@ -1464,13 +1466,25 @@ test('ten individually capped clips fulfill the shared straight campaign allocat
   }
 });
 
-test('global social panel uses a typed platform modal and the existing demographics destination', () => {
-  const modal = buildGlobalSocialLinkModal('straight_test');
-  const modalJson = modal.toJSON();
-  assert.equal(modalJson.custom_id, 'global_social_link_modal:straight_test');
-  assert.deepEqual(modalJson.components.map(row => row.components[0].custom_id), ['global_social_platform', 'global_social_username']);
-  assert.equal(modalJson.components.every(row => row.components[0].type === 4), true);
-  assert.equal(JSON.stringify(modalJson).includes('select'), false);
+test('global social panel uses platform-first buttons and one-field mobile-friendly modals', () => {
+  const chooser = buildGlobalSocialConnectChooser('straight_test');
+  assert.equal(chooser.embeds[0].data.title, 'Connect your account');
+  assert.match(chooser.embeds[0].data.description, /Never share a password/);
+  assert.deepEqual(
+    chooser.components[0].components.map(button => button.data.custom_id),
+    [
+      'global_social_link_platform:tiktok:straight_test',
+      'global_social_link_platform:instagram:straight_test',
+      'global_social_link_platform:youtube:straight_test'
+    ]
+  );
+  for (const [platform, label] of [['tiktok', 'TikTok'], ['instagram', 'Instagram'], ['youtube', 'YouTube']]) {
+    const modalJson = buildGlobalSocialLinkModal(platform, 'straight_test').toJSON();
+    assert.equal(modalJson.custom_id, `global_social_link_modal:${platform}:straight_test`);
+    assert.equal(modalJson.title, `Connect ${label}`);
+    assert.deepEqual(modalJson.components.map(row => row.components[0].custom_id), ['global_social_username']);
+    assert.match(modalJson.components[0].components[0].label, new RegExp(label));
+  }
 
   const panel = buildGlobalSocialPanel('guild-1', 'demographics-1');
   const buttons = panel.components[0].components.map(component => component.data);
@@ -1833,7 +1847,7 @@ test('global campaign eligibility is ANY-platform, drives submission account cho
   }
 });
 
-test('global View Accounts groups the complete active portfolio and provides a global zero-state link', () => {
+test('global View Accounts renders one metric-rich account card and provides a global zero-state link', () => {
   const userRecord = {
     socials: [
       { id: 'tt-1', platform: 'tiktok', username: 'one', status: 'verified', verified: true },
@@ -1842,21 +1856,43 @@ test('global View Accounts groups the complete active portfolio and provides a g
       { id: 'yt-1', platform: 'youtube', username: 'four', status: 'verified', verified: true },
       { id: 'old-1', platform: 'instagram', username: 'removed', status: 'unlinked', verified: false, removedAt: 1 }
     ],
+    demographics: { status: 'approved', tier: 'Tier 2' },
     campaignAccounts: { elephant: { instagram: { username: 'monsterlab-only', verified: true } } }
   };
-  const page = buildGlobalSocialViewPage(userRecord);
+  userRecord.socials[0].pageType = 'Creator';
+  const data = {
+    clips: {
+      one: { id: 'one', userId: 'creator', globalSocialId: 'tt-1', campaignId: 'ice', publicViews: 1200, likes: 80, comments: 12 },
+      two: { id: 'two', userId: 'creator', globalSocialId: 'tt-1', campaignId: 'ice', currentViews: 300, likes: 20, commentCount: 3 }
+    }
+  };
+  const page = buildGlobalSocialViewPage(userRecord, 0, { data, userId: 'creator' });
   const fields = page.embeds[0].data.fields;
   assert.equal(page.totalAccounts, 4);
-  assert.match(page.embeds[0].data.title, /Your Connected Social Accounts/);
-  assert.match(fields.find(field => field.name === 'TikTok').value, /@one[\s\S]*@two/);
-  assert.match(fields.find(field => field.name === 'Instagram').value, /@three/);
-  assert.match(fields.find(field => field.name === 'YouTube').value, /@four/);
-  assert.equal(fields.find(field => field.name === 'Total Connected Accounts').value, '4');
+  assert.equal(page.totalPages, 4);
+  assert.equal(page.embeds[0].data.title, 'TikTok Account');
+  assert.match(page.embeds[0].data.description, /@one[\s\S]*Verified/);
+  assert.equal(fields.find(field => field.name === 'Tier').value, 'Tier 2');
+  assert.equal(fields.find(field => field.name === 'Page Type').value, 'Creator');
+  assert.match(fields.find(field => field.name === 'Campaigns Participated').value, /ICE/);
+  assert.equal(fields.find(field => field.name === 'Total Clips').value, '2');
+  assert.equal(fields.find(field => field.name === 'Total Views').value, '1.5K');
+  assert.equal(fields.find(field => field.name === 'Total Likes').value, '100');
+  assert.equal(fields.find(field => field.name === 'Total Comments').value, '15');
+  assert.equal(page.components[0].components[2].data.label, 'Disconnect');
+  assert.equal(page.components[0].components[3].data.label, 'Link Another Account');
+  assert.match(buildGlobalSocialViewPage(userRecord, 1).embeds[0].data.description, /@two/);
   assert.doesNotMatch(JSON.stringify(page.embeds[0].data), /removed|monsterlab-only/);
+  const confirmation = buildGlobalSocialRemoveConfirmation(userRecord.socials[0], { fromView: true, page: 0 });
+  assert.match(confirmation.components[0].components[0].data.custom_id, /^global_social_disconnect_confirm:/);
+  assert.equal(removeGlobalSocialAccount(userRecord, 'tt-1', 'creator', 999).removed, true);
+  const afterDisconnect = buildGlobalSocialViewPage(userRecord, 0, { data, userId: 'creator' });
+  assert.equal(afterDisconnect.totalAccounts, 3);
+  assert.match(afterDisconnect.embeds[0].data.description, /@two/);
 
   const empty = buildGlobalSocialViewPage({ socials: [] });
   assert.equal(empty.embeds[0].data.title, 'No Social Accounts Connected');
-  assert.equal(empty.components[0].components[0].data.custom_id, 'global_social_link:none');
+  assert.equal(empty.components[0].components[0].data.custom_id, 'global_social_link_from_view:none');
 });
 
 test('global Remove Account uses stable per-record IDs, paginates all accounts, and confirms before unlinking', () => {
@@ -1973,12 +2009,10 @@ test('unlimited global portfolio preserves 60 accounts, paginates every UI, allo
 
   const viewed = new Set();
   const firstViewPage = buildGlobalSocialViewPage(userRecord, 0);
-  assert.equal(firstViewPage.totalPages, 6);
+  assert.equal(firstViewPage.totalPages, 60);
   for (let page = 0; page < firstViewPage.totalPages; page++) {
     const rendered = buildGlobalSocialViewPage(userRecord, page);
-    for (const field of rendered.embeds[0].data.fields || []) {
-      for (const match of String(field.value).matchAll(/@([a-z0-9]+)/gi)) viewed.add(match[1].toLowerCase());
-    }
+    for (const match of String(rendered.embeds[0].data.description).matchAll(/@([a-z0-9]+)/gi)) viewed.add(match[1].toLowerCase());
   }
   assert.equal(viewed.size, 60);
 

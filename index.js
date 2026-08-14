@@ -1375,6 +1375,10 @@ function applyTrackedMetadata(clip, metadata, data) {
   if (Number.isFinite(fetchedLikes) && fetchedLikes >= 0) {
     clip.likes = fetchedLikes;
   }
+  const fetchedComments = Number(metadata?.comments ?? metadata?.commentCount ?? metadata?.commentsCount);
+  if (Number.isFinite(fetchedComments) && fetchedComments >= 0) {
+    clip.comments = fetchedComments;
+  }
   const publicViews = getSafeTrackedViews(clip, metadata);
   const campaign = CAMPAIGNS[clip.campaignId];
   if (isStraightCampaign(campaign)) {
@@ -2173,23 +2177,37 @@ function buildGlobalSocialLinkButtonRow(returnCampaignId = null) {
   );
 }
 
-function buildGlobalSocialLinkModal(returnCampaignId = null) {
+function buildGlobalSocialConnectChooser(returnCampaignId = null) {
+  const campaignValue = returnCampaignId || 'none';
+  return {
+    embeds: [new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setTitle('Connect your account')
+      .setDescription(
+        'Choose the social platform you want to connect. You will only be asked for the public username or handle.\n\n' +
+        '**Never share a password or other sensitive information.**'
+      )
+      .setFooter({ text: 'Creators Elite • Social Accounts' })],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`global_social_link_platform:tiktok:${campaignValue}`).setLabel('Connect TikTok').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`global_social_link_platform:instagram:${campaignValue}`).setLabel('Connect Instagram').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`global_social_link_platform:youtube:${campaignValue}`).setLabel('Connect YouTube').setStyle(ButtonStyle.Secondary)
+    )]
+  };
+}
+
+function buildGlobalSocialLinkModal(platform, returnCampaignId = null) {
+  const normalizedPlatform = normalizeTypedSocialPlatform(platform);
+  if (!normalizedPlatform) throw new Error('Unsupported global social platform.');
+  const platformName = formatPlatform(normalizedPlatform);
   const modal = new ModalBuilder()
-    .setCustomId(`global_social_link_modal:${returnCampaignId || 'none'}`)
-    .setTitle('Link Social Account');
+    .setCustomId(`global_social_link_modal:${normalizedPlatform}:${returnCampaignId || 'none'}`)
+    .setTitle(`Connect ${platformName}`);
   modal.addComponents(
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
-        .setCustomId('global_social_platform')
-        .setLabel('Platform')
-        .setPlaceholder('TikTok, Instagram, YouTube')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-    ),
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
         .setCustomId('global_social_username')
-        .setLabel('Username / Handle')
+        .setLabel(`Enter your ${platformName} username`)
         .setPlaceholder('@username')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
@@ -2344,7 +2362,38 @@ function renderGlobalSocialAccounts(userRecord) {
     .join('\n\n');
 }
 
-function buildGlobalSocialViewPage(userRecord, requestedPage = 0, pageSize = 10) {
+function getGlobalSocialAccountAnalytics(data, userId, social) {
+  const socialIds = new Set([social?.id, social?.interactionId].filter(Boolean).map(String));
+  const platform = normalizeTypedSocialPlatform(social?.platform);
+  const username = normalizeSocialUsername(social?.normalizedUsername || social?.username);
+  const uniqueClips = new Map();
+  for (const clip of [...Object.values(data?.clips || {}), ...Object.values(data?.clipReviews || {})]) {
+    if (!clip || (userId && String(clip.userId) !== String(userId))) continue;
+    const linkedById = clip.globalSocialId && socialIds.has(String(clip.globalSocialId));
+    const linkedByLegacyIdentity = !clip.globalSocialId &&
+      getCampaignAccountMode(CAMPAIGNS[clip.campaignId]) === 'global_auto_verify' &&
+      normalizeTypedSocialPlatform(clip.platform) === platform &&
+      normalizeSocialUsername(clip.username || clip.platformAuthorName) === username;
+    if (!linkedById && !linkedByLegacyIdentity) continue;
+    const key = String(clip.id || clip.clipId || clip.videoUrl || clip.url || uniqueClips.size);
+    uniqueClips.set(key, clip);
+  }
+  const clips = [...uniqueClips.values()];
+  const campaignIds = new Set(clips.map(clip => clip.campaignId).filter(Boolean).map(String));
+  for (const campaignId of social?.campaignsParticipated || social?.campaigns || []) campaignIds.add(String(campaignId));
+  const campaigns = [...campaignIds].map(campaignId => CAMPAIGNS[campaignId]?.name?.replace(/<a?:\w+:\d+>/g, '').trim() || campaignId);
+  const sumMetric = resolver => clips.reduce((total, clip) => total + Math.max(0, Number(resolver(clip)) || 0), 0);
+  return {
+    campaigns,
+    totalClips: clips.length,
+    totalViews: sumMetric(clip => Math.max(Number(clip.publicViews) || 0, Number(clip.currentViews) || 0, Number(clip.views) || 0)),
+    totalLikes: sumMetric(clip => clip.likes ?? clip.likeCount ?? clip.likesCount),
+    totalComments: sumMetric(clip => clip.comments ?? clip.commentCount ?? clip.commentsCount)
+  };
+}
+
+function buildGlobalSocialViewPage(userRecord, requestedPage = 0, options = {}) {
+  ensureGlobalSocialAccountIds(userRecord);
   const socials = getActiveGlobalSocials(userRecord);
   if (!socials.length) {
     return {
@@ -2356,36 +2405,43 @@ function buildGlobalSocialViewPage(userRecord, requestedPage = 0, pageSize = 10)
         .setTitle('No Social Accounts Connected')
         .setDescription("You haven't connected any social accounts yet.\n\nConnect a TikTok, Instagram, or YouTube account to get started.")
         .setFooter({ text: 'Creators Elite • Social Accounts' })],
-      components: [buildGlobalSocialLinkButtonRow(null)]
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('global_social_link_from_view:none').setLabel('Link Account').setStyle(ButtonStyle.Success)
+      )]
     };
   }
-  const totalPages = Math.ceil(socials.length / pageSize);
+  const totalPages = socials.length;
   const page = Math.min(Math.max(Number(requestedPage) || 0, 0), totalPages - 1);
-  const pageSocials = socials.slice(page * pageSize, (page + 1) * pageSize);
-  const groups = new Map();
-  for (const social of pageSocials) {
-    const platform = normalizeTypedSocialPlatform(social.platform);
-    if (!groups.has(platform)) groups.set(platform, []);
-    const status = social.verified === true ? '✅ Verified' : '🔗 Connected';
-    const method = social.verificationMethod === 'bio_code_api' ? '\nVerified via: Bio Code' : '';
-    groups.get(platform).push(`@${social.username}\n${status}${method}`);
-  }
-  const fields = ['tiktok', 'instagram', 'youtube']
-    .filter(platform => groups.has(platform))
-    .map(platform => ({ name: formatPlatform(platform), value: groups.get(platform).join('\n\n'), inline: false }));
-  fields.push({ name: 'Total Connected Accounts', value: String(socials.length), inline: false });
+  const social = socials[page];
+  const analytics = getGlobalSocialAccountAnalytics(options.data, options.userId, social);
+  const tier = social.tier || social.demographicTier || userRecord?.demographics?.tier || 'Not available';
+  const pageType = social.pageType || social.accountType || social.profileType || 'Not available';
+  const status = social.verified === true ? '✅ Verified' : '🔗 Connected';
   const embed = new EmbedBuilder()
     .setColor(0x5865F2)
-    .setTitle('Your Connected Social Accounts')
-    .addFields(fields)
-    .setFooter({ text: `Creators Elite • Social Accounts${totalPages > 1 ? ` • Page ${page + 1}/${totalPages}` : ''}` });
-  const components = totalPages > 1
-    ? [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`global_social_view_page:${page - 1}`).setLabel('Previous').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
-        new ButtonBuilder().setCustomId(`global_social_view_page:${page + 1}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page === totalPages - 1)
-      )]
-    : [];
-  return { page, totalPages, totalAccounts: socials.length, embeds: [embed], components };
+    .setTitle(`${formatPlatform(social.platform)} Account`)
+    .setDescription(`## @${social.username}\n${status}`)
+    .addFields(
+      { name: 'Platform', value: formatPlatform(social.platform), inline: true },
+      { name: 'Username', value: `@${social.username}`, inline: true },
+      { name: 'Verification Status', value: status, inline: true },
+      { name: 'Tier', value: String(tier), inline: true },
+      { name: 'Page Type', value: String(pageType), inline: true },
+      { name: 'Campaigns Participated', value: analytics.campaigns.length ? analytics.campaigns.join('\n').slice(0, 1024) : 'None yet', inline: false },
+      { name: 'Total Clips', value: formatNumber(analytics.totalClips), inline: true },
+      { name: 'Total Views', value: formatNumber(analytics.totalViews), inline: true },
+      { name: 'Total Likes', value: formatNumber(analytics.totalLikes), inline: true },
+      { name: 'Total Comments', value: formatNumber(analytics.totalComments), inline: true }
+    )
+    .setFooter({ text: `Creators Elite • Social Accounts • Showing account ${page + 1} of ${totalPages}` });
+  if (typeof social.avatarUrl === 'string' && /^https:\/\//i.test(social.avatarUrl)) embed.setThumbnail(social.avatarUrl);
+  const components = [new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`global_social_view_page:${page - 1}`).setLabel('Previous').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+    new ButtonBuilder().setCustomId(`global_social_view_page:${page + 1}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page === totalPages - 1),
+    new ButtonBuilder().setCustomId(`global_social_disconnect:${getGlobalSocialInteractionId(social)}:${page}`).setLabel('Disconnect').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('global_social_link_from_view:none').setLabel('Link Another Account').setStyle(ButtonStyle.Success)
+  )];
+  return { page, totalPages, totalAccounts: socials.length, social, analytics, embeds: [embed], components };
 }
 
 function buildGlobalSocialRemovePage(userRecord, requestedPage = 0, pageSize = 25) {
@@ -2427,7 +2483,12 @@ function buildGlobalSocialRemovePage(userRecord, requestedPage = 0, pageSize = 2
   };
 }
 
-function buildGlobalSocialRemoveConfirmation(social) {
+function buildGlobalSocialRemoveConfirmation(social, options = {}) {
+  const page = Math.max(Number(options.page) || 0, 0);
+  const confirmCustomId = options.fromView
+    ? `global_social_disconnect_confirm:${getGlobalSocialInteractionId(social)}:${page}`
+    : `global_social_remove_confirm:${getGlobalSocialInteractionId(social)}`;
+  const cancelCustomId = options.fromView ? `global_social_view_page:${page}` : 'global_social_remove_cancel';
   return {
     content: null,
     embeds: [new EmbedBuilder()
@@ -2435,8 +2496,8 @@ function buildGlobalSocialRemoveConfirmation(social) {
       .setTitle('Remove Social Account?')
       .setDescription(`Are you sure you want to unlink:\n\n**${formatPlatform(social.platform)}**\n@${social.username}\n\nfrom your Creators Elite account?`)],
     components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`global_social_remove_confirm:${getGlobalSocialInteractionId(social)}`).setLabel('Remove Account').setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId('global_social_remove_cancel').setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId(confirmCustomId).setLabel('Remove Account').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(cancelCustomId).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
     )]
   };
 }
@@ -10196,16 +10257,31 @@ ${reason}
 
     if (interaction.isButton() && interaction.customId.startsWith('global_social_link:')) {
       const returnCampaignId = interaction.customId.split(':')[1];
-      await interaction.showModal(buildGlobalSocialLinkModal(returnCampaignId === 'none' ? null : returnCampaignId));
+      await interaction.reply({
+        ...buildGlobalSocialConnectChooser(returnCampaignId === 'none' ? null : returnCampaignId),
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('global_social_link_from_view:')) {
+      const returnCampaignId = interaction.customId.split(':')[1];
+      await interaction.update(buildGlobalSocialConnectChooser(returnCampaignId === 'none' ? null : returnCampaignId));
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('global_social_link_platform:')) {
+      const [, platform, returnCampaignIdValue] = interaction.customId.split(':');
+      const returnCampaignId = returnCampaignIdValue === 'none' ? null : returnCampaignIdValue;
+      await interaction.showModal(buildGlobalSocialLinkModal(platform, returnCampaignId));
       return;
     }
 
     if (interaction.isModalSubmit() && interaction.customId.startsWith('global_social_link_modal:')) {
-      const returnCampaignIdValue = interaction.customId.split(':')[1];
+      const [, platformValue, returnCampaignIdValue] = interaction.customId.split(':');
       const returnCampaignId = returnCampaignIdValue === 'none' ? null : returnCampaignIdValue;
-      const platformInput = interaction.fields.getTextInputValue('global_social_platform');
       const username = normalizeUsername(interaction.fields.getTextInputValue('global_social_username'));
-      const platform = normalizeTypedSocialPlatform(platformInput);
+      const platform = normalizeTypedSocialPlatform(platformValue);
       if (!platform) {
         await interaction.reply({ content: 'Unsupported platform. Please enter TikTok, Instagram, or YouTube.', flags: MessageFlags.Ephemeral });
         return;
@@ -10302,7 +10378,9 @@ ${reason}
     if (interaction.isButton() && interaction.customId === 'global_social_view') {
       const data = loadData();
       const userRecord = data.users?.[interaction.user.id] || { socials: [] };
-      const viewPage = buildGlobalSocialViewPage(userRecord);
+      const identityBackfill = ensureGlobalSocialAccountIds(userRecord);
+      if (data.users?.[interaction.user.id] && identityBackfill.changed) saveData(data);
+      const viewPage = buildGlobalSocialViewPage(userRecord, 0, { data, userId: interaction.user.id });
       await interaction.reply({
         embeds: viewPage.embeds,
         components: viewPage.components,
@@ -10315,8 +10393,37 @@ ${reason}
       const page = Number(interaction.customId.split(':')[1]) || 0;
       const data = loadData();
       const userRecord = data.users?.[interaction.user.id] || { socials: [] };
-      const viewPage = buildGlobalSocialViewPage(userRecord, page);
-      await interaction.update({ embeds: viewPage.embeds, components: viewPage.components });
+      const identityBackfill = ensureGlobalSocialAccountIds(userRecord);
+      if (data.users?.[interaction.user.id] && identityBackfill.changed) saveData(data);
+      const viewPage = buildGlobalSocialViewPage(userRecord, page, { data, userId: interaction.user.id });
+      await interaction.update({ content: null, embeds: viewPage.embeds, components: viewPage.components });
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('global_social_disconnect:')) {
+      const [, socialInteractionId, pageValue] = interaction.customId.split(':');
+      const data = loadData();
+      const userRecord = data.users?.[interaction.user.id];
+      const social = findGlobalSocialByInteractionId(userRecord, socialInteractionId, { activeOnly: true });
+      if (!social) return interaction.update({ content: '❌ Social account not found or already unlinked.', embeds: [], components: [] });
+      await interaction.update(buildGlobalSocialRemoveConfirmation(social, { fromView: true, page: Number(pageValue) || 0 }));
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('global_social_disconnect_confirm:')) {
+      const [, socialInteractionId, pageValue] = interaction.customId.split(':');
+      const data = loadData();
+      const userRecord = data.users?.[interaction.user.id];
+      const social = findGlobalSocialByInteractionId(userRecord, socialInteractionId, { activeOnly: true });
+      const removal = social ? removeGlobalSocialAccount(userRecord, social.id, interaction.user.id) : { removed: false };
+      if (!removal.removed) return interaction.update({ content: '❌ Social account not found or already unlinked.', embeds: [], components: [] });
+      saveData(data);
+      const viewPage = buildGlobalSocialViewPage(userRecord, Number(pageValue) || 0, { data, userId: interaction.user.id });
+      await interaction.update({
+        content: `✅ Disconnected **${formatPlatform(removal.social.platform)} @${removal.social.username}**.`,
+        embeds: viewPage.embeds,
+        components: viewPage.components
+      });
       return;
     }
 
@@ -11336,6 +11443,7 @@ ${reason}
             const initialViewState = getInitialSubmissionViewState(metadata, campaign);
             const publicViews = initialViewState.publicViews;
             const fetchedLikes = Number(metadata?.likes);
+            const fetchedComments = Number(metadata?.comments ?? metadata?.commentCount ?? metadata?.commentsCount);
             const currentViews = initialViewState.currentViews;
             const initialCreditedViews = initialViewState.views;
             const estimatedEarnings = initialCreditedViews / 1000000 * (Number(campaign.ratePerMillion) || 0);
@@ -11359,6 +11467,7 @@ ${reason}
                 title: metadata.title || validation.canonicalUrl,
                 thumbnailUrl: metadata.thumbnailUrl || null,
                 ...(Number.isFinite(fetchedLikes) && fetchedLikes >= 0 ? { likes: fetchedLikes } : {}),
+                ...(Number.isFinite(fetchedComments) && fetchedComments >= 0 ? { comments: fetchedComments } : {}),
                 publicViews,
                 currentViews,
                 submissionViews: publicViews,
@@ -13560,10 +13669,12 @@ module.exports.__clipLifecycleTest = {
   buildClipStaffEmbed,
   buildClipStaffButtons,
   buildGlobalSocialLinkModal,
+  buildGlobalSocialConnectChooser,
   buildGlobalSocialPanel,
   buildGlobalSocialRemoveConfirmation,
   buildGlobalSocialRemovePage,
   buildGlobalSocialViewPage,
+  getGlobalSocialAccountAnalytics,
   buildGlobalSocialVerificationPrompt,
   buildInstagramVerificationFailureResponse,
   buildInstagramVerificationSuccessEmbed,
