@@ -2456,7 +2456,7 @@ function buildGlobalSocialViewPage(userRecord, requestedPage = 0, options = {}) 
   const status = social.verified === true ? '✅ Verified' : '🔗 Connected';
   const safeProfileUrl = typeof social.profileUrl === 'string' && /^https:\/\//i.test(social.profileUrl) ? social.profileUrl : null;
   const usernameDisplay = safeProfileUrl ? `[@${social.username}](${safeProfileUrl})` : `@${social.username}`;
-  const platformEmoji = { tiktok: '🎵', instagram: '📸', youtube: '▶️' }[normalizeTypedSocialPlatform(social.platform)] || '🔗';
+  const platformEmoji = { tiktok: '<:tiktok1:1504871476485029979>', instagram: '<:ig1:1504871708664922162>', youtube: '<:Yt1:1504872145464070245>' }[normalizeTypedSocialPlatform(social.platform)] || '🔗';
   const accountText =
       `${platformEmoji} **${formatPlatform(social.platform)}**\n` +
       `${usernameDisplay}\n\n` +
@@ -2493,7 +2493,7 @@ function buildGlobalSocialViewPage(userRecord, requestedPage = 0, options = {}) 
       .addOptions(optionPageSocials.map(account => ({
         label: `${formatPlatform(account.platform)} — @${account.username}`.slice(0, 100),
         value: getGlobalSocialInteractionId(account),
-        emoji: { tiktok: '🎵', instagram: '📸', youtube: '▶️' }[normalizeTypedSocialPlatform(account.platform)],
+        emoji: { tiktok: '<:tiktok1:1504871476485029979>', instagram: '<:ig1:1504871708664922162>', youtube: '<:Yt1:1504872145464070245>' }[normalizeTypedSocialPlatform(account.platform)],
         default: getGlobalSocialInteractionId(account) === getGlobalSocialInteractionId(social)
       })))
   ));
@@ -6655,7 +6655,7 @@ function buildCampaignAccountViewPage(userRecord, campaign, requestedPage = 0, o
     youtube: `https://www.youtube.com/@${cleanUsername}`
   }[normalizeTypedSocialPlatform(account.platform)];
   const usernameDisplay = profileUrl ? `[@${cleanUsername}](${profileUrl})` : `@${cleanUsername}`;
-  const platformEmoji = { tiktok: '🎵', instagram: '📸', youtube: '▶️' }[normalizeTypedSocialPlatform(account.platform)] || '🔗';
+  const platformEmoji = { tiktok: '<:tiktok1:1504871476485029979>', instagram: '<:ig1:1504871708664922162>', youtube: '<:Yt1:1504872145464070245>' }[normalizeTypedSocialPlatform(account.platform)] || '🔗';
   const accountText =
     `${platformEmoji} **${formatPlatform(account.platform)}**\n` +
     `${usernameDisplay}\n\n` +
