@@ -13,6 +13,8 @@ const {
   buildApifyInstagramProfileInput,
   buildCampaignAccountApprovedEmbed,
   buildCampaignAccountRejectedEmbed,
+  buildCampaignAccountRemovePage,
+  buildCampaignAccountViewPage,
   buildCampaignConnectAccountRow,
   buildCampaignRulesRow,
   buildCampaignJoinSuccessEmbed,
@@ -37,6 +39,7 @@ const {
   buildRejectedClipUserDm,
   buildRejectedClipUserEmbed,
   buildShortCampaignPanelText,
+  buildSubmitClipAccountSelectionPage,
   CAMPAIGNS,
   clearClipAppealWindow,
   createGlobalSocialVerificationRequest,
@@ -80,6 +83,7 @@ const {
   repairApprovalSnapshotInvariants,
   repairAugustFirstWeekLegacyWeeklyAccounting,
   ensureCampaignAccount,
+  ensureCampaignAccountIds,
   ensureGlobalSocialAccountIds,
   removeCampaignAccount,
   removeGlobalSocialAccount,
@@ -1946,4 +1950,150 @@ test('a creator can reconnect their terminal global social while active ownershi
   assert.equal(data.users.creator.socials[0].status, 'unlinked');
   assert.equal(getVerifiedGlobalSocials(data.users.creator).length, 1);
   assert.equal(getVerifiedGlobalSocials(data.users.creator)[0].platformAccountId, 'ig-stable');
+});
+
+test('unlimited global portfolio preserves 60 accounts, paginates every UI, allows account 61, and rejects only an exact duplicate', async () => {
+  const platformCounts = { tiktok: 30, instagram: 20, youtube: 10 };
+  const socials = [];
+  for (const [platform, count] of Object.entries(platformCounts)) {
+    for (let index = 0; index < count; index++) {
+      socials.push({
+        id: `${platform}-${index}`,
+        platform,
+        username: `${platform}creator${index}`,
+        normalizedUsername: `${platform}creator${index}`,
+        platformAccountId: `${platform}-provider-${index}`,
+        status: 'verified',
+        verified: true
+      });
+    }
+  }
+  const userRecord = { socials, campaigns: ['ice'] };
+  assert.equal(getActiveGlobalSocials(userRecord).length, 60);
+
+  const viewed = new Set();
+  const firstViewPage = buildGlobalSocialViewPage(userRecord, 0);
+  assert.equal(firstViewPage.totalPages, 6);
+  for (let page = 0; page < firstViewPage.totalPages; page++) {
+    const rendered = buildGlobalSocialViewPage(userRecord, page);
+    for (const field of rendered.embeds[0].data.fields || []) {
+      for (const match of String(field.value).matchAll(/@([a-z0-9]+)/gi)) viewed.add(match[1].toLowerCase());
+    }
+  }
+  assert.equal(viewed.size, 60);
+
+  const removableIds = new Set();
+  const firstRemovePage = buildGlobalSocialRemovePage(userRecord, 0);
+  assert.equal(firstRemovePage.totalPages, 3);
+  for (let page = 0; page < firstRemovePage.totalPages; page++) {
+    const rendered = buildGlobalSocialRemovePage(userRecord, page);
+    for (const option of rendered.components[0].components[0].toJSON().options) removableIds.add(option.value);
+  }
+  assert.equal(removableIds.size, 60);
+
+  const submitAccounts = getCampaignSubmissionAccounts(userRecord, CAMPAIGNS.ice);
+  const firstSubmitPage = buildSubmitClipAccountSelectionPage(submitAccounts, 'ice', 0);
+  const submitIds = new Set();
+  assert.equal(firstSubmitPage.totalPages, 3);
+  for (let page = 0; page < firstSubmitPage.totalPages; page++) {
+    const rendered = buildSubmitClipAccountSelectionPage(submitAccounts, 'ice', page);
+    for (const option of rendered.components[0].components[0].toJSON().options) submitIds.add(option.value);
+  }
+  assert.equal(submitIds.size, 60);
+
+  const now = Date.parse('2026-08-14T12:00:00Z');
+  const data = { users: { creator: userRecord }, globalSocialVerificationRequests: {} };
+  const account61 = createGlobalSocialVerificationRequest(data, { userId: 'creator', platform: 'tiktok', username: 'tiktokcreator30', now });
+  const added = await verifyGlobalSocialVerificationRequest(data, account61.id, {
+    requestingUserId: 'creator',
+    now: now + 1000,
+    fetchProfile: async () => ({
+      platform: 'tiktok', username: 'tiktokcreator30', bio: account61.verificationCode,
+      platformAccountId: 'tiktok-provider-30'
+    })
+  });
+  assert.equal(added.verified, true);
+  assert.equal(getVerifiedGlobalSocials(userRecord).length, 61);
+
+  let duplicateProviderCalled = false;
+  const duplicate = createGlobalSocialVerificationRequest(data, { userId: 'creator', platform: 'tiktok', username: '@TIKTOKCREATOR30', now: now + 2000 });
+  const duplicateResult = await verifyGlobalSocialVerificationRequest(data, duplicate.id, {
+    requestingUserId: 'creator',
+    now: now + 3000,
+    fetchProfile: async () => { duplicateProviderCalled = true; return null; }
+  });
+  assert.equal(duplicateResult.verified, false);
+  assert.equal(duplicateResult.code, 'ALREADY_CONNECTED');
+  assert.equal(duplicateProviderCalled, false);
+  assert.equal(getVerifiedGlobalSocials(userRecord).length, 61);
+});
+
+test('Monsterlab campaign accounts are unlimited per platform and remain independently selectable and removable', () => {
+  const userRecord = { campaigns: ['elephant'], campaignAccounts: {} };
+  const created = [];
+  for (let index = 0; index < 60; index++) {
+    const platform = index < 30 ? 'tiktok' : index < 50 ? 'instagram' : 'youtube';
+    const account = ensureCampaignAccount(userRecord, 'elephant', platform, `${platform}monster${index}`);
+    account.verified = true;
+    account.status = 'approved';
+    created.push(account);
+  }
+  assert.equal(getCampaignSubmissionAccounts(userRecord, CAMPAIGNS.elephant).length, 60);
+  assert.equal(userRecord.campaignAccounts.elephant.tiktok.length, 30);
+  assert.equal(userRecord.campaignAccounts.elephant.instagram.length, 20);
+  assert.equal(userRecord.campaignAccounts.elephant.youtube.length, 10);
+
+  const duplicate = ensureCampaignAccount(userRecord, 'elephant', 'tiktok', '@TIKTOKMONSTER0');
+  assert.equal(duplicate.id, created[0].id);
+  assert.equal(getCampaignSubmissionAccounts(userRecord, CAMPAIGNS.elephant).length, 60);
+
+  const account61 = ensureCampaignAccount(userRecord, 'elephant', 'youtube', 'youtubemonster60');
+  account61.verified = true;
+  account61.status = 'approved';
+  assert.equal(getCampaignSubmissionAccounts(userRecord, CAMPAIGNS.elephant).length, 61);
+
+  ensureCampaignAccountIds(userRecord, 'elephant');
+  const campaignViewFirst = buildCampaignAccountViewPage(userRecord, CAMPAIGNS.elephant, 0);
+  let campaignViewCount = 0;
+  assert.equal(campaignViewFirst.totalPages, 7);
+  for (let page = 0; page < campaignViewFirst.totalPages; page++) {
+    const rendered = buildCampaignAccountViewPage(userRecord, CAMPAIGNS.elephant, page);
+    campaignViewCount += (rendered.embeds[0].data.fields || [])
+      .filter(field => field.name !== 'Total Connected Accounts')
+      .reduce((total, field) => total + (String(field.value).match(/@/g) || []).length, 0);
+  }
+  assert.equal(campaignViewCount, 61);
+
+  const removeFirst = buildCampaignAccountRemovePage(userRecord, CAMPAIGNS.elephant, 0);
+  const reachable = new Set();
+  assert.equal(removeFirst.totalPages, 3);
+  for (let page = 0; page < removeFirst.totalPages; page++) {
+    const rendered = buildCampaignAccountRemovePage(userRecord, CAMPAIGNS.elephant, page);
+    for (const option of rendered.components[0].components[0].toJSON().options) reachable.add(option.value);
+  }
+  assert.equal(reachable.size, 61);
+
+  const data = {
+    users: { creator: userRecord },
+    campaignAccountRequests: {
+      existing: {
+        userId: 'creator', campaignId: 'elephant', platform: 'tiktok',
+        username: 'tiktokmonster1', status: 'approved'
+      }
+    }
+  };
+  assert.equal(validateAccountSubmission('creator', 'elephant', 'tiktok', '@TIKTOKMONSTER1', data).isValid, false);
+  assert.equal(validateAccountSubmission('creator', 'elephant', 'tiktok', 'brandnewhandle', data).isValid, true);
+  const removed = removeCampaignAccount({
+    data,
+    userId: 'creator',
+    campaignId: 'elephant',
+    platform: 'tiktok',
+    accountId: created[0].id,
+    removedBy: 'creator'
+  });
+  assert.equal(removed.removed, true);
+  assert.equal(removed.username, 'tiktokmonster0');
+  assert.equal(getCampaignSubmissionAccounts(userRecord, CAMPAIGNS.elephant).length, 60);
+  assert.equal(userRecord.campaignAccounts.elephant.tiktok.length, 29);
 });

@@ -2049,10 +2049,12 @@ function getCampaignAccountEligibility(userRecord, campaign) {
     const accounts = getVerifiedGlobalSocialsForPlatforms(userRecord, campaign?.allowedPlatforms);
     return { accountMode, eligible: accounts.length > 0, accounts };
   }
-  const campaignAccounts = userRecord?.campaignAccounts?.[campaign?.id] || {};
-  const accounts = Object.entries(campaignAccounts)
-    .filter(([platform, account]) => campaign?.allowedPlatforms?.includes(platform) && account?.verified === true)
-    .map(([platform, account]) => ({ ...account, platform, id: `campaign_${platform}` }));
+  const accounts = getAllCampaignAccounts(userRecord, campaign?.id, { activeOnly: true, verifiedOnly: true })
+    .filter(account => campaign?.allowedPlatforms?.includes(account.platform))
+    .map(account => ({
+      ...account,
+      id: getCampaignAccountStableId(account.source, campaign.id, account.platform)
+    }));
   return { accountMode, eligible: accounts.length > 0, accounts };
 }
 
@@ -2060,7 +2062,7 @@ function getApprovedGlobalAccounts(data, userId, platform) {
   return getVerifiedGlobalSocials(data.users?.[String(userId)])
     .filter(social => normalizeTypedSocialPlatform(social.platform) === normalizeTypedSocialPlatform(platform))
     .map(social => ({
-      id: social.id,
+      id: getGlobalSocialInteractionId(social),
       platform: social.platform,
       username: social.username,
       externalAccountId: social.externalAccountId || null,
@@ -2472,20 +2474,47 @@ function buildMissingCampaignDemographicsResponse(guildId, campaign) {
   return { embeds: [embed], components };
 }
 
+function getCampaignAccountCandidates(userRecord, campaignId, platform, options = {}) {
+  const normalizedPlatform = normalizeTypedSocialPlatform(platform) || String(platform || '').toLowerCase();
+  const stored = userRecord?.campaignAccounts?.[campaignId]?.[normalizedPlatform];
+  if (!stored) return [];
+  const candidates = Array.isArray(stored)
+    ? stored
+    : typeof stored === 'object' && ('username' in stored || 'verified' in stored || 'status' in stored)
+      ? [stored]
+      : Object.values(stored || {}).filter(Boolean);
+  return candidates.filter(account => {
+    if (!account || typeof account !== 'object') return false;
+    const status = String(account.status || '').toLowerCase();
+    const terminal = ['rejected', 'removed', 'unlinked', 'revoked'].includes(status) || account.removedAt || account.unlinkedAt || account.revokedAt;
+    if (options.activeOnly && terminal) return false;
+    if (options.verifiedOnly && !(account.verified === true || status === 'approved' || status === 'verified')) return false;
+    return Boolean(normalizeSocialUsername(account.username));
+  });
+}
+
+function getAllCampaignAccounts(userRecord, campaignId, options = {}) {
+  const campaignAccounts = userRecord?.campaignAccounts?.[campaignId] || {};
+  return Object.keys(campaignAccounts).flatMap(platform =>
+    getCampaignAccountCandidates(userRecord, campaignId, platform, options).map(account => ({
+      ...account,
+      platform: normalizeTypedSocialPlatform(account.platform || platform) || String(platform).toLowerCase(),
+      source: account
+    }))
+  );
+}
+
+function getCampaignAccountStableId(account, campaignId, platform) {
+  if (account?.id) return String(account.id);
+  const identity = [campaignId, platform, normalizeSocialUsername(account?.username), account?.externalAccountId || ''].join(':');
+  return `cga_${crypto.createHash('sha256').update(identity).digest('hex').slice(0, 24)}`;
+}
+
 function getApprovedCampaignAccounts(data, userId, campaignId, platform) {
   const userRecord = data.users?.[String(userId)];
-  const platformAccounts = userRecord?.campaignAccounts?.[campaignId]?.[platform];
-  if (!platformAccounts) return [];
-
-  const candidates = Array.isArray(platformAccounts)
-    ? platformAccounts
-    : typeof platformAccounts === 'object' && ('username' in platformAccounts || 'verified' in platformAccounts || 'status' in platformAccounts)
-      ? [platformAccounts]
-      : Object.values(platformAccounts || {});
-
-  return candidates
-    .filter(account => account && (account.verified === true || account.status === 'approved'))
+  return getCampaignAccountCandidates(userRecord, campaignId, platform, { activeOnly: true, verifiedOnly: true })
     .map(account => ({
+      id: getCampaignAccountStableId(account, campaignId, platform),
       platform: account.platform || platform,
       username: account.username || '',
       externalAccountId: account.externalAccountId || null,
@@ -3043,12 +3072,12 @@ const TERMINAL_ACCOUNT_REQUEST_STATUSES = new Set([
 
 function isApprovedAccountRequestStillLinked(data, request) {
   if (String(request?.status || '').toLowerCase() !== 'approved') return false;
-  const linkedAccount = data?.users?.[request.userId]?.campaignAccounts?.[request.campaignId]?.[request.platform];
-  return Boolean(
-    linkedAccount &&
-    linkedAccount.verified === true &&
-    normalizeSocialKey(request.platform, linkedAccount.username) === normalizeSocialKey(request.platform, request.username)
-  );
+  return getCampaignAccountCandidates(
+    data?.users?.[request.userId],
+    request.campaignId,
+    request.platform,
+    { activeOnly: true, verifiedOnly: true }
+  ).some(account => normalizeSocialKey(request.platform, account.username) === normalizeSocialKey(request.platform, request.username));
 }
 
 function validateAccountSubmission(userId, campaignId, platform, username, dataOverride = null) {
@@ -6148,40 +6177,94 @@ function getCampaignPlatformsForUser(userRecord, campaignId) {
 }
 
 function ensureCampaignAccount(userRecord, campaignId, platform, username = '') {
-  if (!userRecord.campaignAccounts) {
-    userRecord.campaignAccounts = {};
-  }
+  const normalizedPlatform = normalizeTypedSocialPlatform(platform) || String(platform || '').toLowerCase();
+  const cleanUsername = normalizeUsername(username);
+  userRecord.campaignAccounts ||= {};
+  userRecord.campaignAccounts[campaignId] ||= {};
+  const stored = userRecord.campaignAccounts[campaignId][normalizedPlatform];
+  const accounts = !stored
+    ? []
+    : Array.isArray(stored)
+      ? stored
+      : typeof stored === 'object' && ('username' in stored || 'verified' in stored || 'status' in stored)
+        ? [stored]
+        : Object.values(stored || {}).filter(Boolean);
+  userRecord.campaignAccounts[campaignId][normalizedPlatform] = accounts;
 
-  if (!userRecord.campaignAccounts[campaignId]) {
-    userRecord.campaignAccounts[campaignId] = {};
-  }
-
-  if (!userRecord.campaignAccounts[campaignId][platform]) {
-    userRecord.campaignAccounts[campaignId][platform] = {
-      username,
+  let account = cleanUsername
+    ? accounts.find(candidate =>
+        !['removed', 'unlinked', 'revoked'].includes(String(candidate?.status || '').toLowerCase()) &&
+        normalizeSocialKey(normalizedPlatform, candidate?.username) === normalizeSocialKey(normalizedPlatform, cleanUsername)
+      )
+    : accounts.find(candidate => candidate && !['removed', 'unlinked', 'revoked'].includes(String(candidate.status || '').toLowerCase()));
+  if (!account) {
+    account = {
+      id: `cga_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+      platform: normalizedPlatform,
+      username: cleanUsername,
       verified: false,
       bioCode: null,
       addedAt: new Date().toISOString()
     };
+    accounts.push(account);
   }
-
-  if (username) {
-    userRecord.campaignAccounts[campaignId][platform].username = username;
-  }
-
-  return userRecord.campaignAccounts[campaignId][platform];
+  account.id ||= getCampaignAccountStableId(account, campaignId, normalizedPlatform);
+  account.platform ||= normalizedPlatform;
+  if (cleanUsername && !account.username) account.username = cleanUsername;
+  return account;
 }
 
-function removeCampaignAccount({ data, userId, campaignId, platform, removedBy, removedAt = Date.now() }) {
+function ensureCampaignAccountIds(userRecord, campaignId) {
+  const campaignAccounts = userRecord?.campaignAccounts?.[campaignId];
+  if (!campaignAccounts || typeof campaignAccounts !== 'object') return false;
+  let changed = false;
+  for (const platform of Object.keys(campaignAccounts)) {
+    const stored = campaignAccounts[platform];
+    const accounts = Array.isArray(stored)
+      ? stored
+      : typeof stored === 'object' && ('username' in stored || 'verified' in stored || 'status' in stored)
+        ? [stored]
+        : Object.values(stored || {}).filter(Boolean);
+    if (!Array.isArray(stored)) {
+      campaignAccounts[platform] = accounts;
+      changed = true;
+    }
+    for (const account of accounts) {
+      if (!account.id) {
+        account.id = getCampaignAccountStableId(account, campaignId, platform);
+        changed = true;
+      }
+      if (!account.platform) {
+        account.platform = platform;
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+function removeCampaignAccount({ data, userId, campaignId, platform, accountId = null, username: requestedUsername = null, removedBy, removedAt = Date.now() }) {
   const userRecord = data?.users?.[userId];
-  const account = userRecord?.campaignAccounts?.[campaignId]?.[platform];
+  const normalizedPlatform = normalizeTypedSocialPlatform(platform) || String(platform || '').toLowerCase();
+  const accounts = getCampaignAccountCandidates(userRecord, campaignId, normalizedPlatform, { activeOnly: true });
+  const account = accounts.find(candidate =>
+    (accountId && getCampaignAccountStableId(candidate, campaignId, normalizedPlatform) === String(accountId)) ||
+    (requestedUsername && normalizeSocialKey(normalizedPlatform, candidate.username) === normalizeSocialKey(normalizedPlatform, requestedUsername))
+  ) || (!accountId && !requestedUsername && accounts.length === 1 ? accounts[0] : null);
 
   if (!account) {
     return { removed: false, username: null, requestsMarkedRemoved: 0 };
   }
 
   const username = account.username;
-  delete userRecord.campaignAccounts[campaignId][platform];
+  const stored = userRecord.campaignAccounts[campaignId][normalizedPlatform];
+  if (Array.isArray(stored)) {
+    const index = stored.indexOf(account);
+    if (index >= 0) stored.splice(index, 1);
+    if (!stored.length) delete userRecord.campaignAccounts[campaignId][normalizedPlatform];
+  } else {
+    delete userRecord.campaignAccounts[campaignId][normalizedPlatform];
+  }
 
   if (Object.keys(userRecord.campaignAccounts[campaignId]).length === 0) {
     delete userRecord.campaignAccounts[campaignId];
@@ -6195,7 +6278,7 @@ function removeCampaignAccount({ data, userId, campaignId, platform, removedBy, 
     const matchesRemovedAccount =
       String(request?.userId) === String(userId) &&
       String(request?.campaignId) === String(campaignId) &&
-      String(request?.platform).toLowerCase() === String(platform).toLowerCase() &&
+      String(request?.platform).toLowerCase() === String(normalizedPlatform).toLowerCase() &&
       normalizeSocialKey(request.platform, request.username) === normalizedUsername;
 
     if (!matchesRemovedAccount || TERMINAL_ACCOUNT_REQUEST_STATUSES.has(status)) {
@@ -6239,23 +6322,115 @@ function ensureCampaignPlatformStats(userRecord, campaignId, platform, username 
 }
 
 function renderCampaignAssignedAccounts(userRecord, campaignId) {
-  const accounts = userRecord.campaignAccounts?.[campaignId] || {};
-  const platforms = Object.keys(accounts);
-
-  if (platforms.length === 0) {
+  const accounts = getAllCampaignAccounts(userRecord, campaignId, { activeOnly: true });
+  if (accounts.length === 0) {
     return 'No campaign accounts assigned yet.';
   }
-
-  return platforms.map(platform => {
-    const acc = accounts[platform];
-    const verifiedText = acc.verified ? '✅ Verified' : '⏳ Pending';
-    return `• **${formatPlatform(platform)}** — @${acc.username} (${verifiedText})`;
+  return accounts.map(account => {
+    const verifiedText = account.verified ? '✅ Verified' : '⏳ Pending';
+    return `• **${formatPlatform(account.platform)}** — @${account.username} (${verifiedText})`;
   }).join('\n');
 }
 
 function getVerifiedCampaignPlatforms(userRecord, campaignId) {
-  const accounts = userRecord?.campaignAccounts?.[campaignId] || {};
-  return Object.keys(accounts).filter(platform => accounts[platform]?.verified === true);
+  return [...new Set(getAllCampaignAccounts(userRecord, campaignId, { activeOnly: true, verifiedOnly: true }).map(account => account.platform))];
+}
+
+function buildCampaignAccountRemovePage(userRecord, campaign, requestedPage = 0, pageSize = 25) {
+  const accounts = getAllCampaignAccounts(userRecord, campaign.id, { activeOnly: true });
+  if (!accounts.length) {
+    return { page: 0, totalPages: 0, totalAccounts: 0, content: "📭 You don't have any accounts linked to this campaign.", components: [] };
+  }
+  const totalPages = Math.ceil(accounts.length / pageSize);
+  const page = Math.min(Math.max(Number(requestedPage) || 0, 0), totalPages - 1);
+  const pageAccounts = accounts.slice(page * pageSize, (page + 1) * pageSize);
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`campaign_connect_remove_select:${campaign.id}:${page}`)
+    .setPlaceholder('Select a campaign account to remove')
+    .addOptions(pageAccounts.map(account => ({
+      label: `${formatPlatform(account.platform)} — @${account.username}`.slice(0, 100),
+      description: `Unlinks only this account from ${campaign.name.replace(/<a?:\w+:\d+>/g, '').trim()}`.slice(0, 100),
+      value: `${account.platform}|${getCampaignAccountStableId(account.source, campaign.id, account.platform)}`
+    })));
+  const components = [new ActionRowBuilder().addComponents(select)];
+  if (totalPages > 1) {
+    components.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`campaign_connect_remove_page:${campaign.id}:${page - 1}`).setLabel('Previous').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+      new ButtonBuilder().setCustomId(`campaign_connect_remove_page:${campaign.id}:${page + 1}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page === totalPages - 1)
+    ));
+  }
+  return {
+    page,
+    totalPages,
+    totalAccounts: accounts.length,
+    content: `🗑️ **Select which account you want to remove from this campaign:**${totalPages > 1 ? `\n\nPage ${page + 1} / ${totalPages}` : ''}`,
+    components
+  };
+}
+
+function buildCampaignAccountViewPage(userRecord, campaign, requestedPage = 0, pageSize = 10) {
+  const accounts = getAllCampaignAccounts(userRecord, campaign.id, { activeOnly: true });
+  if (!accounts.length) {
+    return {
+      page: 0,
+      totalPages: 0,
+      totalAccounts: 0,
+      embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle(`${campaign.name} — Accounts`).setDescription('No campaign accounts assigned yet.')],
+      components: []
+    };
+  }
+  const totalPages = Math.ceil(accounts.length / pageSize);
+  const page = Math.min(Math.max(Number(requestedPage) || 0, 0), totalPages - 1);
+  const pageAccounts = accounts.slice(page * pageSize, (page + 1) * pageSize);
+  const groups = new Map();
+  for (const account of pageAccounts) {
+    if (!groups.has(account.platform)) groups.set(account.platform, []);
+    groups.get(account.platform).push(`@${account.username} — ${account.verified ? '✅ Verified' : '⏳ Pending'}`);
+  }
+  const embed = new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setTitle(`${campaign.name} — Accounts`)
+    .addFields(
+      ...[...groups.entries()].map(([platform, lines]) => ({ name: formatPlatform(platform), value: lines.join('\n'), inline: false })),
+      { name: 'Total Connected Accounts', value: String(accounts.length), inline: false }
+    )
+    .setFooter({ text: `Creators Elite • Campaign Accounts${totalPages > 1 ? ` • Page ${page + 1}/${totalPages}` : ''}` });
+  const components = totalPages > 1
+    ? [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`campaign_connect_view_page:${campaign.id}:${page - 1}`).setLabel('Previous').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+        new ButtonBuilder().setCustomId(`campaign_connect_view_page:${campaign.id}:${page + 1}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page === totalPages - 1)
+      )]
+    : [];
+  return { page, totalPages, totalAccounts: accounts.length, embeds: [embed], components };
+}
+
+function buildSubmitClipAccountSelectionPage(submissionAccounts, campaignId, requestedPage = 0, pageSize = 25) {
+  const accounts = Array.isArray(submissionAccounts) ? submissionAccounts : [];
+  const totalPages = Math.max(1, Math.ceil(accounts.length / pageSize));
+  const page = Math.min(Math.max(Number(requestedPage) || 0, 0), totalPages - 1);
+  const pageAccounts = accounts.slice(page * pageSize, (page + 1) * pageSize);
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`submit_clip_platform_select:${campaignId}:${page}`)
+    .setPlaceholder('Choose platform account')
+    .addOptions(pageAccounts.map(account => ({
+      label: `${formatPlatform(account.platform)} — @${account.username}`.slice(0, 100),
+      value: String(account.id),
+      description: `Verified ${formatPlatform(account.platform)} account`.slice(0, 100)
+    })));
+  const components = [new ActionRowBuilder().addComponents(select)];
+  if (totalPages > 1) {
+    components.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`submit_clip_account_page:${campaignId}:${page - 1}`).setLabel('Previous').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+      new ButtonBuilder().setCustomId(`submit_clip_account_page:${campaignId}:${page + 1}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page === totalPages - 1)
+    ));
+  }
+  return {
+    page,
+    totalPages,
+    totalAccounts: accounts.length,
+    content: `Choose which campaign account these clips belong to.${totalPages > 1 ? `\n\nPage ${page + 1} / ${totalPages}` : ''}`,
+    components
+  };
 }
 
 function makeCampaignAccountRequestId() {
@@ -6750,6 +6925,13 @@ async function verifyGlobalSocialVerificationRequest(data, requestId, options = 
   if (existingOwner) {
     return { verified: false, code: 'OWNED_BY_ANOTHER_USER', message: 'This social account is already verified to another creator.', request };
   }
+  const alreadyConnected = getVerifiedGlobalSocials(data.users?.[request.userId]).find(social =>
+    normalizeTypedSocialPlatform(social.platform) === request.platform &&
+    normalizeSocialUsername(social.normalizedUsername || social.username) === request.normalizedUsername
+  );
+  if (alreadyConnected) {
+    return { verified: false, code: 'ALREADY_CONNECTED', message: 'This exact social account is already connected to your creator profile.', request, social: alreadyConnected };
+  }
   if (request.platform === 'instagram' && Number.isFinite(Number(request.lastVerificationAttemptAt))) {
     const retryAfterMs = INSTAGRAM_PROFILE_VERIFICATION_COOLDOWN_MS - (now - Number(request.lastVerificationAttemptAt));
     if (retryAfterMs > 0) {
@@ -6799,6 +6981,15 @@ async function verifyGlobalSocialVerificationRequest(data, requestId, options = 
   const userRecord = data.users?.[request.userId];
   if (!userRecord) return { verified: false, code: 'USER_NOT_FOUND', message: 'Creator record not found.', request };
   ensureUserSocials(data, request.userId);
+  const sameIdentity = getVerifiedGlobalSocials(userRecord).find(candidate => {
+    if (normalizeTypedSocialPlatform(candidate.platform) !== request.platform) return false;
+    const candidateStableId = candidate.platformAccountId || candidate.externalAccountId || null;
+    return normalizeSocialUsername(candidate.normalizedUsername || candidate.username) === request.normalizedUsername ||
+      (platformAccountId && candidateStableId && String(candidateStableId) === String(platformAccountId));
+  });
+  if (sameIdentity) {
+    return { verified: false, code: 'ALREADY_CONNECTED', message: 'This exact social account is already connected to your creator profile.', request, profile, social: sameIdentity };
+  }
   let social = getVerifiedGlobalSocials(userRecord).find(candidate =>
     normalizeTypedSocialPlatform(candidate.platform) === request.platform &&
     (
@@ -9187,7 +9378,8 @@ ${reason}
       }
 
       for (const [campaignId, platforms] of Object.entries(userRecord.campaignAccounts || {})) {
-        for (const [platform, account] of Object.entries(platforms || {})) {
+        for (const platform of Object.keys(platforms || {})) {
+          for (const account of getCampaignAccountCandidates(userRecord, campaignId, platform, { activeOnly: true, verifiedOnly: true })) {
           const key = `${normalizeTypedSocialPlatform(platform) || platform}:${normalizeSocialUsername(account.username)}`;
           if (seenAccounts.has(key)) continue;
           seenAccounts.add(key);
@@ -9195,6 +9387,7 @@ ${reason}
             label: `${formatPlatform(platform)} — @${account.username}`,
             value: `${campaignId}|${platform}|${account.username}`
           });
+          }
         }
       }
 
@@ -10209,13 +10402,24 @@ ${reason}
       }
 
       const userRecord = ensureUser(data, member);
-      const text = renderCampaignAssignedAccounts(userRecord, campaignId);
-
+      const viewPage = buildCampaignAccountViewPage(userRecord, campaign);
       await interaction.reply({
-        content: `🌐 **${campaign.name} - Accounts**\n\n${text}`,
+        embeds: viewPage.embeds,
+        components: viewPage.components,
         flags: MessageFlags.Ephemeral
       });
 
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_view_page:')) {
+      const [, campaignId, pageValue] = interaction.customId.split(':');
+      const campaign = CAMPAIGNS[campaignId];
+      if (!campaign) return interaction.update({ content: '❌ Campaign not found.', embeds: [], components: [] });
+      const data = loadData();
+      const userRecord = data.users?.[interaction.user.id] || { campaignAccounts: {} };
+      const viewPage = buildCampaignAccountViewPage(userRecord, campaign, Number(pageValue) || 0);
+      await interaction.update({ content: null, embeds: viewPage.embeds, components: viewPage.components });
       return;
     }
 
@@ -10348,12 +10552,10 @@ ${reason}
       // 1. Scan all existing users in the database to check handles safely
       for (const [userId, record] of Object.entries(data.users || {})) {
         // Historical campaignStats do not represent an actively linked account.
-        const accountsObj = record.campaignAccounts?.[campaignId]?.[platform];
-        
-        if (accountsObj) {
-          const savedName = String(accountsObj.username || '').trim().toLowerCase().replace(/^@/, '');
-          
-          if (savedName === cleanInputUsername) {
+        const campaignAccounts = getCampaignAccountCandidates(record, campaignId, platform, { activeOnly: true });
+        for (const account of campaignAccounts) {
+          const savedName = normalizeSocialUsername(account.username);
+          if (savedName === normalizeSocialUsername(cleanInputUsername)) {
             handleExistsGlobally = true;
             if (userId !== interaction.user.id) {
               claimedBySomeoneElse = true;
@@ -10361,6 +10563,7 @@ ${reason}
             break;
           }
         }
+        if (handleExistsGlobally) break;
       }
 
       // 2. Scan active staff request items so users cannot submit the same handle twice concurrently
@@ -10677,20 +10880,6 @@ ${reason}
       request.status = 'approved';
       data.campaignAccountRequests[requestId] = request;
 
-      if (!userRecord.campaignAccounts) {
-        userRecord.campaignAccounts = {};
-      }
-
-      if (!userRecord.campaignAccounts[request.campaignId]) {
-        userRecord.campaignAccounts[request.campaignId] = {};
-      }
-
-      userRecord.campaignAccounts[request.campaignId][request.platform] = {
-        username: request.username,
-        verified: true,
-        addedAt: Date.now()
-      };
-
       saveData(data);
      
       // 🟢 Fixed app.userId reference error -> request.userId
@@ -10805,40 +10994,32 @@ ${reason}
 
       const data = loadData();
       const userRecord = data.users?.[interaction.user.id];
-      const accounts = userRecord?.campaignAccounts?.[campaignId] || {};
-      const platforms = Object.keys(accounts);
-
-      // Rule 1: Check if they have any linked accounts to begin with
-      if (platforms.length === 0) {
-        return interaction.reply({
-          content: '📭 You don\'t have any accounts linked to this campaign.',
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      // Build the selection menu out of their active linked accounts
-      const select = new StringSelectMenuBuilder()
-        .setCustomId(`campaign_connect_remove_select:${campaignId}`) // 🔗 Targets your existing select menu handler!
-        .setPlaceholder('Select a platform account to delete')
-        .addOptions(
-          platforms.map(platform => ({
-            label: `${formatPlatform(platform)} — @${accounts[platform].username}`,
-            description: `Unlinks this handle from ${campaign.name.replace(/<a?:\w+:\d+>/g, '').trim()}`,
-            value: platform
-          }))
-        );
-
+      const idsChanged = ensureCampaignAccountIds(userRecord, campaignId);
+      if (idsChanged) saveData(data);
+      const removePage = buildCampaignAccountRemovePage(userRecord, campaign);
       await interaction.reply({
-        content: '🗑️ **Select which account you want to remove from this campaign:**',
-        components: [new ActionRowBuilder().addComponents(select)],
+        content: removePage.content,
+        components: removePage.components,
         flags: MessageFlags.Ephemeral
       });
       return;
     }
 
+    if (interaction.isButton() && interaction.customId.startsWith('campaign_connect_remove_page:')) {
+      const [, campaignId, pageValue] = interaction.customId.split(':');
+      const campaign = CAMPAIGNS[campaignId];
+      if (!campaign) return interaction.update({ content: '❌ Campaign not found.', components: [] });
+      const data = loadData();
+      const userRecord = data.users?.[interaction.user.id];
+      if (ensureCampaignAccountIds(userRecord, campaignId)) saveData(data);
+      const removePage = buildCampaignAccountRemovePage(userRecord, campaign, Number(pageValue) || 0);
+      await interaction.update({ content: removePage.content, components: removePage.components });
+      return;
+    }
+
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('campaign_connect_remove_select:')) {
       const campaignId = interaction.customId.split(':')[1];
-      const platform = interaction.values[0];
+      const [platform, accountId] = interaction.values[0].split('|');
 
       const data = loadData();
       const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
@@ -10853,6 +11034,7 @@ ${reason}
         userId: interaction.user.id,
         campaignId,
         platform,
+        accountId,
         removedBy: interaction.user.id
       });
 
@@ -10907,6 +11089,10 @@ ${reason}
         await interaction.reply({ ...buildMissingCampaignDemographicsResponse(interaction.guild.id, campaign), flags: MessageFlags.Ephemeral });
         return;
       }
+      const accountIdsChanged = getCampaignAccountMode(campaign) === 'global_auto_verify'
+        ? ensureGlobalSocialAccountIds(userRecord).changed
+        : ensureCampaignAccountIds(userRecord, campaignId);
+      if (accountIdsChanged) saveData(data);
       const submissionAccounts = getCampaignSubmissionAccounts(userRecord, campaign);
 
       if (submissionAccounts.length === 0) {
@@ -10944,23 +11130,30 @@ ${reason}
         return;
       }
 
-      const select = new StringSelectMenuBuilder()
-        .setCustomId(`submit_clip_platform_select:${campaignId}`)
-        .setPlaceholder('Choose platform account')
-        .addOptions(
-          submissionAccounts.slice(0, 25).map(account => ({
-            label: `${formatPlatform(account.platform)} - @${account.username}`.slice(0, 100),
-            value: account.id,
-            description: `Verified ${formatPlatform(account.platform)} account`.slice(0, 100)
-          }))
-        );
-
+      const accountPage = buildSubmitClipAccountSelectionPage(submissionAccounts, campaignId);
       await interaction.reply({
-        content: 'Choose which campaign account these clips belong to.',
-        components: [new ActionRowBuilder().addComponents(select)],
+        content: accountPage.content,
+        components: accountPage.components,
         flags: MessageFlags.Ephemeral
       });
 
+      return;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith('submit_clip_account_page:')) {
+      const [, campaignId, pageValue] = interaction.customId.split(':');
+      const campaign = CAMPAIGNS[campaignId];
+      if (!campaign) return interaction.update({ content: '❌ Campaign not found.', components: [] });
+      const data = loadData();
+      const userRecord = data.users?.[interaction.user.id];
+      const accountIdsChanged = getCampaignAccountMode(campaign) === 'global_auto_verify'
+        ? ensureGlobalSocialAccountIds(userRecord).changed
+        : ensureCampaignAccountIds(userRecord, campaignId);
+      if (accountIdsChanged) saveData(data);
+      const submissionAccounts = getCampaignSubmissionAccounts(userRecord, campaign);
+      if (!submissionAccounts.length) return interaction.update({ content: '❌ No verified campaign accounts are currently available.', components: [] });
+      const accountPage = buildSubmitClipAccountSelectionPage(submissionAccounts, campaignId, Number(pageValue) || 0);
+      await interaction.update({ content: accountPage.content, components: accountPage.components });
       return;
     }
 
@@ -12196,18 +12389,6 @@ ${reason}
 
        const userRecord = ensureUser(data, member);
 
-       // optional: block more than one account per platform for a campaign
-       if (
-         userRecord.campaignAccounts?.[campaignId]?.[platform] &&
-         userRecord.campaignAccounts[campaignId][platform].username !== username
-       ) {
-         await interaction.reply({
-           content: `❌ You already assigned a ${formatPlatform(platform)} account to this campaign.`,
-           flags: MessageFlags.Ephemeral
-         });
-         return;
-       }
-
        ensureCampaignAccount(userRecord, campaignId, platform, username);
        ensureCampaignPlatformStats(userRecord, campaignId, platform, username);
 
@@ -12916,14 +13097,13 @@ client.on('messageCreate', async message => {
     // Search users for matching linked accounts
     for (const userId in data.users) {
         const userObj = data.users[userId];
-        const account = userObj.campaignAccounts?.[campaignId]?.[platformKey];
-
-        if (account) {
+        for (const account of getCampaignAccountCandidates(userObj, campaignId, platformKey, { activeOnly: true, verifiedOnly: true })) {
             matches.push({
                 userId,
                 username: account.username,
                 campaignId,
-                platform: platformKey
+                platform: platformKey,
+                accountId: getCampaignAccountStableId(account, campaignId, platformKey)
             });
         }
     }
@@ -12935,7 +13115,7 @@ client.on('messageCreate', async message => {
     // Build select menu options (Max 25 items)
     const options = matches.slice(0, 25).map(item => ({
         label: `@${item.username}`,
-        value: `${item.userId}:${item.campaignId}:${item.platform}`,
+        value: `${item.userId}:${item.campaignId}:${item.platform}:${item.accountId}`,
         description: `User ID: ${item.userId}`,
         emoji: '👤'
     }));
@@ -12961,11 +13141,11 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({ content: '❌ You are not allowed to do this.', flags: MessageFlags.Ephemeral });
     }
 
-    const [userId, campaignId, platform] = interaction.values[0].split(':');
+    const [userId, campaignId, platform, accountId] = interaction.values[0].split(':');
     const data = loadData();
     const userRecord = data.users?.[userId];
 
-    if (!userRecord || !userRecord.campaignAccounts?.[campaignId]?.[platform]) {
+    if (!userRecord) {
         return interaction.reply({ content: '❌ Selected account was not found in database.', flags: MessageFlags.Ephemeral });
     }
 
@@ -12974,8 +13154,13 @@ client.on('interactionCreate', async interaction => {
         userId,
         campaignId,
         platform,
+        accountId,
         removedBy: interaction.user.id
     });
+
+    if (!removal.removed) {
+        return interaction.reply({ content: '❌ Selected account was not found in database.', flags: MessageFlags.Ephemeral });
+    }
 
     saveData(data);
 
@@ -13364,6 +13549,8 @@ module.exports.__clipLifecycleTest = {
   buildCampaignRulesRow,
   buildCampaignAccountApprovedEmbed,
   buildCampaignAccountRejectedEmbed,
+  buildCampaignAccountRemovePage,
+  buildCampaignAccountViewPage,
   buildCampaignJoinSuccessEmbed,
   buildCampaignPanelButtons,
   buildCampaignSubmitClipButton,
@@ -13386,6 +13573,7 @@ module.exports.__clipLifecycleTest = {
   buildRejectedClipUserDm,
   buildRejectedClipUserEmbed,
   buildShortCampaignPanelText,
+  buildSubmitClipAccountSelectionPage,
   clearClipAppealWindow,
   createGlobalSocialVerificationRequest,
   ensureClipAppealDeadline,
@@ -13432,6 +13620,7 @@ module.exports.__clipLifecycleTest = {
   getVerifiedGlobalSocials,
   getVerifiedGlobalSocialsForPlatforms,
   ensureCampaignAccount,
+  ensureCampaignAccountIds,
   ensureGlobalSocialAccountIds,
   removeCampaignAccount,
   removeGlobalSocialAccount,
