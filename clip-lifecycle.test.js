@@ -1892,10 +1892,9 @@ test('global View Accounts renders one metric-rich account card and provides a g
       { id: 'yt-1', platform: 'youtube', username: 'four', status: 'verified', verified: true },
       { id: 'old-1', platform: 'instagram', username: 'removed', status: 'unlinked', verified: false, removedAt: 1 }
     ],
-    demographics: { status: 'approved', tier: 'Tier 2' },
+    demographics: { status: 'approved', tier: 'Tier 2', pageType: 'Creator' },
     campaignAccounts: { elephant: { instagram: { username: 'monsterlab-only', verified: true } } }
   };
-  userRecord.socials[0].pageType = 'Creator';
   const data = {
     clips: {
       one: { id: 'one', userId: 'creator', globalSocialId: 'tt-1', campaignId: 'ice', publicViews: 1200, likes: 80, comments: 12 },
@@ -1908,10 +1907,10 @@ test('global View Accounts renders one metric-rich account card and provides a g
   assert.equal(page.totalPages, 4);
   assert.equal(page.embeds[0].data.title, 'Your Connected Social Accounts');
   assert.match(page.embeds[0].data.description, /@one/);
-  assert.equal(fields.find(field => field.name === 'Verification Status').value, '✅ Fully Verified');
+  assert.equal(fields.find(field => field.name === 'Verification Status').value, '✅ Verified');
   assert.equal(fields.find(field => field.name === 'Tier').value, 'Tier 2');
   assert.equal(fields.find(field => field.name === 'Page Type').value, 'Creator');
-  assert.match(fields.find(field => field.name === 'Campaigns Participated').value, /ICE/);
+  assert.equal(fields.find(field => field.name === 'Campaigns Participated').value, '1');
   assert.equal(fields.find(field => field.name === 'Total Clips').value, '2');
   assert.equal(fields.find(field => field.name === 'Total Views').value, '1.5K');
   assert.equal(fields.find(field => field.name === 'Total Likes').value, '100');
@@ -1932,6 +1931,73 @@ test('global View Accounts renders one metric-rich account card and provides a g
   const empty = buildGlobalSocialViewPage({ socials: [] });
   assert.equal(empty.embeds[0].data.title, 'No Social Accounts Connected');
   assert.equal(empty.components[0].components[0].data.custom_id, 'global_social_link_from_view:none');
+});
+
+test('global View Accounts uses only verified CE demographics and exact CE-tracked account activity', () => {
+  const futureCampaign = {
+    id: 'global_view_future',
+    name: 'Future Campaign',
+    accountMode: 'global_auto_verify',
+    allowedPlatforms: ['tiktok']
+  };
+  CAMPAIGNS[futureCampaign.id] = futureCampaign;
+  try {
+    const userRecord = {
+      socials: [
+        {
+          id: 'tt-one', platform: 'tiktok', username: 'one', normalizedUsername: 'one',
+          platformAccountId: 'platform-one', verified: true, status: 'verified',
+          tier: 'Invented Platform Tier', pageType: 'Influencer',
+          totalViews: 9_000_000_000, totalLikes: 8_000_000_000, totalComments: 7_000_000_000
+        },
+        { id: 'tt-two', platform: 'tiktok', username: 'two', platformAccountId: 'platform-two', verified: true, status: 'verified' },
+        { id: 'ig-empty', platform: 'instagram', username: 'empty', verified: true, status: 'verified' }
+      ],
+      demographics: { status: 'pending', tier: 'Tier 3', pageType: 'Creator' }
+    };
+    const clipOne = {
+      id: 'clip-one', userId: 'creator', campaignId: 'ice', platform: 'tiktok', username: 'one',
+      globalSocialId: 'tt-one', publicViews: 100, views: 999_999, campaignCreditedViews: 999_999,
+      likes: 10, comments: 2, payout: { paidViews: 50, paidMoney: 0.025 }
+    };
+    const data = {
+      clips: {
+        one: clipOne,
+        legacy: { id: 'clip-legacy', userId: 'creator', campaignId: futureCampaign.id, platform: 'tiktok', username: '@ONE', currentViews: 200, likes: 20, commentCount: 3 },
+        stable: { id: 'clip-stable', userId: 'creator', campaignId: futureCampaign.id, platform: 'tiktok', username: 'renamed', platformAuthorId: 'platform-one', publicViews: 50, likes: 5, commentsCount: 1 },
+        otherAccount: { id: 'clip-other', userId: 'creator', campaignId: 'ice', platform: 'tiktok', username: 'two', globalSocialId: 'tt-two', publicViews: 300, likes: 30, comments: 4 },
+        conflictingStableId: { id: 'clip-conflict', userId: 'creator', campaignId: futureCampaign.id, platform: 'tiktok', username: 'one', platformAuthorId: 'different-platform-id', publicViews: 500, likes: 50, comments: 5 }
+      },
+      clipReviews: { duplicate: { ...clipOne } }
+    };
+    const payoutBefore = structuredClone(clipOne.payout);
+    const page = buildGlobalSocialViewPage(userRecord, 0, { data, userId: 'creator' });
+    const fields = page.embeds[0].data.fields;
+    assert.equal(fields.find(field => field.name === 'Tier').value, '--');
+    assert.equal(fields.find(field => field.name === 'Page Type').value, '--');
+    assert.equal(fields.find(field => field.name === 'Campaigns Participated').value, '2');
+    assert.equal(fields.find(field => field.name === 'Total Clips').value, '3');
+    assert.equal(fields.find(field => field.name === 'Total Views').value, '350');
+    assert.equal(fields.find(field => field.name === 'Total Likes').value, '35');
+    assert.equal(fields.find(field => field.name === 'Total Comments').value, '6');
+    assert.deepEqual(clipOne.payout, payoutBefore);
+
+    const emptyAccount = buildGlobalSocialViewPage(userRecord, 2, { data, userId: 'creator' });
+    const emptyFields = emptyAccount.embeds[0].data.fields;
+    assert.equal(emptyFields.find(field => field.name === 'Campaigns Participated').value, '0');
+    assert.equal(emptyFields.find(field => field.name === 'Total Clips').value, '0');
+    assert.equal(emptyFields.find(field => field.name === 'Total Views').value, '0');
+    assert.equal(emptyFields.find(field => field.name === 'Total Likes').value, '0');
+    assert.equal(emptyFields.find(field => field.name === 'Total Comments').value, '0');
+
+    userRecord.demographics = { status: 'approved', tier: 'Tier 1', pageType: 'Creator' };
+    const approvedPage = buildGlobalSocialViewPage(userRecord, 0, { data, userId: 'creator' });
+    const approvedFields = approvedPage.embeds[0].data.fields;
+    assert.equal(approvedFields.find(field => field.name === 'Tier').value, 'Tier 1');
+    assert.equal(approvedFields.find(field => field.name === 'Page Type').value, 'Creator');
+  } finally {
+    delete CAMPAIGNS[futureCampaign.id];
+  }
 });
 
 test('global Remove Account uses stable per-record IDs, paginates all accounts, and confirms before unlinking', () => {

@@ -2356,31 +2356,55 @@ function renderGlobalSocialAccounts(userRecord) {
 
 function getGlobalSocialAccountAnalytics(data, userId, social) {
   const socialIds = new Set([social?.id, social?.interactionId].filter(Boolean).map(String));
+  const platformAccountIds = new Set([social?.platformAccountId, social?.externalAccountId].filter(Boolean).map(String));
   const platform = normalizeTypedSocialPlatform(social?.platform);
   const username = normalizeSocialUsername(social?.normalizedUsername || social?.username);
   const uniqueClips = new Map();
   for (const clip of [...Object.values(data?.clips || {}), ...Object.values(data?.clipReviews || {})]) {
     if (!clip || (userId && String(clip.userId) !== String(userId))) continue;
-    const linkedById = clip.globalSocialId && socialIds.has(String(clip.globalSocialId));
-    const linkedByLegacyIdentity = !clip.globalSocialId &&
+    const hasGlobalSocialId = Boolean(clip.globalSocialId);
+    const linkedById = hasGlobalSocialId && socialIds.has(String(clip.globalSocialId));
+    const clipPlatformAccountIds = [clip.platformAccountId, clip.platformAuthorId, clip.externalAccountId]
+      .filter(Boolean)
+      .map(String);
+    const linkedByPlatformAccountId = !hasGlobalSocialId &&
+      normalizeTypedSocialPlatform(clip.platform) === platform &&
+      clipPlatformAccountIds.some(id => platformAccountIds.has(id));
+    const stablePlatformIdentityConflicts = platformAccountIds.size > 0 &&
+      clipPlatformAccountIds.length > 0 &&
+      !linkedByPlatformAccountId;
+    const linkedByLegacyIdentity = !hasGlobalSocialId &&
+      !stablePlatformIdentityConflicts &&
       getCampaignAccountMode(CAMPAIGNS[clip.campaignId]) === 'global_auto_verify' &&
       normalizeTypedSocialPlatform(clip.platform) === platform &&
       normalizeSocialUsername(clip.username || clip.platformAuthorName) === username;
-    if (!linkedById && !linkedByLegacyIdentity) continue;
+    if (!linkedById && !linkedByPlatformAccountId && !linkedByLegacyIdentity) continue;
     const key = String(clip.id || clip.clipId || clip.videoUrl || clip.url || uniqueClips.size);
     uniqueClips.set(key, clip);
   }
   const clips = [...uniqueClips.values()];
   const campaignIds = new Set(clips.map(clip => clip.campaignId).filter(Boolean).map(String));
-  for (const campaignId of social?.campaignsParticipated || social?.campaigns || []) campaignIds.add(String(campaignId));
   const campaigns = [...campaignIds].map(campaignId => CAMPAIGNS[campaignId]?.name?.replace(/<a?:\w+:\d+>/g, '').trim() || campaignId);
   const sumMetric = resolver => clips.reduce((total, clip) => total + Math.max(0, Number(resolver(clip)) || 0), 0);
   return {
+    campaignIds: [...campaignIds],
+    campaignCount: campaignIds.size,
     campaigns,
     totalClips: clips.length,
-    totalViews: sumMetric(clip => Math.max(Number(clip.publicViews) || 0, Number(clip.currentViews) || 0, Number(clip.views) || 0)),
+    totalViews: sumMetric(clip => getStoredPublicViews(clip)),
     totalLikes: sumMetric(clip => clip.likes ?? clip.likeCount ?? clip.likesCount),
     totalComments: sumMetric(clip => clip.comments ?? clip.commentCount ?? clip.commentsCount)
+  };
+}
+
+function getVerifiedCeDemographicDisplay(userRecord) {
+  const demographics = userRecord?.demographics;
+  const explicitStatus = String(demographics?.status || '').trim().toLowerCase();
+  const approved = explicitStatus === 'approved' || (!explicitStatus && Boolean(userRecord?.demographicTier));
+  if (!approved) return { tier: '--', pageType: '--' };
+  return {
+    tier: demographics?.tier || userRecord?.demographicTier || '--',
+    pageType: demographics?.pageType || demographics?.accountPageType || demographics?.accountType || userRecord?.demographicPageType || '--'
   };
 }
 
@@ -2406,9 +2430,8 @@ function buildGlobalSocialViewPage(userRecord, requestedPage = 0, options = {}) 
   const page = Math.min(Math.max(Number(requestedPage) || 0, 0), totalPages - 1);
   const social = socials[page];
   const analytics = getGlobalSocialAccountAnalytics(options.data, options.userId, social);
-  const tier = social.tier || social.demographicTier || userRecord?.demographics?.tier || 'Not available';
-  const pageType = social.pageType || social.accountType || social.profileType || 'Not available';
-  const status = social.verified === true ? '✅ Fully Verified' : '🔗 Connected';
+  const demographicDisplay = getVerifiedCeDemographicDisplay(userRecord);
+  const status = social.verified === true ? '✅ Verified' : '🔗 Connected';
   const safeProfileUrl = typeof social.profileUrl === 'string' && /^https:\/\//i.test(social.profileUrl) ? social.profileUrl : null;
   const usernameDisplay = safeProfileUrl ? `[@${social.username}](${safeProfileUrl})` : `@${social.username}`;
   const embed = new EmbedBuilder()
@@ -2419,9 +2442,9 @@ function buildGlobalSocialViewPage(userRecord, requestedPage = 0, options = {}) 
       { name: 'Platform', value: formatPlatform(social.platform), inline: true },
       { name: 'Username', value: `@${social.username}`, inline: true },
       { name: 'Verification Status', value: status, inline: true },
-      { name: 'Tier', value: String(tier), inline: true },
-      { name: 'Page Type', value: String(pageType), inline: true },
-      { name: 'Campaigns Participated', value: analytics.campaigns.length ? analytics.campaigns.join('\n').slice(0, 1024) : 'None yet', inline: false },
+      { name: 'Tier', value: String(demographicDisplay.tier), inline: true },
+      { name: 'Page Type', value: String(demographicDisplay.pageType), inline: true },
+      { name: 'Campaigns Participated', value: formatNumber(analytics.campaignCount), inline: false },
       { name: 'Total Clips', value: formatNumber(analytics.totalClips), inline: true },
       { name: 'Total Views', value: formatNumber(analytics.totalViews), inline: true },
       { name: 'Total Likes', value: formatNumber(analytics.totalLikes), inline: true },
