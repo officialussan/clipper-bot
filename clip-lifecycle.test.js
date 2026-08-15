@@ -44,12 +44,14 @@ const {
   buildRejectedClipUserDm,
   buildRejectedClipUserEmbed,
   buildShortCampaignPanelText,
-  buildSubmitClipAccountSelectionPage,
+  buildSubmitClipModal,
+  buildClipSubmissionValidationResponse,
   CAMPAIGNS,
   clearClipAppealWindow,
   createGlobalSocialVerificationRequest,
   finalizeStraightCampaignIfFulfilled,
   fetchInstagramPublicProfile,
+  findOtherVerifiedClipAccountOwner,
   findAllCampaignSubmissionPanelMessages,
   findCampaignSubmissionPanelMessage,
   ensureClipAppealDeadline,
@@ -74,6 +76,7 @@ const {
   getCampaignSubmitButtonFromMessage,
   getStraightCampaignAccounting,
   getClipAppealHelpLink,
+  getProviderClipAuthorIdentity,
   getVerifiedCampaignPlatforms,
   getActiveGlobalSocials,
   getVerifiedGlobalSocials,
@@ -106,6 +109,7 @@ const {
   updateApprovedClipTracking,
   updateCampaignSubmissionPanelMessage,
   validateAccountSubmission,
+  validateVideoOwnership,
   verifyGlobalSocialVerificationRequest
 } = require('./index.js').__clipLifecycleTest;
 
@@ -2239,7 +2243,54 @@ test('a creator can reconnect their terminal global social while active ownershi
   assert.equal(getVerifiedGlobalSocials(data.users.creator)[0].platformAccountId, 'ig-stable');
 });
 
-test('unlimited global portfolio preserves 60 accounts, paginates every UI, allows account 61, and rejects only an exact duplicate', async () => {
+test('clip submission identifies and matches the provider-owned account without an account menu', async () => {
+  const accountOne = {
+    id: 'social-one', platform: 'tiktok', username: 'one', platformAccountId: 'provider-one',
+    source: { id: 'social-one', platform: 'tiktok', username: 'one', platformAccountId: 'provider-one', demographics: { verified: true, tier: 1 } }
+  };
+  const accountTwo = {
+    id: 'social-two', platform: 'tiktok', username: 'old-two', platformAccountId: 'provider-two',
+    source: { id: 'social-two', platform: 'tiktok', username: 'old-two', platformAccountId: 'provider-two', demographics: { verified: false } }
+  };
+  const stableMatch = await validateVideoOwnership([accountOne, accountTwo], {
+    platform: 'tiktok', authorId: 'provider-two', authorUsername: 'renamed-two'
+  });
+  assert.equal(stableMatch.valid, true);
+  assert.equal(stableMatch.matchedAccount.id, 'social-two');
+  assert.equal(stableMatch.matchedBy, 'platformAccountId');
+
+  const mismatchedStableId = await validateVideoOwnership([accountOne], {
+    platform: 'tiktok', authorId: 'different-provider-id', authorUsername: 'one'
+  });
+  assert.equal(mismatchedStableId.valid, false);
+
+  const legacyMatch = await validateVideoOwnership([
+    { id: 'legacy', platform: 'instagram', username: '@Legacy.Creator', source: { username: '@Legacy.Creator' } }
+  ], {
+    platform: 'instagram', authorId: 'new-provider-id', authorUsername: 'legacy.creator'
+  });
+  assert.equal(legacyMatch.valid, true);
+  assert.equal(legacyMatch.matchedAccount.id, 'legacy');
+  assert.equal(legacyMatch.matchedBy, 'normalizedUsername');
+
+  const missingOwner = await validateVideoOwnership([accountOne], { platform: 'tiktok' });
+  assert.equal(missingOwner.valid, false);
+  assert.equal(missingOwner.reason, 'PROVIDER_OWNER_MISSING');
+
+  const youtubeIdentity = getProviderClipAuthorIdentity({
+    platform: 'youtube', authorId: 'channel-123', authorDisplayName: 'Creators Elite'
+  });
+  assert.equal(youtubeIdentity.platformAccountId, 'channel-123');
+  assert.equal(youtubeIdentity.normalizedAuthorUsername, 'creators elite');
+
+  const globalResponse = buildClipSubmissionValidationResponse('guild', CAMPAIGNS.ice, {
+    code: 'ACCOUNT_NOT_CONNECTED', authorIdentity: { displayName: 'differentaccount' }
+  });
+  assert.equal(globalResponse.embed.toJSON().title, 'Social Account Not Connected ❌');
+  assert.equal(globalResponse.components[0].toJSON().components[0].custom_id, 'global_social_link:ice');
+});
+
+test('unlimited global portfolio preserves 60 accounts, paginates account management, allows account 61, and rejects only an exact duplicate', async () => {
   const platformCounts = { tiktok: 30, instagram: 20, youtube: 10 };
   const socials = [];
   for (const [platform, count] of Object.entries(platformCounts)) {
@@ -2282,15 +2333,10 @@ test('unlimited global portfolio preserves 60 accounts, paginates every UI, allo
   }
   assert.equal(removableIds.size, 60);
 
-  const submitAccounts = getCampaignSubmissionAccounts(userRecord, CAMPAIGNS.ice);
-  const firstSubmitPage = buildSubmitClipAccountSelectionPage(submitAccounts, 'ice', 0);
-  const submitIds = new Set();
-  assert.equal(firstSubmitPage.totalPages, 3);
-  for (let page = 0; page < firstSubmitPage.totalPages; page++) {
-    const rendered = buildSubmitClipAccountSelectionPage(submitAccounts, 'ice', page);
-    for (const option of rendered.components[0].components[0].toJSON().options) submitIds.add(option.value);
-  }
-  assert.equal(submitIds.size, 60);
+  const submitModal = buildSubmitClipModal('ice').toJSON();
+  assert.equal(submitModal.custom_id, 'submit_clip_modal:ice');
+  assert.equal(JSON.stringify(submitModal).includes('submit_clip_platform_select'), false);
+  assert.equal(JSON.stringify(submitModal).includes('account'), false);
 
   const now = Date.parse('2026-08-14T12:00:00Z');
   const data = { users: { creator: userRecord }, globalSocialVerificationRequests: {} };

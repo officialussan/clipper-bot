@@ -334,7 +334,8 @@ function normalizeApifyInstagramReel(item, requestedUrl) {
   const usernameValue = [source.ownerUsername, source.username, source.owner?.username, source.authorUsername]
     .find(value => typeof value === 'string' && value.trim());
   const username = usernameValue ? usernameValue.replace(/^@+/, '').trim() : '';
-  if (!username) throw new Error('Apify did not return the Reel owner username.');
+  const ownerId = source.ownerId || source.owner?.id || source.userId || source.ownerPk || null;
+  if (!username && !ownerId) throw new Error('Apify did not return a reliable Reel owner identity.');
 
   const caption = String(source.caption || source.text || source.title || '').trim();
   const firstLine = caption.split(/\r?\n/)[0].trim();
@@ -357,6 +358,7 @@ function normalizeApifyInstagramReel(item, requestedUrl) {
 
   return {
     platform: 'instagram',
+    ownerId: ownerId === null || ownerId === undefined ? null : String(ownerId),
     videoId: String(source.id || source.videoId || shortcode),
     shortcode,
     url: permalink?.canonicalUrl || requested.canonicalUrl,
@@ -392,7 +394,8 @@ async function fetchApifyInstagramReelMetadata(reelUrl) {
   const reel = normalizeApifyInstagramReel(item, parsed.canonicalUrl);
   return {
     authorUsername: reel.username,
-    authorId: item.ownerId || item.owner?.id || null,
+    authorId: reel.ownerId,
+    platformAccountId: reel.ownerId,
     authorDisplayName: item.ownerFullName || reel.username,
     title: reel.title,
     views: reel.views,
@@ -2124,7 +2127,8 @@ function getApprovedGlobalAccounts(data, userId, platform) {
       id: getGlobalSocialInteractionId(social),
       platform: social.platform,
       username: social.username,
-      externalAccountId: social.externalAccountId || null,
+      platformAccountId: social.platformAccountId || social.externalAccountId || null,
+      externalAccountId: social.platformAccountId || social.externalAccountId || null,
       verified: true,
       source: social
     }));
@@ -2416,8 +2420,9 @@ function getGlobalSocialAccountAnalytics(data, userId, social) {
   const uniqueClips = new Map();
   for (const clip of [...Object.values(data?.clips || {}), ...Object.values(data?.clipReviews || {})]) {
     if (!clip || (userId && String(clip.userId) !== String(userId))) continue;
-    const hasGlobalSocialId = Boolean(clip.globalSocialId);
-    const linkedById = hasGlobalSocialId && socialIds.has(String(clip.globalSocialId));
+    const storedSocialId = clip.socialId || clip.globalSocialId || null;
+    const hasGlobalSocialId = Boolean(storedSocialId);
+    const linkedById = hasGlobalSocialId && socialIds.has(String(storedSocialId));
     const clipPlatformAccountIds = [clip.platformAccountId, clip.platformAuthorId, clip.externalAccountId]
       .filter(Boolean)
       .map(String);
@@ -2859,47 +2864,81 @@ function getApprovedCampaignAccounts(data, userId, campaignId, platform) {
       id: getCampaignAccountStableId(account, campaignId, platform),
       platform: account.platform || platform,
       username: account.username || '',
-      externalAccountId: account.externalAccountId || null,
+      platformAccountId: account.platformAccountId || account.externalAccountId || null,
+      externalAccountId: account.platformAccountId || account.externalAccountId || null,
       verified: true,
       source: account
     }));
 }
 
+function getProviderClipAuthorIdentity(metadata) {
+  const platform = normalizeTypedSocialPlatform(metadata?.platform) || (metadata?.authorUsername ? 'tiktok' : null);
+  const platformAccountId = normalizeExternalId(
+    metadata?.platformAccountId || metadata?.authorId || metadata?.channelId || metadata?.ownerId
+  );
+  const authorUsername = normalizeUsername(
+    metadata?.authorUsername || metadata?.authorHandle || (platform === 'youtube' ? metadata?.authorDisplayName : '') || ''
+  );
+  return {
+    platform,
+    platformAccountId,
+    authorUsername,
+    normalizedAuthorUsername: normalizeSocialUsername(authorUsername),
+    displayName: normalizeUsername(metadata?.authorUsername || metadata?.authorDisplayName || metadata?.authorName || '') || 'this account',
+    identifiable: Boolean(platformAccountId || normalizeSocialUsername(authorUsername))
+  };
+}
+
 async function validateVideoOwnership(approvedAccounts, metadata) {
   const accounts = approvedAccounts || [];
-  const platform = metadata?.platform || (metadata?.authorUsername ? 'tiktok' : 'youtube');
-  const authorUsername = normalizeUsername(metadata?.authorUsername || '').toLowerCase();
-  const authorDisplayName = normalizeUsername(metadata?.authorDisplayName || '').toLowerCase();
+  const identity = getProviderClipAuthorIdentity(metadata);
+  if (!identity.identifiable) {
+    return { valid: false, matchedAccount: null, reason: 'PROVIDER_OWNER_MISSING', identity };
+  }
 
   for (const account of accounts) {
-    let storedId = normalizeExternalId(account.externalAccountId || account.source?.channelId);
-    const authorId = normalizeExternalId(metadata?.authorId);
+    const storedId = normalizeExternalId(
+      account.platformAccountId || account.externalAccountId || account.source?.platformAccountId || account.source?.externalAccountId || account.source?.channelId
+    );
+    const authorId = identity.platformAccountId;
 
     if (storedId && authorId) {
-      if (storedId === authorId) return { valid: true, matchedAccount: account, reason: null };
+      if (storedId === authorId) return { valid: true, matchedAccount: account, matchedBy: 'platformAccountId', identity, reason: null };
       continue;
     }
 
     const storedUsername = normalizeSocialUsername(account.username);
     if (!storedUsername) continue;
 
-    if (platform === 'youtube') {
+    if (identity.platform === 'youtube' && authorId) {
       const identity = await resolveYouTubeChannelIdentity(account.username);
-      if (identity?.channelId && identity.channelId === authorId) {
-        account.source.externalAccountId ||= identity.channelId;
-        account.source.channelId ||= identity.channelId;
-        return { valid: true, matchedAccount: account, reason: null };
+      if (identity?.channelId && normalizeExternalId(identity.channelId) === authorId) {
+        return { valid: true, matchedAccount: account, matchedBy: 'resolvedChannelId', resolvedPlatformAccountId: identity.channelId, identity: getProviderClipAuthorIdentity(metadata), reason: null };
       }
-    } else if (storedUsername && storedUsername === normalizeSocialUsername(metadata?.authorUsername)) {
-      return { valid: true, matchedAccount: account, reason: null };
+    }
+
+    if (storedUsername === identity.normalizedAuthorUsername) {
+      return { valid: true, matchedAccount: account, matchedBy: 'normalizedUsername', identity, reason: null };
     }
   }
 
   return {
     valid: false,
     matchedAccount: null,
-    reason: 'The video author is not one of the approved campaign accounts.'
+    reason: 'ACCOUNT_NOT_CONNECTED',
+    identity
   };
+}
+
+async function findOtherVerifiedClipAccountOwner(data, excludedUserId, campaignId, platform, metadata) {
+  for (const userId of Object.keys(data.users || {})) {
+    if (String(userId) === String(excludedUserId)) continue;
+    const accounts = getApprovedSubmissionAccounts(data, userId, campaignId, platform);
+    if (!accounts.length) continue;
+    const ownership = await validateVideoOwnership(accounts, metadata);
+    if (ownership.valid) return { userId, account: ownership.matchedAccount };
+  }
+  return null;
 }
 
 function parseCanonicalVideoUrl(resolvedUrl) {
@@ -2951,7 +2990,7 @@ function normalizeClipVideoUrl(value) {
   return null;
 }
 
-async function validateClipBeforeSubmission({ data, userId, campaignId, submittedUrl, selectedAccountId = null }) {
+async function validateClipBeforeSubmission({ data, userId, campaignId, submittedUrl }) {
   const campaign = CAMPAIGNS[campaignId];
   if (!campaign) return { valid: false, message: '❌ Campaign not found.', metadata: null };
   if (isNonMonsterlabCampaign(campaign) && !getCampaignPerClipPayoutLimit(data, campaign)) {
@@ -2966,7 +3005,7 @@ async function validateClipBeforeSubmission({ data, userId, campaignId, submitte
       ? { resolvedUrl: instagramReel.canonicalUrl, platform: 'instagram' }
       : await expandSocialUrl(submittedUrl);
     const parsed = parseCanonicalVideoUrl(expanded.resolvedUrl);
-    if (!parsed) return { valid: false, message: '❌ This link is not a supported public TikTok or YouTube video.', metadata: null };
+    if (!parsed) return { valid: false, code: 'UNSUPPORTED_VIDEO_URL', message: '❌ This link is not a supported public TikTok, Instagram, or YouTube video.', metadata: null };
     if (!campaign.allowedPlatforms?.includes(parsed.platform)) {
       return { valid: false, message: `❌ ${formatPlatform(parsed.platform)} is not enabled for this campaign.`, metadata: null };
     }
@@ -2993,24 +3032,63 @@ async function validateClipBeforeSubmission({ data, userId, campaignId, submitte
 
     const metadata = await fetchSubmissionMetadata(parsed.platform, parsed.canonicalUrl, parsed.videoId);
     metadata.platform = parsed.platform;
-    if (parsed.platform === 'tiktok' && !normalizeUsername(metadata.authorUsername || '')) {
-      return { valid: false, message: '❌ We could not verify the TikTok username for this video. Please submit the full public TikTok video link or try again shortly.', metadata };
+    const providerIdentity = getProviderClipAuthorIdentity(metadata);
+    if (!providerIdentity.identifiable) {
+      return {
+        valid: false,
+        code: 'PROVIDER_OWNER_MISSING',
+        message: "We couldn't reliably identify the account that posted this clip.",
+        metadata,
+        authorIdentity: providerIdentity
+      };
     }
-    let accounts = getApprovedSubmissionAccounts(data, userId, campaignId, parsed.platform);
-    if (selectedAccountId) accounts = accounts.filter(account => String(account.id || `campaign_${account.platform}`) === String(selectedAccountId));
+    const accounts = getApprovedSubmissionAccounts(data, userId, campaignId, parsed.platform);
     if (!accounts.length) {
-      return { valid: false, message: `❌ You do not have the selected verified ${formatPlatform(parsed.platform)} account available for this campaign.`, metadata };
+      const otherOwner = await findOtherVerifiedClipAccountOwner(data, userId, campaignId, parsed.platform, metadata);
+      return {
+        valid: false,
+        code: otherOwner ? 'ACCOUNT_OWNED_BY_ANOTHER_CREATOR' : 'ACCOUNT_NOT_CONNECTED',
+        message: otherOwner
+          ? 'This social account is already registered to another Creators Elite creator.'
+          : `This clip was posted by **@${providerIdentity.displayName}**, but that account is not connected and verified for this campaign.`,
+        metadata,
+        authorIdentity: providerIdentity
+      };
     }
 
     const ownership = await validateVideoOwnership(accounts, metadata);
     if (!ownership.valid) {
-      const author = metadata.authorUsername || metadata.authorDisplayName || 'an unlinked account';
-      return { valid: false, message: `❌ This video was posted by **@${author}**, but that account is not linked and approved for this campaign.`, metadata };
+      if (ownership.reason === 'PROVIDER_OWNER_MISSING') {
+        return {
+          valid: false,
+          code: 'PROVIDER_OWNER_MISSING',
+          message: "We couldn't reliably identify the account that posted this clip.",
+          metadata,
+          authorIdentity: providerIdentity
+        };
+      }
+      const otherOwner = await findOtherVerifiedClipAccountOwner(data, userId, campaignId, parsed.platform, metadata);
+      return {
+        valid: false,
+        code: otherOwner ? 'ACCOUNT_OWNED_BY_ANOTHER_CREATOR' : 'ACCOUNT_NOT_CONNECTED',
+        message: otherOwner
+          ? 'This social account is already registered to another Creators Elite creator.'
+          : `This clip was posted by **@${providerIdentity.displayName}**, but that account is not connected and verified for this campaign.`,
+        metadata,
+        authorIdentity: providerIdentity
+      };
     }
 
     const demographicEligibility = getCampaignDemographicEligibility(data.users?.[String(userId)], campaign, ownership.matchedAccount);
     if (!demographicEligibility.eligible) {
-      return { valid: false, code: 'DEMOGRAPHICS_NOT_ELIGIBLE', message: `❌ Approved audience demographics for **@${ownership.matchedAccount.username}** are required before submitting clips.`, metadata };
+      return {
+        valid: false,
+        code: 'DEMOGRAPHICS_NOT_ELIGIBLE',
+        message: `❌ Approved audience demographics for **@${ownership.matchedAccount.username}** are required before submitting clips.`,
+        metadata,
+        matchedAccount: ownership.matchedAccount,
+        authorIdentity: providerIdentity
+      };
     }
 
     const durationValidation = validateCampaignVideoDuration(campaign, metadata);
@@ -3037,17 +3115,22 @@ async function validateClipBeforeSubmission({ data, userId, campaignId, submitte
       return { valid: false, code: publicationValidation.code, message: `❌ ${publicationValidation.message}`, metadata };
     }
 
-    if (parsed.platform === 'tiktok' && metadata.authorId && !ownership.matchedAccount.externalAccountId) {
-      ownership.matchedAccount.source.externalAccountId = String(metadata.authorId);
-      saveData(data);
-    }
-    if (parsed.platform === 'youtube' && ownership.matchedAccount.source?.externalAccountId) {
+    const matchedSource = ownership.matchedAccount.source || ownership.matchedAccount;
+    if (providerIdentity.platformAccountId && !normalizeExternalId(matchedSource.platformAccountId || matchedSource.externalAccountId || matchedSource.channelId)) {
+      matchedSource.platformAccountId = String(providerIdentity.platformAccountId);
+      matchedSource.externalAccountId = String(providerIdentity.platformAccountId);
+      if (parsed.platform === 'youtube') matchedSource.channelId ||= String(providerIdentity.platformAccountId);
       saveData(data);
     }
 
-    return { valid: true, message: null, metadata, platform: parsed.platform, videoId: parsed.videoId, canonicalUrl: parsed.canonicalUrl, matchedAccount: ownership.matchedAccount };
+    return { valid: true, message: null, metadata, authorIdentity: providerIdentity, platform: parsed.platform, videoId: parsed.videoId, canonicalUrl: parsed.canonicalUrl, matchedAccount: ownership.matchedAccount };
   } catch (err) {
-    return { valid: false, message: '❌ We could not validate this public video link. Please try the full public URL.', metadata: null };
+    return {
+      valid: false,
+      code: 'PROVIDER_UNAVAILABLE',
+      message: "We couldn't verify this clip right now. Please try again shortly.",
+      metadata: null
+    };
   }
 }
 
@@ -6630,6 +6713,99 @@ function removeCampaignAccount({ data, userId, campaignId, platform, accountId =
   return { removed: true, username, requestsMarkedRemoved, demographicsPreserved: Boolean(account.demographics) };
 }
 
+function buildSubmitClipModal(campaignId) {
+  const modal = new ModalBuilder()
+    .setCustomId(`submit_clip_modal:${campaignId}`)
+    .setTitle('Submit your Clips');
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('clip_links')
+        .setLabel('Videos URL')
+        .setPlaceholder('Paste up to 20 links, one per line')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true)
+        .setMaxLength(4000)
+    )
+  );
+  return modal;
+}
+
+function buildSubmissionAccountConnectRow(guildId, campaign) {
+  if (getCampaignAccountMode(campaign) === 'global_auto_verify') {
+    return new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`global_social_link:${campaign.id}`)
+        .setLabel('Link Account')
+        .setEmoji('➕')
+        .setStyle(ButtonStyle.Success)
+    );
+  }
+  const url = getCampaignConnectAccountLink(guildId, campaign);
+  if (!url) return null;
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setLabel('Connect Account')
+      .setEmoji('➕')
+      .setStyle(ButtonStyle.Link)
+      .setURL(url)
+  );
+}
+
+function buildClipSubmissionValidationResponse(guildId, campaign, validation) {
+  const accountMode = getCampaignAccountMode(campaign);
+  const author = validation?.authorIdentity?.displayName || 'this account';
+  if (validation?.code === 'ACCOUNT_NOT_CONNECTED') {
+    const global = accountMode === 'global_auto_verify';
+    return {
+      embed: new EmbedBuilder()
+        .setColor(0xED4245)
+        .setTitle(global ? 'Social Account Not Connected ❌' : 'Campaign Account Not Connected ❌')
+        .setDescription(global
+          ? `This clip was posted by **@${author}**, but that account is not connected and verified with your Creators Elite account.\n\nConnect and verify **@${author}** before submitting this clip.`
+          : `This clip was posted by **@${author}**, but that account has not been verified for this campaign.\n\nConnect and verify this account before submitting clips from it.`),
+      components: [buildSubmissionAccountConnectRow(guildId, campaign)].filter(Boolean)
+    };
+  }
+  if (validation?.code === 'ACCOUNT_OWNED_BY_ANOTHER_CREATOR') {
+    return {
+      embed: new EmbedBuilder()
+        .setColor(0xED4245)
+        .setTitle('Social Account Already Registered ❌')
+        .setDescription('This social account is already registered to another Creators Elite creator.'),
+      components: []
+    };
+  }
+  if (validation?.code === 'PROVIDER_OWNER_MISSING') {
+    return {
+      embed: new EmbedBuilder()
+        .setColor(0xED4245)
+        .setTitle('Unable to Verify Clip Owner ❌')
+        .setDescription("We couldn't reliably identify the account that posted this clip.\n\nPlease try again shortly or contact support if the issue continues."),
+      components: []
+    };
+  }
+  if (validation?.code === 'PROVIDER_UNAVAILABLE') {
+    return {
+      embed: new EmbedBuilder()
+        .setColor(0xFEE75C)
+        .setTitle('Clip Verification Temporarily Unavailable')
+        .setDescription("We couldn't verify this clip right now.\n\nPlease try again shortly."),
+      components: []
+    };
+  }
+  if (validation?.code === 'DEMOGRAPHICS_NOT_ELIGIBLE') {
+    const response = buildMissingCampaignDemographicsResponse(guildId, campaign);
+    const username = validation?.matchedAccount?.username || validation?.authorIdentity?.displayName || 'this account';
+    response.embeds[0].setDescription(
+      `Approved audience demographics for **@${username}** are required before submitting clips to **${campaign.name}**.\n\n` +
+      'Verify the demographics for this exact account before trying again.'
+    );
+    return { embed: response.embeds[0], components: response.components };
+  }
+  return null;
+}
+
 function ensureCampaignPlatformStats(userRecord, campaignId, platform, username = '') {
   if (!userRecord.campaignStats) {
     userRecord.campaignStats = {};
@@ -6931,35 +7107,6 @@ function buildCampaignAccountDisconnectConfirmation(campaign, account, page = 0)
     embeds: [],
     components: [container],
     flags: MessageFlags.IsComponentsV2
-  };
-}
-
-function buildSubmitClipAccountSelectionPage(submissionAccounts, campaignId, requestedPage = 0, pageSize = 25) {
-  const accounts = Array.isArray(submissionAccounts) ? submissionAccounts : [];
-  const totalPages = Math.max(1, Math.ceil(accounts.length / pageSize));
-  const page = Math.min(Math.max(Number(requestedPage) || 0, 0), totalPages - 1);
-  const pageAccounts = accounts.slice(page * pageSize, (page + 1) * pageSize);
-  const select = new StringSelectMenuBuilder()
-    .setCustomId(`submit_clip_platform_select:${campaignId}:${page}`)
-    .setPlaceholder('Choose platform account')
-    .addOptions(pageAccounts.map(account => ({
-      label: `${formatPlatform(account.platform)} — @${account.username}`.slice(0, 100),
-      value: String(account.id),
-      description: `Verified ${formatPlatform(account.platform)} account`.slice(0, 100)
-    })));
-  const components = [new ActionRowBuilder().addComponents(select)];
-  if (totalPages > 1) {
-    components.push(new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`submit_clip_account_page:${campaignId}:${page - 1}`).setLabel('Previous').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
-      new ButtonBuilder().setCustomId(`submit_clip_account_page:${campaignId}:${page + 1}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page === totalPages - 1)
-    ));
-  }
-  return {
-    page,
-    totalPages,
-    totalAccounts: accounts.length,
-    content: `Choose which campaign account these clips belong to.${totalPages > 1 ? `\n\nPage ${page + 1} / ${totalPages}` : ''}`,
-    components
   };
 }
 
@@ -7288,6 +7435,7 @@ async function fetchSubmissionMetadata(platform, canonicalUrl, videoId) {
     return {
       authorUsername,
       authorId: data.author?.id || data.author?.uid || null,
+      platformAccountId: data.author?.id || data.author?.uid || null,
       authorDisplayName,
       authorName: authorDisplayName || authorUsername,
       title: data.title || '',
@@ -7317,6 +7465,8 @@ async function fetchSubmissionMetadata(platform, canonicalUrl, videoId) {
     return {
       authorUsername: null,
       authorId: snippet.channelId || null,
+      platformAccountId: snippet.channelId || null,
+      channelId: snippet.channelId || null,
       authorDisplayName: snippet.channelTitle || null,
       authorName: snippet.channelTitle || null,
       title: snippet.title || '',
@@ -11704,18 +11854,9 @@ ${reason}
         ? ensureGlobalSocialAccountIds(userRecord).changed
         : ensureCampaignAccountIds(userRecord, campaignId);
       if (accountIdsChanged) saveData(data);
-      const allSubmissionAccounts = getCampaignSubmissionAccounts(userRecord, campaign);
-      const submissionAccounts = allSubmissionAccounts.filter(account => getCampaignDemographicEligibility(userRecord, campaign, account).eligible);
-
-      if (allSubmissionAccounts.length > 0 && submissionAccounts.length === 0) {
-        await interaction.reply({ ...buildMissingCampaignDemographicsResponse(interaction.guild.id, campaign), flags: MessageFlags.Ephemeral });
-        return;
-      }
-
+      const submissionAccounts = getCampaignSubmissionAccounts(userRecord, campaign);
       if (submissionAccounts.length === 0) {
-        const connectButtonRow = getCampaignAccountMode(campaign) === 'global_auto_verify'
-          ? buildGlobalSocialLinkButtonRow(campaignId)
-          : buildCampaignConnectAccountRow(interaction.guild.id, campaign);
+        const connectButtonRow = buildSubmissionAccountConnectRow(interaction.guild.id, campaign);
         await interaction.reply({
           content: '❌ You need to connect and verify at least one eligible account before submitting clips.',
           components: connectButtonRow ? [connectButtonRow] : [],
@@ -11724,103 +11865,12 @@ ${reason}
         return;
       }
 
-      if (submissionAccounts.length === 1) {
-        const selectedAccount = submissionAccounts[0];
-
-        const modal = new ModalBuilder()
-          .setCustomId(`submit_clip_modal:${campaignId}:${selectedAccount.platform}:${selectedAccount.id}`)
-          .setTitle('Submit your Clips');
-
-        modal.addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId('clip_links')
-              .setLabel('Videos URL')
-              .setPlaceholder('Paste up to 20 links, one per line')
-              .setStyle(TextInputStyle.Paragraph)
-              .setRequired(true)
-              .setMaxLength(4000)
-          )
-        );
-
-        await interaction.showModal(modal);
-        return;
-      }
-
-      const accountPage = buildSubmitClipAccountSelectionPage(submissionAccounts, campaignId);
-      await interaction.reply({
-        content: accountPage.content,
-        components: accountPage.components,
-        flags: MessageFlags.Ephemeral
-      });
-
-      return;
-    }
-
-    if (interaction.isButton() && interaction.customId.startsWith('submit_clip_account_page:')) {
-      const [, campaignId, pageValue] = interaction.customId.split(':');
-      const campaign = CAMPAIGNS[campaignId];
-      if (!campaign) return interaction.update({ content: '❌ Campaign not found.', components: [] });
-      const data = loadData();
-      const userRecord = data.users?.[interaction.user.id];
-      const accountIdsChanged = getCampaignAccountMode(campaign) === 'global_auto_verify'
-        ? ensureGlobalSocialAccountIds(userRecord).changed
-        : ensureCampaignAccountIds(userRecord, campaignId);
-      if (accountIdsChanged) saveData(data);
-      const submissionAccounts = getCampaignSubmissionAccounts(userRecord, campaign);
-      if (!submissionAccounts.length) return interaction.update({ content: '❌ No verified campaign accounts are currently available.', components: [] });
-      const accountPage = buildSubmitClipAccountSelectionPage(submissionAccounts, campaignId, Number(pageValue) || 0);
-      await interaction.update({ content: accountPage.content, components: accountPage.components });
-      return;
-    }
-
-    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('submit_clip_platform_select:')) {
-      const campaignId = interaction.customId.split(':')[1];
-      const campaign = CAMPAIGNS[campaignId];
-      if (!campaign) {
-        await interaction.reply({ content: '❌ Campaign not found.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      const data = loadData();
-      const submissionBlockMessage = getCampaignSubmissionBlockMessage(getCampaignOperationalState(data, campaign));
-      if (submissionBlockMessage) {
-        await interaction.reply({ content: submissionBlockMessage, flags: MessageFlags.Ephemeral });
-        return;
-      }
-      const userRecord = data.users?.[interaction.user.id];
-      const submissionAccounts = getCampaignSubmissionAccounts(userRecord, campaign);
-      const selectedValue = interaction.values[0];
-      let selectedAccount = submissionAccounts.find(account => String(account.id) === String(selectedValue));
-      if (!selectedAccount && getCampaignAccountMode(campaign) === 'campaign_staff_code') {
-        selectedAccount = submissionAccounts.find(account => account.platform === selectedValue);
-      }
-      if (!selectedAccount) {
-        await interaction.reply({ content: '❌ That verified account is no longer available. Reopen Submit Clip and choose again.', flags: MessageFlags.Ephemeral });
-        return;
-      }
-
-      const modal = new ModalBuilder()
-        .setCustomId(`submit_clip_modal:${campaignId}:${selectedAccount.platform}:${selectedAccount.id}`)
-        .setTitle('Submit your Clips');
-
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder()
-            .setCustomId('clip_links')
-            .setLabel('Videos URL')
-            .setPlaceholder('Paste up to 20 links, one per line')
-            .setStyle(TextInputStyle.Paragraph)
-            .setRequired(true)
-            .setMaxLength(4000)
-        )
-      );
-
-      await interaction.showModal(modal);
+      await interaction.showModal(buildSubmitClipModal(campaignId));
       return;
     }
 
     if (interaction.isModalSubmit() && interaction.customId.startsWith('submit_clip_modal:')) {
-        const [, campaignId, platform, selectedAccountIdValue] = interaction.customId.split(':');
+        const [, campaignId] = interaction.customId.split(':');
         const campaign = CAMPAIGNS[campaignId];
 
         if (!campaign) {
@@ -11869,43 +11919,6 @@ ${reason}
             await interaction.reply({ content: '❌ Join this campaign before submitting clips.', flags: MessageFlags.Ephemeral });
             return;
         }
-        const submissionAccounts = getCampaignSubmissionAccounts(userRecord, campaign).filter(account => account.platform === platform);
-        let selectedAccount = selectedAccountIdValue
-            ? submissionAccounts.find(account => String(account.id) === String(selectedAccountIdValue))
-            : null;
-        if (!selectedAccount && submissionAccounts.length === 1) selectedAccount = submissionAccounts[0];
-
-        if (!selectedAccount) {
-            const connectButtonRow = getCampaignAccountMode(campaign) === 'global_auto_verify'
-                ? buildGlobalSocialLinkButtonRow(campaignId)
-                : buildCampaignConnectAccountRow(interaction.guild.id, campaign);
-            await interaction.reply({
-                content: `❌ No verified ${formatPlatform(platform)} account was found for this campaign. Connect and verify an account before submitting clips.`,
-                components: connectButtonRow ? [connectButtonRow] : [],
-                flags: MessageFlags.Ephemeral
-            });
-            return;
-        }
-
-        const demographicEligibility = getCampaignDemographicEligibility(userRecord, campaign, selectedAccount);
-        if (!demographicEligibility.eligible) {
-            await interaction.reply({ ...buildMissingCampaignDemographicsResponse(interaction.guild.id, campaign), flags: MessageFlags.Ephemeral });
-            return;
-        }
-
-        const username = selectedAccount.username;
-        const platformStats = ensureCampaignPlatformStats(userRecord, campaignId, platform, username);
-
-        // 🟢 RESOLVE PLATFORM DYNAMIC STAFF CHANNEL (#ig-clips, #tiktok-clips, #yt-clips)
-        const platformKey = platform.toLowerCase();
-        const channelKey = platformKey.includes('ig') || platformKey.includes('instagram') ? 'instagram'
-                         : platformKey.includes('tiktok') ? 'tiktok'
-                         : platformKey.includes('youtube') || platformKey.includes('yt') ? 'youtube'
-                         : platformKey;
-
-        const campaignStaffMap = data.campaignStaffChannels?.[campaignId];
-        const targetChannelId = campaignStaffMap?.[channelKey] || campaign.staffChannelId;
-        const staffChannel = interaction.guild.channels.cache.get(targetChannelId);
 
         let submittedCount = 0;
         let duplicateCount = 0;
@@ -11919,21 +11932,20 @@ ${reason}
                 data,
                 userId: interaction.user.id,
                 campaignId,
-                submittedUrl: originalLink,
-                selectedAccountId: selectedAccount.id
+                submittedUrl: originalLink
             });
 
             if (!validation.valid) {
                 if (validation.code === 'DUPLICATE_CLIP') duplicateCount++;
-                else rejectedResults.push({ link: originalLink, reason: validation.message || 'Validation failed.', responseEmbed: validation.responseEmbed || null });
-                continue;
-            }
-
-            if (validation.platform !== platform) {
-                rejectedResults.push({
-                    link: originalLink,
-                    reason: '❌ This link is for ' + formatPlatform(validation.platform) + ', but you selected ' + formatPlatform(platform) + '.'
-                });
+                else {
+                    const validationResponse = buildClipSubmissionValidationResponse(interaction.guild.id, campaign, validation);
+                    rejectedResults.push({
+                        link: originalLink,
+                        reason: validation.message || 'Validation failed.',
+                        responseEmbed: validation.responseEmbed || validationResponse?.embed || null,
+                        responseComponents: validationResponse?.components || []
+                    });
+                }
                 continue;
             }
 
@@ -11946,6 +11958,12 @@ ${reason}
 
             const metadata = validation.metadata;
             const matchedAccount = validation.matchedAccount;
+            const matchedAccountId = String(matchedAccount.id);
+            const matchedUsername = matchedAccount.username || validation.authorIdentity?.authorUsername || metadata.authorUsername || metadata.authorDisplayName;
+            const platformStats = ensureCampaignPlatformStats(userRecord, campaignId, validation.platform, matchedUsername);
+            const campaignStaffMap = data.campaignStaffChannels?.[campaignId];
+            const targetChannelId = campaignStaffMap?.[validation.platform] || campaign.staffChannelId;
+            const staffChannel = interaction.guild.channels.cache.get(targetChannelId);
             const clipId = makeClipId();
             const submittedTimestamp = Date.now();
             const submissionBudgetCycle = isStraightCampaign(campaign)
@@ -11964,13 +11982,17 @@ ${reason}
                 campaignId,
                 campaignName: campaign.name,
                 platform: validation.platform,
-                username: matchedAccount?.username || metadata.authorUsername || metadata.authorDisplayName || selectedAccount.username,
-                globalSocialId: getCampaignAccountMode(campaign) === 'global_auto_verify' ? selectedAccount.id : null,
-                campaignAccountId: getCampaignAccountMode(campaign) === 'campaign_staff_code' ? selectedAccount.id : null,
+                username: matchedUsername,
+                socialId: getCampaignAccountMode(campaign) === 'global_auto_verify' ? matchedAccountId : null,
+                globalSocialId: getCampaignAccountMode(campaign) === 'global_auto_verify' ? matchedAccountId : null,
+                campaignAccountId: getCampaignAccountMode(campaign) === 'campaign_staff_code' ? matchedAccountId : null,
                 url: validation.canonicalUrl,
                 videoUrl: validation.canonicalUrl,
                 originalSubmittedUrl: originalLink,
                 videoId: validation.videoId,
+                authorUsername: validation.authorIdentity?.authorUsername || metadata.authorUsername || null,
+                normalizedAuthorUsername: validation.authorIdentity?.normalizedAuthorUsername || null,
+                platformAccountId: validation.authorIdentity?.platformAccountId || null,
                 platformAuthorId: metadata.authorId || null,
                 platformAuthorName: metadata.authorUsername || metadata.authorDisplayName || null,
                 durationSeconds: Number.isFinite(Number(metadata.durationSeconds)) ? Number(metadata.durationSeconds) : null,
@@ -12054,12 +12076,13 @@ ${reason}
         }
         if (rejectedResults.length > 5) responseMessage += '\n…and ' + (rejectedResults.length - 5) + ' more.';
 
-        const singlePreLaunchRejection = submittedCount === 0 && duplicateCount === 0 && rejectedResults.length === 1
-            ? rejectedResults[0].responseEmbed
+        const singleDetailedRejection = submittedCount === 0 && duplicateCount === 0 && rejectedResults.length === 1
+            ? rejectedResults[0]
             : null;
-        await interaction.editReply(singlePreLaunchRejection
-            ? { content: null, embeds: [singlePreLaunchRejection] }
-            : { content: responseMessage });
+        const firstResponseComponents = rejectedResults.find(item => item.responseComponents?.length)?.responseComponents || [];
+        await interaction.editReply(singleDetailedRejection?.responseEmbed
+            ? { content: null, embeds: [singleDetailedRejection.responseEmbed], components: singleDetailedRejection.responseComponents || [] }
+            : { content: responseMessage, components: firstResponseComponents });
         return;    }
 
     if (interaction.isButton() && interaction.customId.startsWith('campaign_stats:')) {
@@ -14200,7 +14223,8 @@ module.exports.__clipLifecycleTest = {
   buildRejectedClipUserDm,
   buildRejectedClipUserEmbed,
   buildShortCampaignPanelText,
-  buildSubmitClipAccountSelectionPage,
+  buildSubmitClipModal,
+  buildClipSubmissionValidationResponse,
   clearClipAppealWindow,
   createGlobalSocialVerificationRequest,
   ensureClipAppealDeadline,
@@ -14208,9 +14232,11 @@ module.exports.__clipLifecycleTest = {
   finalizeStraightCampaignIfFulfilled,
   fetchInstagramPublicProfile,
   fetchPublicSocialProfile,
+  findOtherVerifiedClipAccountOwner,
   findAllCampaignSubmissionPanelMessages,
   findCampaignSubmissionPanelMessage,
   getClipTrackingAudit,
+  getProviderClipAuthorIdentity,
   getCampaignConnectAccountLink,
   getCampaignRulesLink,
   getCampaignAccountEligibility,
@@ -14262,6 +14288,7 @@ module.exports.__clipLifecycleTest = {
   validateCampaignPublicationDate,
   validateCampaignVideoDuration,
   validateAccountSubmission,
+  validateVideoOwnership,
   verifyGlobalSocialVerificationRequest,
   shouldTrackClip,
   updateApprovedClipTracking,
