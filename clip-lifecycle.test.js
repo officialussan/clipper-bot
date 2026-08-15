@@ -6,6 +6,7 @@ const {
   applyDemographicsApprovalToAccount,
   applyCampaignMembership,
   applyApprovalSnapshotAccounting,
+  applyPostApprovalCreditReversal,
   applyStraightCampaignRefill,
   applyTrackedMetadata,
   assignCampaignJoinRoles,
@@ -70,12 +71,15 @@ const {
   getCampaignPayoutThresholdViews,
   getCampaignPerClipPayoutLimit,
   getCampaignSubmissionBlockMessage,
+  getRejectedCreditAudit,
   getCampaignCurrentRunAccounting,
   getCampaignCurrentWeekAccounting,
   getCampaignSubmissionAccounts,
   getCampaignSubmitButtonFromMessage,
   getStraightCampaignAccounting,
   getClipAppealHelpLink,
+  getClipActiveCreditedViews,
+  getClipActiveWeekCreditedViews,
   getProviderClipAuthorIdentity,
   getVerifiedCampaignPlatforms,
   getActiveGlobalSocials,
@@ -91,6 +95,9 @@ const {
   joinCampaignMember,
   repairApprovalSnapshotInvariants,
   repairAugustFirstWeekLegacyWeeklyAccounting,
+  reconcileCampaignFulfillmentAfterCreditChange,
+  reconcileRejectedCredits,
+  restorePostApprovalCreditReversal,
   ensureCampaignAccount,
   ensureCampaignAccountIds,
   ensureGlobalSocialAccountIds,
@@ -778,6 +785,52 @@ test('weekly accounting D: Elephant clamps fulfilled money at the 8M weekly cap'
   assert.equal(accounting.capReached, true);
 });
 
+test('post-approval rejection releases only unpaid Monsterlab credit and preserves paid history', () => {
+  const now = new Date('2026-08-09T12:00:00.000Z');
+  const unpaidClip = makeWeeklyAccountingClip('elephant', 'creator-a', 100_000);
+  const data = { clips: { unpaidClip }, clipReviews: {}, campaignStatus: {} };
+  assert.equal(getCampaignCurrentWeekAccounting(data, 'elephant', now).creditedViews, 100_000);
+  assert.equal(getUserCurrentRunAccounting(data, 'elephant', 'creator-a').unpaidViews, 100_000);
+
+  Object.assign(unpaidClip, {
+    status: 'rejected', payoutEligible: false, rejectionStage: 'post_approval',
+    rejectedAt: now.getTime(), rejectReason: 'Invalid after approval'
+  });
+  const reversal = applyPostApprovalCreditReversal(unpaidClip, { now: now.getTime(), appliedBy: 'staff' });
+  assert.equal(reversal.reversedCreditedViews, 100_000);
+  assert.equal(getClipActiveCreditedViews(unpaidClip), 0);
+  assert.equal(getClipActiveWeekCreditedViews(unpaidClip, '2026-08-03T07:00:00.000Z'), 0);
+  assert.equal(getCampaignCurrentWeekAccounting(data, 'elephant', now).creditedViews, 0);
+  assert.equal(getUserCurrentRunAccounting(data, 'elephant', 'creator-a').unpaidViews, 0);
+  const rejectedStats = buildCampaignStatsEmbed(data, {}, 'elephant', CAMPAIGNS.elephant.name, 'creator-a').data.description;
+  assert.match(rejectedStats, /Monthly Earned Views[^]*\n0/);
+  assert.match(rejectedStats, /Unpaid Views[^]*\n0/);
+  assert.equal(unpaidClip.campaignCreditedViews, 100_000);
+  assert.equal(unpaidClip.publicViews, 100_000);
+  assert.equal(unpaidClip.trackingStatus, 'completed');
+  assert.equal(unpaidClip.nextCheckAt, null);
+
+  const partial = makeWeeklyAccountingClip('elephant', 'creator-b', 100_000, {
+    id: 'partial-paid',
+    payout: { paidViews: 40_000, paidMoney: 12, history: [{ views: 40_000, amount: 12 }] },
+    status: 'rejected', payoutEligible: false, rejectionStage: 'post_approval'
+  });
+  data.clips.partial = partial;
+  applyPostApprovalCreditReversal(partial, { now: now.getTime(), appliedBy: 'staff' });
+  const userAccounting = getUserCurrentRunAccounting(data, 'elephant', 'creator-b');
+  assert.equal(getClipActiveCreditedViews(partial), 40_000);
+  assert.equal(getCampaignCurrentWeekAccounting(data, 'elephant', now).creditedViews, 40_000);
+  assert.equal(userAccounting.paidViews, 40_000);
+  assert.equal(userAccounting.unpaidViews, 0);
+  assert.equal(userAccounting.paidMoney, 12);
+  assert.deepEqual(partial.payout.history, [{ views: 40_000, amount: 12 }]);
+
+  const audit = getRejectedCreditAudit(data, 'elephant', now);
+  assert.equal(audit.incorrectRejectedCredit, 160_000);
+  assert.equal(audit.correctedCampaignActiveCredit, 40_000);
+  assert.equal(audit.unpaidRejectedCredit, 160_000);
+});
+
 test('weekly accounting E: previous-run paid history is excluded from current My Stats', () => {
   const current = makeWeeklyAccountingClip('elephant', 'creator-a', 4_200_000);
   const previous = {
@@ -1245,6 +1298,49 @@ test('straight campaign accounting is continuous across weekly/monthly boundarie
   }
 });
 
+test('straight campaign rejection releases capacity, reopens safely, and reconciliation is idempotent', () => {
+  const campaign = makeStraightTestCampaign();
+  CAMPAIGNS[campaign.id] = campaign;
+  try {
+    const retained = makeStraightTestClip(900_000, { id: 'retained' });
+    const rejected = makeStraightTestClip(100_000, { id: 'rejected', userId: 'creator-b' });
+    const data = {
+      clips: { retained, rejected }, clipReviews: {}, campaignStatus: {}, campaignAllocations: {}
+    };
+    assert.equal(finalizeStraightCampaignIfFulfilled(data, campaign.id, 1000), true);
+    assert.equal(getCampaignOperationalState(data, campaign).state, 'finished');
+
+    Object.assign(rejected, {
+      status: 'rejected', payoutEligible: false, rejectionStage: 'post_approval',
+      rejectReason: 'Post-approval invalidation', rejectedAt: 2000
+    });
+    const first = reconcileRejectedCredits(data, campaign.id, { now: 2000, appliedBy: 'staff' });
+    assert.equal(first.changed, true);
+    assert.equal(first.changedClips, 1);
+    assert.equal(getStraightCampaignAccounting(data, campaign.id).creditedViews, 900_000);
+    assert.equal(getCampaignPanelFulfilledPercent(campaign, data), 90);
+    assert.equal(data.campaignStatus[campaign.id].status, 'active');
+    assert.equal(getCampaignOperationalState(data, campaign).state, 'live');
+    assert.equal(buildCampaignSubmitClipButton(campaign, data).data.disabled, false);
+    assert.equal(rejected.campaignCreditedViews, 100_000);
+    assert.equal(rejected.reversedCreditedViews, 100_000);
+
+    const second = reconcileRejectedCredits(data, campaign.id, { now: 3000, appliedBy: 'staff' });
+    assert.equal(second.changed, false);
+    assert.equal(second.changedClips, 0);
+    assert.equal(getStraightCampaignAccounting(data, campaign.id).creditedViews, 900_000);
+
+    restorePostApprovalCreditReversal(rejected, { now: 4000, restoredBy: 'staff' });
+    reconcileCampaignFulfillmentAfterCreditChange(data, campaign.id, 4000);
+    assert.equal(getStraightCampaignAccounting(data, campaign.id).creditedViews, 1_000_000);
+    assert.equal(rejected.campaignCreditedViews, 100_000);
+    assert.equal(rejected.creditReversal.active, false);
+    assert.equal(data.campaignStatus[campaign.id].status, 'finished_budget');
+  } finally {
+    delete CAMPAIGNS[campaign.id];
+  }
+});
+
 test('straight campaign refill adds cumulative capacity and excludes the finished-period view gap', async () => {
   const campaign = makeStraightTestCampaign();
   CAMPAIGNS[campaign.id] = campaign;
@@ -1563,6 +1659,10 @@ test('ten individually capped clips fulfill the shared straight campaign allocat
       });
       data.clipReviews[clip.id] = clip;
       applyApprovalSnapshotAccounting(clip, campaign, data, 500_000, 1000 + index);
+      clip.status = 'approved';
+      clip.payoutEligible = true;
+      clip.wasEverApproved = true;
+      finalizeStraightCampaignIfFulfilled(data, campaign.id, 1000 + index);
     }
     const accounting = getStraightCampaignAccounting(data, campaign.id);
     assert.equal(accounting.creditedViews, 1_000_000);

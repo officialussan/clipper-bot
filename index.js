@@ -1514,7 +1514,9 @@ function applySeparateEarningCycleTracking(clip, metadata, data, publicViews, ca
     const cap = getCampaignViewCap(campaign);
     const otherWeeklyCredits = cap === null ? 0 : getCampaignCurrentWeeklyCreditedViews(campaign.id, { data, excludeClipId: clip.id, date: accountingDate });
     const remainingViews = cap === null ? Infinity : Math.max(cap - otherWeeklyCredits, 0);
-    const creditedIncrease = Math.min(Math.max(publicViews - previousObservedPublicViews, 0), remainingViews, remainingClipCapacity);
+    const creditedIncrease = isPayoutEligibleClip(clip)
+      ? Math.min(Math.max(publicViews - previousObservedPublicViews, 0), remainingViews, remainingClipCapacity)
+      : 0;
     tracking.budgetCycleKey = cycleKey;
     tracking.baselinePublicViews = previousObservedPublicViews;
     tracking.lastPublicViews = publicViews;
@@ -1528,7 +1530,9 @@ function applySeparateEarningCycleTracking(clip, metadata, data, publicViews, ca
     const cap = getCampaignViewCap(campaign);
     const otherWeeklyCredits = cap === null ? 0 : getCampaignCurrentWeeklyCreditedViews(campaign.id, { data, excludeClipId: clip.id, date: accountingDate });
     const remainingViews = cap === null ? Infinity : Math.max(cap - otherWeeklyCredits, 0);
-    const creditedIncrease = Math.min(publicGrowth, remainingViews, remainingClipCapacity);
+    const creditedIncrease = isPayoutEligibleClip(clip)
+      ? Math.min(publicGrowth, remainingViews, remainingClipCapacity)
+      : 0;
     tracking.creditedViewsThisCycle = Math.max(Number(tracking.creditedViewsThisCycle) || 0, 0) + creditedIncrease;
     tracking.lastPublicViews = publicViews;
     if (creditedIncrease > 0) tracking.lastCreditedAt = Date.now();
@@ -1719,7 +1723,6 @@ function applyApprovalSnapshotAccounting(clip, campaign, data, latestPublicViews
     clip.nextCheckAt = null;
     clip.trackingRetryAt = null;
   }
-  if (isStraightCampaign(campaign)) finalizeStraightCampaignIfFulfilled(data, campaign.id, approvedAt);
   return creditedViews;
 }
 
@@ -4219,7 +4222,7 @@ function getStraightCampaignCreditRecords(data, campaignId, excludeClipId = null
   ]).filter(clip =>
     String(clip?.campaignId) === String(campaignId) &&
     String(clip?.id) !== String(excludeClipId || '') &&
-    getClipCreditedViews(clip) > 0
+    (getClipActiveCreditedViews(clip) > 0 || Number(clip?.payout?.paidMoney) > 0)
   );
 }
 
@@ -4228,9 +4231,9 @@ function getStraightCampaignAccounting(data, campaignId) {
   const allocation = getStraightCampaignAllocation(data, campaignId);
   if (!campaign || !allocation) return null;
   const creditRecords = getStraightCampaignCreditRecords(data, campaignId);
-  const rawCreditedViews = creditRecords.reduce((sum, clip) => sum + getClipCreditedViews(clip), 0);
+  const rawCreditedViews = creditRecords.reduce((sum, clip) => sum + getClipActiveCreditedViews(clip), 0);
   const rate = Math.max(Number(campaign.ratePerMillion) || 0, 0);
-  const rawCreditedMoney = rawCreditedViews / 1_000_000 * rate;
+  const rawCreditedMoney = creditRecords.reduce((sum, clip) => sum + getClipActiveCreditedMoney(clip, campaign), 0);
   const creditedViews = Math.min(rawCreditedViews, allocation.totalViewCap);
   const creditedMoney = Math.min(rawCreditedMoney, allocation.totalBudget);
   const viewProgress = allocation.totalViewCap > 0 ? creditedViews / allocation.totalViewCap : 0;
@@ -4254,12 +4257,12 @@ function getStraightCampaignAccounting(data, campaignId) {
 function getStraightCampaignRemainingCreditableViews(data, campaign, excludeClipId = null) {
   const allocation = getStraightCampaignAllocation(data, campaign.id);
   if (!allocation) return 0;
-  const otherViews = getStraightCampaignCreditRecords(data, campaign.id, excludeClipId)
-    .reduce((sum, clip) => sum + getClipCreditedViews(clip), 0);
+  const otherRecords = getStraightCampaignCreditRecords(data, campaign.id, excludeClipId);
+  const otherViews = otherRecords.reduce((sum, clip) => sum + getClipActiveCreditedViews(clip), 0);
   const remainingByViews = Math.max(allocation.totalViewCap - otherViews, 0);
   const rate = Math.max(Number(campaign.ratePerMillion) || 0, 0);
   if (rate <= 0) return remainingByViews;
-  const otherMoney = otherViews / 1_000_000 * rate;
+  const otherMoney = otherRecords.reduce((sum, clip) => sum + getClipActiveCreditedMoney(clip, campaign), 0);
   const remainingByMoney = Math.max(allocation.totalBudget - otherMoney, 0) / rate * 1_000_000;
   return Math.max(Math.floor(Math.min(remainingByViews, remainingByMoney)), 0);
 }
@@ -4348,6 +4351,63 @@ function getClipCreditedViews(clip) {
   return Math.max(Number(clip?.approvalViews) || 0, 0);
 }
 
+function isPostApprovalRejectedClip(clip) {
+  return Boolean(
+    clip?.status === 'rejected' &&
+    (clip.rejectionStage === 'post_approval' || clip.wasEverApproved === true || clip.approvedAt || Number(clip.payout?.paidViews) > 0 || Number(clip.payout?.paidMoney) > 0)
+  );
+}
+
+function getClipPaidCreditedViews(clip, creditedViews = getClipCreditedViews(clip)) {
+  return Math.min(Math.max(Number(clip?.payout?.paidViews) || 0, 0), Math.max(Number(creditedViews) || 0, 0));
+}
+
+function getClipActiveCreditedViews(clip) {
+  const historicalCreditedViews = getClipCreditedViews(clip);
+  if (isPayoutEligibleClip(clip)) return historicalCreditedViews;
+  if (isPostApprovalRejectedClip(clip) || Number(clip?.payout?.paidViews) > 0 || Number(clip?.payout?.paidMoney) > 0) {
+    return getClipPaidCreditedViews(clip, historicalCreditedViews);
+  }
+  return 0;
+}
+
+function getClipActiveCreditedMoney(clip, campaign = CAMPAIGNS[clip?.campaignId]) {
+  const rate = Math.max(Number(campaign?.ratePerMillion) || 0, 0);
+  const activeViewsMoney = getClipActiveCreditedViews(clip) / 1_000_000 * rate;
+  const paidMoney = Math.max(Number(clip?.payout?.paidMoney) || 0, 0);
+  return Math.max(activeViewsMoney, paidMoney);
+}
+
+function getClipWeekCreditRecords(clip) {
+  const records = new Map();
+  for (const entry of clip?.budgetTracking?.history || []) {
+    if (!entry?.weekKey) continue;
+    records.set(String(entry.weekKey), Math.max(Number(entry.creditedViews) || 0, 0));
+  }
+  if (clip?.budgetTracking?.budgetCycleKey) {
+    records.set(
+      String(clip.budgetTracking.budgetCycleKey),
+      Math.max(Number(clip.budgetTracking.creditedViewsThisCycle) || 0, 0)
+    );
+  }
+  return [...records.entries()]
+    .map(([weekKey, creditedViews]) => ({ weekKey, creditedViews, timestamp: Date.parse(weekKey) }))
+    .sort((a, b) => (Number.isFinite(a.timestamp) ? a.timestamp : Infinity) - (Number.isFinite(b.timestamp) ? b.timestamp : Infinity));
+}
+
+function getClipActiveWeekCreditedViews(clip, weekKey) {
+  const record = getClipWeekCreditRecords(clip).find(entry => entry.weekKey === String(weekKey));
+  if (!record) return 0;
+  if (!isPostApprovalRejectedClip(clip)) return record.creditedViews;
+  let remainingPaidViews = getClipPaidCreditedViews(clip);
+  for (const entry of getClipWeekCreditRecords(clip)) {
+    const paidForWeek = Math.min(entry.creditedViews, remainingPaidViews);
+    if (entry.weekKey === String(weekKey)) return paidForWeek;
+    remainingPaidViews = Math.max(remainingPaidViews - paidForWeek, 0);
+  }
+  return 0;
+}
+
 function getCurrentBudgetCycleEligibleClips(campaignId, options = {}) {
   const data = options.data || loadData();
   const campaign = CAMPAIGNS[campaignId];
@@ -4366,7 +4426,6 @@ function getCurrentBudgetCycleEligibleClips(campaignId, options = {}) {
 function isWeeklyCreditRecord(clip) {
   return clip?.status === 'pending' ||
     isPayoutEligibleClip(clip) ||
-    clip?.wasEverApproved === true ||
     Number(clip?.payout?.paidViews) > 0 ||
     Number(clip?.payout?.paidMoney) > 0;
 }
@@ -4644,11 +4703,13 @@ function getCampaignCurrentWeekLedgerEntries(data, campaignId, now = new Date(),
       String(clip.id) !== excludedId &&
       (!campaign.separateEarningLifecycle || isClipInCampaignEarningRun(clip, campaign)) &&
       isWeeklyCreditRecord(clip) &&
-      clip.budgetTracking?.budgetCycleKey === weekKey
+      clip.budgetTracking?.budgetCycleKey === weekKey &&
+      getClipActiveWeekCreditedViews(clip, weekKey) > 0
     )
     .map(clip => ({
       clip,
-      rawCreditedViews: Math.max(Number(clip.budgetTracking?.creditedViewsThisCycle) || 0, 0),
+      historicalCreditedViews: Math.max(Number(clip.budgetTracking?.creditedViewsThisCycle) || 0, 0),
+      rawCreditedViews: getClipActiveWeekCreditedViews(clip, weekKey),
       creditedAt: Number(clip.budgetTracking?.lastCreditedAt) || Number(clip.lastChecked) || getClipSubmissionTimestamp(clip) || 0
     }))
     .sort((a, b) => a.creditedAt - b.creditedAt || String(a.clip.id).localeCompare(String(b.clip.id)));
@@ -4731,7 +4792,7 @@ function getCampaignCurrentCycleCreditedViews(campaignId, options = {}) {
   const excludeClipId = options.excludeClipId ? String(options.excludeClipId) : null;
   return getCurrentBudgetCycleEligibleClips(campaignId, options)
     .filter(clip => String(clip.id) !== excludeClipId)
-    .reduce((total, clip) => total + getClipCreditedViews(clip), 0);
+    .reduce((total, clip) => total + getClipActiveCreditedViews(clip), 0);
 }
 
 function isCampaignCurrentBudgetCycleFulfilled(campaignId, options = {}) {
@@ -4880,7 +4941,7 @@ function getClipIdentityKey(clip) {
 }
 
 function getClipAccounting(clip, campaign) {
-  const totalViews = getClipCreditedViews(clip);
+  const totalViews = getClipActiveCreditedViews(clip);
   const rawPaidViews = getFiniteNonNegativeNumber(clip?.payout?.paidViews);
   const paidViews = Math.min(rawPaidViews, totalViews);
   const paidMoney = getFiniteNonNegativeNumber(clip?.payout?.paidMoney);
@@ -4890,6 +4951,209 @@ function getClipAccounting(clip, campaign) {
   const unpaidMoney = unpaidViews / 1_000_000 * (Number(campaign?.ratePerMillion) || 0);
   return { eligible, totalViews, rawPaidViews, paidViews, unpaidViews, paidMoney, unpaidMoney,
     accountedViews: paidViews + unpaidViews, accountedMoney: paidMoney + unpaidMoney };
+}
+
+function applyPostApprovalCreditReversal(clip, options = {}) {
+  if (!isPostApprovalRejectedClip(clip)) return { changed: false, reason: 'not_post_approval_rejected' };
+  const historicalCreditedViews = getClipCreditedViews(clip);
+  const paidCreditedViews = getClipPaidCreditedViews(clip, historicalCreditedViews);
+  const reversedCreditedViews = Math.max(historicalCreditedViews - paidCreditedViews, 0);
+  const campaign = CAMPAIGNS[clip.campaignId];
+  const reversedEarnings = reversedCreditedViews / 1_000_000 * (Number(campaign?.ratePerMillion) || 0);
+  const existing = clip.creditReversal;
+  const alreadyApplied = existing?.active === true &&
+    Number(existing.historicalCreditedViews) === historicalCreditedViews &&
+    Number(existing.paidCreditedViews) === paidCreditedViews &&
+    Number(existing.reversedCreditedViews) === reversedCreditedViews;
+
+  const lifecycleChanged = clip.payoutEligible !== false ||
+    clip.trackingStatus !== 'completed' ||
+    clip.completedReason !== 'post_approval_rejection' ||
+    clip.nextCheckAt !== null ||
+    clip.trackingRetryAt !== null;
+  clip.payoutEligible = false;
+  clip.trackingStatus = 'completed';
+  clip.completedReason = 'post_approval_rejection';
+  clip.completedAt ||= Number(options.now ?? Date.now());
+  clip.nextCheckAt = null;
+  clip.trackingRetryAt = null;
+  if (alreadyApplied) return { changed: lifecycleChanged, historicalCreditedViews, paidCreditedViews, reversedCreditedViews, reversedEarnings };
+
+  const appliedAt = Number(options.now ?? Date.now());
+  clip.creditReversal = {
+    ...(existing || {}),
+    active: true,
+    type: 'post_approval_rejection',
+    appliedAt,
+    appliedBy: options.appliedBy || null,
+    historicalCreditedViews,
+    paidCreditedViews,
+    reversedCreditedViews,
+    reversedEarnings,
+    reason: options.reason || clip.rejectReason || 'post_approval_rejection',
+    budgetCycleKey: clip.budgetTracking?.budgetCycleKey || null,
+    currentWeekHistoricalCreditedViews: Math.max(Number(clip.budgetTracking?.creditedViewsThisCycle) || 0, 0)
+  };
+  clip.creditReversedAt = appliedAt;
+  clip.reversedCreditedViews = reversedCreditedViews;
+  clip.reversedEarnings = reversedEarnings;
+  clip.creditReversalReason = 'post_approval_rejection';
+  return { changed: true, historicalCreditedViews, paidCreditedViews, reversedCreditedViews, reversedEarnings };
+}
+
+function restorePostApprovalCreditReversal(clip, options = {}) {
+  const restoredAt = Number(options.now ?? Date.now());
+  clip.status = 'approved';
+  clip.payoutEligible = true;
+  clip.wasEverApproved = true;
+  if (clip.creditReversal) {
+    clip.creditReversal.active = false;
+    clip.creditReversal.restoredAt = restoredAt;
+    clip.creditReversal.restoredBy = options.restoredBy || null;
+  }
+  if (!clip.clipPayoutCapReached) {
+    clip.trackingStatus = 'active';
+    clip.completedReason = null;
+    clip.completedAt = null;
+    clip.nextCheckAt = restoredAt + CLIP_TRACK_INTERVAL_MS;
+    clip.trackingRetryAt = null;
+  }
+  return clip;
+}
+
+function reconcileCampaignFulfillmentAfterCreditChange(data, campaignId, now = Date.now()) {
+  const campaign = CAMPAIGNS[campaignId];
+  if (!campaign || !isStraightCampaign(campaign)) return { changed: false, state: getCampaignOperationalState(data, campaign, new Date(now)) };
+  const accounting = getStraightCampaignAccounting(data, campaignId);
+  data.campaignStatus ||= {};
+  const previous = data.campaignStatus[campaignId] || {};
+  if (accounting?.capReached) {
+    return { changed: finalizeStraightCampaignIfFulfilled(data, campaignId, now), accounting, state: getCampaignOperationalState(data, campaign, new Date(now)) };
+  }
+  if (previous.status === 'finished_budget' && previous.finishReason === 'campaign_budget_fulfilled') {
+    data.campaignStatus[campaignId] = {
+      ...previous,
+      status: 'active',
+      finishReason: null,
+      finishedAt: null,
+      reopenedAt: Number(now),
+      reopenReason: 'rejected_credit_released',
+      archived: false
+    };
+    return { changed: true, accounting, state: getCampaignOperationalState(data, campaign, new Date(now)) };
+  }
+  return { changed: false, accounting, state: getCampaignOperationalState(data, campaign, new Date(now)) };
+}
+
+function getRejectedCreditAudit(data, campaignId, now = new Date()) {
+  const campaign = CAMPAIGNS[campaignId];
+  if (!campaign) return null;
+  const records = getUniqueClipRecords([
+    ...Object.values(data?.clips || {}),
+    ...Object.values(data?.clipReviews || {})
+  ], { scope: 'rejected_credit_audit', campaignId }).filter(clip =>
+    String(clip.campaignId) === String(campaignId) && isPostApprovalRejectedClip(clip)
+  );
+  const weekKey = campaign.separateEarningLifecycle ? getCampaignBudgetCycleKey(campaign, now) : null;
+  const inCurrentScope = clip => isStraightCampaign(campaign) || (campaign.separateEarningLifecycle
+    ? clip.budgetTracking?.budgetCycleKey === weekKey
+    : isClipInCurrentBudgetCycle(clip, campaign, now));
+  const items = records.map(clip => {
+    const historicalCampaignCreditedViews = getClipCreditedViews(clip);
+    const paidCreditedViews = getClipPaidCreditedViews(clip, historicalCampaignCreditedViews);
+    const unpaidCreditedViews = Math.max(historicalCampaignCreditedViews - paidCreditedViews, 0);
+    const historicalScopeViews = !inCurrentScope(clip) ? 0 : campaign.separateEarningLifecycle
+      ? Math.max(Number(clip.budgetTracking?.creditedViewsThisCycle) || 0, 0)
+      : historicalCampaignCreditedViews;
+    const activeScopeViews = !inCurrentScope(clip) ? 0 : campaign.separateEarningLifecycle
+      ? getClipActiveWeekCreditedViews(clip, weekKey)
+      : getClipActiveCreditedViews(clip);
+    const reversibleCreditedViews = Math.max(historicalScopeViews - activeScopeViews, 0);
+    return {
+      clipId: clip.id,
+      userId: clip.userId,
+      campaignId,
+      platform: clip.platform,
+      publicViews: Math.max(Number(clip.publicViews) || 0, Number(clip.currentViews) || 0),
+      historicalCampaignCreditedViews,
+      paidCreditedViews,
+      unpaidCreditedViews,
+      reversibleCreditedViews,
+      reversibleEarnings: reversibleCreditedViews / 1_000_000 * (Number(campaign.ratePerMillion) || 0),
+      currentScope: inCurrentScope(clip),
+      reversalRecorded: clip.creditReversal?.active === true,
+      trackingStatus: clip.trackingStatus || null,
+      nextCheckAt: clip.nextCheckAt ?? null
+    };
+  });
+  let incorrectCurrentCampaignActiveCredit = 0;
+  let correctedCampaignActiveCredit = 0;
+  let capacity = getCampaignViewCap(campaign) || 0;
+  let correctedFulfilledPercent = 0;
+  let correctedCapReached = false;
+  if (isStraightCampaign(campaign)) {
+    const allocation = getStraightCampaignAllocation(data, campaignId);
+    capacity = allocation?.totalViewCap || capacity;
+    const all = getUniqueClipRecords([...Object.values(data?.clips || {}), ...Object.values(data?.clipReviews || {})])
+      .filter(clip => String(clip.campaignId) === String(campaignId));
+    incorrectCurrentCampaignActiveCredit = all.reduce((sum, clip) => sum + getClipCreditedViews(clip), 0);
+    correctedCampaignActiveCredit = all.reduce((sum, clip) => sum + getClipActiveCreditedViews(clip), 0);
+    const straightAccounting = getStraightCampaignAccounting(data, campaignId);
+    correctedFulfilledPercent = straightAccounting?.fulfilledPercent || 0;
+    correctedCapReached = straightAccounting?.capReached === true;
+  } else if (campaign.separateEarningLifecycle) {
+    const all = getUniqueClipRecords([...Object.values(data?.clips || {}), ...Object.values(data?.clipReviews || {})])
+      .filter(clip => String(clip.campaignId) === String(campaignId) && clip.budgetTracking?.budgetCycleKey === weekKey);
+    incorrectCurrentCampaignActiveCredit = all.reduce((sum, clip) => sum + Math.max(Number(clip.budgetTracking?.creditedViewsThisCycle) || 0, 0), 0);
+    correctedCampaignActiveCredit = getCampaignCurrentWeekAccounting(data, campaignId, now)?.creditedViews || 0;
+  } else {
+    const all = getCurrentBudgetCycleEligibleClips(campaignId, { data, date: now });
+    incorrectCurrentCampaignActiveCredit = all.reduce((sum, clip) => sum + getClipCreditedViews(clip), 0);
+    correctedCampaignActiveCredit = all.reduce((sum, clip) => sum + getClipActiveCreditedViews(clip), 0);
+  }
+  const incorrectRejectedCredit = items.reduce((sum, item) => sum + item.reversibleCreditedViews, 0);
+  if (!isStraightCampaign(campaign)) {
+    correctedFulfilledPercent = capacity > 0 ? Math.min(correctedCampaignActiveCredit / capacity * 100, 100) : 0;
+    correctedCapReached = capacity > 0 && correctedCampaignActiveCredit >= capacity;
+  }
+  return {
+    campaignId,
+    campaignName: campaign.name,
+    weekKey,
+    items,
+    rejectedPostApprovalClips: items.length,
+    incorrectRejectedCredit,
+    historicalRejectedCredit: items.reduce((sum, item) => sum + item.historicalCampaignCreditedViews, 0),
+    paidRejectedCredit: items.reduce((sum, item) => sum + item.paidCreditedViews, 0),
+    unpaidRejectedCredit: items.reduce((sum, item) => sum + item.unpaidCreditedViews, 0),
+    incorrectCurrentCampaignActiveCredit,
+    correctedCampaignActiveCredit,
+    capacity,
+    currentFulfilledPercent: capacity > 0 ? Math.min(incorrectCurrentCampaignActiveCredit / capacity * 100, 100) : 0,
+    correctedFulfilledPercent,
+    shouldReopen: !correctedCapReached && getCampaignOperationalState(data, campaign, now).state === 'finished' &&
+      data?.campaignStatus?.[campaignId]?.status === 'finished_budget'
+  };
+}
+
+function reconcileRejectedCredits(data, campaignId, options = {}) {
+  const campaign = CAMPAIGNS[campaignId];
+  if (!campaign) return null;
+  const now = Number(options.now ?? Date.now());
+  const before = getRejectedCreditAudit(data, campaignId, new Date(now));
+  let changedClips = 0;
+  const affectedUsers = new Set();
+  for (const collection of [data.clips || {}, data.clipReviews || {}]) {
+    for (const clip of Object.values(collection)) {
+      if (String(clip?.campaignId) !== String(campaignId) || !isPostApprovalRejectedClip(clip)) continue;
+      const result = applyPostApprovalCreditReversal(clip, { now, appliedBy: options.appliedBy || null, reason: 'post_approval_rejection_reconciliation' });
+      if (result.changed) changedClips++;
+      if (clip.userId) affectedUsers.add(String(clip.userId));
+    }
+  }
+  const campaignState = reconcileCampaignFulfillmentAfterCreditChange(data, campaignId, now);
+  const after = getRejectedCreditAudit(data, campaignId, new Date(now));
+  return { changed: changedClips > 0 || campaignState.changed, changedClips, affectedUsers: [...affectedUsers], before, after, campaignState };
 }
 
 function getUniqueClipRecords(clips, diagnosticContext = {}) {
@@ -8093,6 +8357,63 @@ client.on('messageCreate', async message => {
     content: `Weekly accounting audit for \`${campaignId}\`. Flags: **${flagSummary}**`,
     files: [{ attachment: Buffer.from(report, 'utf8'), name: `weekly-audit-${campaignId}.json` }]
   });
+});
+
+client.on('messageCreate', async message => {
+  const command = message.content.toLowerCase().split(/\s+/)[0];
+  const isAudit = command === '!auditrejectedcredits';
+  const isReconcile = command === '!reconcilerejectedcredits';
+  if (message.author.bot || !message.guild || (!isAudit && !isReconcile)) return;
+  if (!isAdmin(message.member)) {
+    await message.reply('❌ You need administrator permissions to manage rejected clip credits.');
+    return;
+  }
+  const campaignId = message.content.trim().split(/\s+/)[1]?.toLowerCase();
+  if (!campaignId || !CAMPAIGNS[campaignId]) {
+    await message.reply(`❌ Provide a configured campaign ID, for example: \`${command} elephant\`.`);
+    return;
+  }
+  if (isAudit) {
+    const audit = getRejectedCreditAudit(loadData(), campaignId, new Date());
+    const summary = [
+      `Rejected-credit audit for **${audit.campaignName}** (read-only).`,
+      `Post-approval rejected clips: **${audit.rejectedPostApprovalClips}**`,
+      `Historical rejected credit: **${formatNumber(audit.historicalRejectedCredit)}**`,
+      `Already paid: **${formatNumber(audit.paidRejectedCredit)}**`,
+      `Unpaid rejected credit: **${formatNumber(audit.unpaidRejectedCredit)}**`,
+      `Incorrect active credit in current scope: **${formatNumber(audit.incorrectRejectedCredit)}**`,
+      `Current → corrected campaign credit: **${formatNumber(audit.incorrectCurrentCampaignActiveCredit)} → ${formatNumber(audit.correctedCampaignActiveCredit)}**`,
+      `Fulfilled: **${audit.currentFulfilledPercent.toFixed(2)}% → ${audit.correctedFulfilledPercent.toFixed(2)}%**`,
+      `Should reopen: **${audit.shouldReopen ? 'Yes' : 'No'}**`
+    ].join('\n');
+    await message.reply({
+      content: summary,
+      files: [{ attachment: Buffer.from(JSON.stringify(audit, null, 2), 'utf8'), name: `rejected-credit-audit-${campaignId}.json` }]
+    });
+    return;
+  }
+
+  const data = loadData();
+  const result = reconcileRejectedCredits(data, campaignId, { appliedBy: message.author.id, now: Date.now() });
+  if (result.changed) saveData(data);
+  try { await updateCampaignPanelMessage(message.guild, campaignId); }
+  catch (error) { console.error(`Could not refresh campaign panels after rejected-credit reconciliation ${campaignId}:`, error.message); }
+  for (const userId of result.affectedUsers) {
+    try { await syncPayoutCard(message.guild, campaignId, userId); }
+    catch (error) { console.error(`Could not refresh payout card ${campaignId}:${userId}:`, error.message); }
+  }
+  try { await updateLeaderboardMessage(message.guild); }
+  catch (error) { console.error('Could not refresh leaderboard after rejected-credit reconciliation:', error.message); }
+  try { await updateServerStats(message.guild); }
+  catch (error) { console.error('Could not refresh server counters after rejected-credit reconciliation:', error.message); }
+  await message.reply(
+    `✅ Rejected-credit reconciliation complete for **${CAMPAIGNS[campaignId].name}**.\n` +
+    `Clip reversals created: **${result.changedClips}**\n` +
+    `Corrected active credit: **${formatNumber(result.after.correctedCampaignActiveCredit)}**\n` +
+    `Corrected Fulfilled: **${result.after.correctedFulfilledPercent.toFixed(2)}%**\n` +
+    `Campaign state: **${result.campaignState.state?.state || 'unchanged'}**\n` +
+    (result.changed ? 'Persistent panels and payout summaries were refreshed.' : 'No new changes were needed; the command is idempotent.')
+  );
 });
 
 client.on('messageCreate', async message => {
@@ -12582,6 +12903,7 @@ ${reason}
       clip.payoutEligible = true;
       clip.wasEverApproved = true;
       clip.approvedAt = approvedAt;
+      if (isStraightCampaign(campaign)) finalizeStraightCampaignIfFulfilled(data, campaign.id, approvedAt);
       clip.budgetCycleIndex = isStraightCampaign(campaign)
         ? null
         : Number.isFinite(Number(clip.budgetCycleIndex))
@@ -12882,9 +13204,16 @@ ${reason}
         delete data.clips[clipId];
       } else {
         clip.rejectedAtViews = Math.max(Number(clip.views) || 0, Number(clip.currentViews) || 0, Number(clip.approvalViews) || 0);
+        applyPostApprovalCreditReversal(clip, {
+          now: clip.rejectedAt || Date.now(),
+          appliedBy: interaction.user.id,
+          reason
+        });
         data.clips ||= {};
         data.clips[clipId] = clip;
       }
+
+      reconcileCampaignFulfillmentAfterCreditChange(data, clip.campaignId, Date.now());
 
       if (userRecord) {
         if (!userRecord.stats) userRecord.stats = {};
@@ -12958,14 +13287,13 @@ ${reason}
         clip.lastTrackingErrorAt = null;
         clip.trackingRetryAt = null;
 
-        if (clip.trackingStatus !== 'completed') {
+        if (rejectionStage === 'post_approval' || clip.trackingStatus !== 'completed') {
             try {
                 const metadata = await fetchClipMetadata(clip);
                 if (rejectionStage === 'pre_approval') updatePendingReviewTracking(clip, metadata, data);
-                else updateApprovedClipTracking(clip, metadata, data);
+                else applyTrackedMetadata(clip, metadata, data);
             } catch (error) {
                 console.error(`Could not refresh restored clip ${clipId}:`, error.message);
-                advanceClipNextCheckAt(clip);
             }
         }
 
@@ -12977,13 +13305,13 @@ ${reason}
             data.clipReviews[clipId] = clip;
             delete data.clips[clipId];
         } else {
-            clip.status = 'approved';
-            clip.payoutEligible = true;
-            clip.wasEverApproved = true;
+            restorePostApprovalCreditReversal(clip, { restoredAt, restoredBy: interaction.user.id, now: restoredAt });
             data.clips ||= {};
             data.clips[clipId] = clip;
             delete data.clipReviews[clipId];
         }
+
+        reconcileCampaignFulfillmentAfterCreditChange(data, clip.campaignId, restoredAt);
 
         if (userRecord) {
             userRecord.stats ||= {};
@@ -14184,6 +14512,7 @@ module.exports.__clipLifecycleTest = {
   applyDemographicsApprovalToAccount,
   applyCampaignMembership,
   applyApprovalSnapshotAccounting,
+  applyPostApprovalCreditReversal,
   applyStraightCampaignRefill,
   applyTrackedMetadata,
   assignCampaignJoinRoles,
@@ -14236,6 +14565,8 @@ module.exports.__clipLifecycleTest = {
   findAllCampaignSubmissionPanelMessages,
   findCampaignSubmissionPanelMessage,
   getClipTrackingAudit,
+  getClipActiveCreditedViews,
+  getClipActiveWeekCreditedViews,
   getProviderClipAuthorIdentity,
   getCampaignConnectAccountLink,
   getCampaignRulesLink,
@@ -14250,6 +14581,7 @@ module.exports.__clipLifecycleTest = {
   getCampaignPanelText,
   getCampaignPayoutThresholdViews,
   getCampaignSubmissionBlockMessage,
+  getRejectedCreditAudit,
   getCampaignCurrentRunAccounting,
   getCampaignCurrentWeekAccounting,
   getCampaignSubmissionAccounts,
@@ -14269,6 +14601,9 @@ module.exports.__clipLifecycleTest = {
   joinCampaignMember,
   repairApprovalSnapshotInvariants,
   repairAugustFirstWeekLegacyWeeklyAccounting,
+  reconcileCampaignFulfillmentAfterCreditChange,
+  reconcileRejectedCredits,
+  restorePostApprovalCreditReversal,
   getVerifiedCampaignPlatforms,
   getActiveGlobalSocials,
   getVerifiedGlobalSocials,
