@@ -9,6 +9,7 @@ const {
   applyPostApprovalCreditReversal,
   applyStraightCampaignRefill,
   applyTrackedMetadata,
+  applyElephantJulyReconciliation,
   assignCampaignJoinRoles,
   autoJoinReturnCampaignAfterGlobalVerification,
   bioContainsExactVerificationCode,
@@ -39,6 +40,7 @@ const {
   buildGlobalSocialVerificationPrompt,
   buildInstagramVerificationFailureResponse,
   buildInstagramVerificationSuccessEmbed,
+  buildElephantJulyReconciliationDryRun,
   buildMissingGlobalAccountResponse,
   buildMissingCampaignDemographicsResponse,
   buildPreLaunchSubmissionEmbed,
@@ -2647,6 +2649,92 @@ test('expired payout cycles close once while a later cycle remains independent',
   assert.equal(data.payoutTrackers.old.closedAt, Date.parse('2026-08-31T07:00:00.000Z'));
   assert.equal(data.payoutTrackers.next.cycleStatus, 'active');
   assert.deepEqual(closeExpiredPayoutTrackers(data, Date.parse('2026-09-01T07:00:00.000Z')), []);
+});
+
+function makeAuthorizedElephantJulyFixture() {
+  const clips = {};
+  let index = 0;
+  const add = (userId, status, submittedAt, campaignCreditedViews = 0, collection = clips) => {
+    const id = `authorized_july_${++index}`;
+    collection[id] = {
+      id, campaignId: 'elephant', userId, status, submittedAt,
+      campaignCreditedViews, publicViews: campaignCreditedViews,
+      currentViews: campaignCreditedViews, views: campaignCreditedViews,
+      payout: { paidViews: 0, paidMoney: 0, history: [] }
+    };
+  };
+  add('1318322406976127156', 'approved', '2026-07-21T00:00:00.000Z', 1_505_622);
+  add('1318324803895165000', 'approved', '2026-07-21T00:00:00.000Z', 18_407_123);
+  add('1437858346685173763', 'approved', '2026-07-21T00:00:00.000Z', 1_275);
+  add('1480294670499320023', 'approved', '2026-07-21T00:00:00.000Z', 248);
+  add('1437858346685173763', 'approved', '2026-07-28T00:00:00.000Z', 3_788);
+  add('1480294670499320023', 'approved', '2026-07-28T00:00:00.000Z', 142);
+  add('1522218555356086313', 'approved', '2026-07-28T00:00:00.000Z', 168);
+  for (let count = 0; count < 27; count++) add('1318322406976127156', 'approved', '2026-07-22T00:00:00.000Z');
+  add('1318322406976127156', 'rejected', '2026-07-23T00:00:00.000Z');
+  add('1318324803895165000', 'rejected', '2026-07-23T00:00:00.000Z');
+  for (let count = 0; count < 12; count++) add('1189010402533720127', 'pending', '2026-07-24T00:00:00.000Z');
+  add('1437858346685173763', 'pending', '2026-08-02T17:04:54.000Z', 1_141);
+  add('1437858346685173763', 'pending', '2026-08-02T17:36:13.000Z', 110);
+  add('1437858346685173763', 'pending', '2026-08-02T18:58:16.000Z', 2);
+  return { clips, clipReviews: {}, payoutTrackers: {}, storageMigrations: {} };
+}
+
+test('authorized Elephant July reconciliation uses exact boundaries, totals, and carry isolation', () => {
+  const data = makeAuthorizedElephantJulyFixture();
+  const dryRun = buildElephantJulyReconciliationDryRun(data);
+  assert.equal(dryRun.valid, true);
+  assert.deepEqual(dryRun.mismatches, []);
+  assert.equal(dryRun.earningRunKey, 'elephant:2026-07-01T00:00:00.000Z:2026-08-03T00:00:00.000Z');
+  assert.equal(dryRun.submissionCount, 51);
+  assert.deepEqual(dryRun.statuses, { approved: 34, rejected: 2, pending: 15 });
+  assert.equal(dryRun.firstWindowCreditedViews, 8_000_000);
+  assert.equal(dryRun.secondWindowCreditedViews, 4_098);
+  assert.equal(dryRun.totalCreditedViews, 8_004_098);
+  assert.equal(dryRun.totalEarnings, 2_401.2294);
+  assert.equal(dryRun.carryForwardViews, 4_710);
+  assert.equal(dryRun.carryForwardAmount, 1.413);
+  assert.equal(dryRun.gapRecordCount, 0);
+
+  const augustBefore = getCampaignCurrentRunAccounting('elephant', { data, now: Date.parse('2026-08-17T00:00:00Z') });
+  const statusesBefore = Object.fromEntries(Object.entries(data.clips).map(([id, clip]) => [id, clip.status]));
+  const applied = applyElephantJulyReconciliation(data, { now: Date.parse('2026-08-17T00:00:00Z') });
+  assert.equal(applied.changed, true);
+  assert.equal(applied.julyTrackerCount, 5);
+  assert.equal(applied.augustCarryTrackerIds.length, 3);
+  assert.deepEqual(Object.fromEntries(Object.entries(data.clips).map(([id, clip]) => [id, clip.status])), statusesBefore);
+  assert.ok(Object.values(data.clips).every(clip => clip.earningRunKey === applied.earningRunKey));
+
+  const julyTrackers = applied.julyTrackerIds.map(id => data.payoutTrackers[id]);
+  assert.deepEqual(julyTrackers.map(tracker => tracker.lifetimeViewsForCycle).sort((a, b) => b - a), [7_394_547, 604_841, 4_300, 242, 168]);
+  assert.deepEqual(julyTrackers.map(tracker => tracker.status).sort(), ['carried_forward', 'carried_forward', 'carried_forward', 'ready', 'ready']);
+  assert.ok(julyTrackers.every(tracker => tracker.paidViewsForCycle === 0 && tracker.paidAmountForCycle === 0));
+  const carryTrackers = applied.augustCarryTrackerIds.map(id => data.payoutTrackers[id]);
+  assert.equal(carryTrackers.reduce((sum, tracker) => sum + tracker.carryInViews, 0), 4_710);
+  assert.equal(carryTrackers.reduce((sum, tracker) => sum + tracker.carryInAmount, 0), 1.413);
+  assert.ok(carryTrackers.every(tracker => tracker.campaignViewsForCycle === 0));
+  assert.deepEqual(getCampaignCurrentRunAccounting('elephant', { data, now: Date.parse('2026-08-17T00:00:00Z') }), augustBefore);
+
+  const state = structuredClone(data);
+  const second = applyElephantJulyReconciliation(data, { now: Date.parse('2026-08-18T00:00:00Z') });
+  assert.equal(second.changed, false);
+  assert.deepEqual(data, state);
+});
+
+test('authorized Elephant July reconciliation aborts on totals or payable gap activity mismatch', () => {
+  const badTotals = makeAuthorizedElephantJulyFixture();
+  badTotals.clips.authorized_july_1.campaignCreditedViews++;
+  assert.throws(() => applyElephantJulyReconciliation(badTotals), /reconciliation aborted/);
+
+  const gap = makeAuthorizedElephantJulyFixture();
+  gap.clips.gap = {
+    id: 'gap', campaignId: 'elephant', userId: 'gap-user', status: 'approved',
+    submittedAt: '2026-08-03T03:00:00.000Z', campaignCreditedViews: 1,
+    publicViews: 1, currentViews: 1, views: 1, payout: { paidViews: 0, paidMoney: 0, history: [] }
+  };
+  const dryRun = buildElephantJulyReconciliationDryRun(gap);
+  assert.equal(dryRun.valid, false);
+  assert.match(dryRun.mismatches.join(','), /payable_activity_in_august_3_gap/);
 });
 
 test('legacy payout migration transfers a current card only with provable run activity and preserves ambiguous history', () => {
