@@ -910,6 +910,17 @@ function loadData() {
       console.log('[My Stats Backfill]', { backfilled, repaired });
     }
   }
+  if (!raw.storageMigrations.payoutTrackerCycleIdentityV1) {
+    const payoutTrackerMigration = migratePayoutTrackerCycles(raw, { now: Date.now() });
+    migrationChanged = payoutTrackerMigration.changed || migrationChanged;
+    console.log('[Payout Tracker Cycle Migration]', {
+      migrated: payoutTrackerMigration.migrated.length,
+      unresolved: payoutTrackerMigration.unresolved.length
+    });
+    for (const unresolved of payoutTrackerMigration.unresolved) {
+      console.warn('[Payout Tracker Cycle Migration] Legacy tracker requires manual cycle review:', unresolved);
+    }
+  }
   if (!raw.storageMigrations.approvalSnapshotInvariantV1) {
     const { impossibleApprovalSnapshots, repairedApprovalSnapshots } = repairApprovalSnapshotInvariants(raw);
     raw.storageMigrations.approvalSnapshotInvariantV1 = {
@@ -1014,34 +1025,134 @@ function saveData(data) {
   }
 }
 
-function getPayoutTracker(campaignId, userId) {
-  const data = loadData();
-  const id = `${campaignId}_${userId}`;
+function parsePayoutCycleBoundsFromKey(earningRunKey) {
+  const match = String(earningRunKey || '').match(/:(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z):(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)$/);
+  if (!match) return { cycleStartAt: null, cycleEndAt: null };
+  return { cycleStartAt: new Date(match[1]).toISOString(), cycleEndAt: new Date(match[2]).toISOString() };
+}
+
+function getCampaignPayoutCycle(campaign, options = {}) {
+  if (!campaign?.id) return null;
+  const clip = options.clip || null;
+  const requestedKey = options.earningRunKey || clip?.earningRunKey || null;
+  const now = new Date(options.now ?? Date.now());
+
+  if (campaign.separateEarningLifecycle) {
+    let earningRunKey = requestedKey;
+    if (!earningRunKey) {
+      if (clip && !isClipInCampaignEarningRun(clip, campaign)) return null;
+      earningRunKey = getCampaignEarningRunKey(campaign);
+    }
+    const parsed = parsePayoutCycleBoundsFromKey(earningRunKey);
+    const isConfiguredRun = String(earningRunKey) === String(getCampaignEarningRunKey(campaign));
+    const start = isConfiguredRun ? getCampaignEarningStart(campaign) : Date.parse(parsed.cycleStartAt || '');
+    const end = isConfiguredRun ? getCampaignEarningEnd(campaign) : Date.parse(parsed.cycleEndAt || '');
+    return {
+      earningRunKey: String(earningRunKey),
+      cycleStartAt: Number.isFinite(start) ? new Date(start).toISOString() : parsed.cycleStartAt,
+      cycleEndAt: Number.isFinite(end) ? new Date(end).toISOString() : parsed.cycleEndAt,
+      cycleType: 'earning_run'
+    };
+  }
+
+  const explicitKey = requestedKey || campaign.earningRunKey || campaign.payoutCycleKey || null;
+  if (explicitKey) {
+    const parsed = parsePayoutCycleBoundsFromKey(explicitKey);
+    return {
+      earningRunKey: String(explicitKey),
+      cycleStartAt: parsed.cycleStartAt || (getCampaignLaunchTimestamp(campaign) !== null ? new Date(getCampaignLaunchTimestamp(campaign)).toISOString() : null),
+      cycleEndAt: parsed.cycleEndAt || (Number.isFinite(Date.parse(campaign.endDate || '')) ? new Date(campaign.endDate).toISOString() : null),
+      cycleType: 'explicit'
+    };
+  }
+
+  if (isStraightCampaign(campaign)) {
+    const start = getCampaignLaunchTimestamp(campaign);
+    if (!Number.isFinite(start)) return null;
+    const end = Date.parse(campaign.endDate || '');
+    return {
+      earningRunKey: `${campaign.id}:straight:${new Date(start).toISOString()}`,
+      cycleStartAt: new Date(start).toISOString(),
+      cycleEndAt: Number.isFinite(end) ? new Date(end).toISOString() : null,
+      cycleType: 'straight'
+    };
+  }
+
+  const referenceDate = clip ? new Date(getClipSubmissionTimestamp(clip)) : now;
+  if (Number.isNaN(referenceDate.getTime()) || Number.isNaN(new Date(campaign.startDate).getTime())) return null;
+  const { periodStart, periodEnd } = getCampaignBudgetPeriod(campaign, referenceDate);
+  if (!periodStart || !periodEnd || Number.isNaN(periodStart.getTime()) || Number.isNaN(periodEnd.getTime())) return null;
+  const cycleType = getCampaignBudgetMode(campaign);
+  return {
+    earningRunKey: `${campaign.id}:${cycleType}:${periodStart.toISOString()}:${periodEnd.toISOString()}`,
+    cycleStartAt: periodStart.toISOString(),
+    cycleEndAt: periodEnd.toISOString(),
+    cycleType
+  };
+}
+
+function getPayoutTrackerId(campaignId, userId, earningRunKey, cycleStartAt = null, cycleEndAt = null) {
+  if (!campaignId || !userId || !earningRunKey) return null;
+  const startDate = String(cycleStartAt || '').slice(0, 10);
+  const endDate = String(cycleEndAt || '').slice(0, 10);
+  const runHash = crypto.createHash('sha256').update(String(earningRunKey)).digest('hex').slice(0, 8);
+  const suffix = startDate && endDate
+    ? `${startDate}_${endDate}_${runHash}`
+    : startDate
+      ? `from_${startDate}_${runHash}`
+      : runHash;
+  return `${campaignId}_${userId}_${suffix}`;
+}
+
+function getPayoutTracker(campaignId, userId, options = {}) {
+  const data = options.data || loadData();
+  const campaign = CAMPAIGNS[campaignId];
+  const cycle = options.cycle || getCampaignPayoutCycle(campaign, options);
+  if (!cycle) return null;
+  const id = getPayoutTrackerId(campaignId, userId, cycle.earningRunKey, cycle.cycleStartAt, cycle.cycleEndAt);
   return data.payoutTrackers?.[id] || null;
 }
 
-function ensurePayoutTracker(campaignId, userId) {
-  const data = loadData();
+function ensurePayoutTracker(campaignId, userId, options = {}) {
+  const data = options.data || loadData();
+  const campaign = CAMPAIGNS[campaignId];
+  const cycle = options.cycle || getCampaignPayoutCycle(campaign, options);
+  if (!campaign || !cycle) return null;
   if (!data.payoutTrackers) data.payoutTrackers = {};
 
-  const id = `${campaignId}_${userId}`;
+  const relevantClips = getPayoutCycleClips(data, campaignId, userId, cycle);
+  const hasRelevantActivity = relevantClips.some(clip =>
+    isPayoutEligibleClip(clip) ||
+    Number(clip?.payout?.paidViews) > 0 ||
+    Number(clip?.payout?.paidMoney) > 0 ||
+    (Array.isArray(clip?.payout?.history) && clip.payout.history.length > 0)
+  );
+  const id = getPayoutTrackerId(campaignId, userId, cycle.earningRunKey, cycle.cycleStartAt, cycle.cycleEndAt);
+  if (!data.payoutTrackers[id] && !hasRelevantActivity && !options.force) return null;
   if (!data.payoutTrackers[id]) {
     data.payoutTrackers[id] = {
       id,
       campaignId,
       userId,
+      earningRunKey: cycle.earningRunKey,
+      cycleStartAt: cycle.cycleStartAt,
+      cycleEndAt: cycle.cycleEndAt,
+      cycleType: cycle.cycleType,
       channelId: null,
       messageId: null,
-      lifetimeViews: 0,
-      lifetimeEarned: 0,
-      lifetimePaid: 0,
+      lifetimeViewsForCycle: 0,
+      lifetimeEarnedForCycle: 0,
+      paidViewsForCycle: 0,
+      paidAmountForCycle: 0,
       currentUnpaidViews: 0,
       currentUnpaidMoney: 0,
       status: 'waiting',
+      cycleStatus: 'active',
+      closedAt: null,
       createdAt: Date.now(),
       updatedAt: Date.now()
     };
-    saveData(data);
+    if (!options.data) saveData(data);
   }
 
   return data.payoutTrackers[id];
@@ -1055,11 +1166,93 @@ function savePayoutTracker(tracker) {
   const data = loadData();
   if (!data.payoutTrackers) data.payoutTrackers = {};
 
-  tracker.id ||= `${tracker.campaignId}_${tracker.userId}`;
+  if (!tracker.id && tracker.earningRunKey) {
+    tracker.id = getPayoutTrackerId(tracker.campaignId, tracker.userId, tracker.earningRunKey, tracker.cycleStartAt, tracker.cycleEndAt);
+  }
+  if (!tracker.id) throw new Error('Cycle-specific payout tracker requires earningRunKey.');
   tracker.updatedAt = Date.now();
   data.payoutTrackers[tracker.id] = tracker;
   saveData(data);
   return tracker;
+}
+
+function migratePayoutTrackerCycles(data, options = {}) {
+  data.payoutTrackers ||= {};
+  data.storageMigrations ||= {};
+  if (data.storageMigrations.payoutTrackerCycleIdentityV1) {
+    return { changed: false, ...data.storageMigrations.payoutTrackerCycleIdentityV1 };
+  }
+  const now = Number(options.now ?? Date.now());
+  const migrated = [];
+  const unresolved = [];
+  const entries = Object.entries(data.payoutTrackers);
+
+  for (const [legacyId, legacyTracker] of entries) {
+    if (!legacyTracker?.campaignId || !legacyTracker?.userId || legacyTracker.earningRunKey || legacyTracker.migratedToTrackerId) continue;
+    const campaign = CAMPAIGNS[legacyTracker.campaignId];
+    const cycle = getCampaignPayoutCycle(campaign, { now });
+    const currentCycleClips = cycle
+      ? getPayoutCycleClips(data, legacyTracker.campaignId, legacyTracker.userId, cycle)
+      : [];
+    const hasProvableCurrentActivity = currentCycleClips.some(clip =>
+      isPayoutEligibleClip(clip) ||
+      Number(clip?.payout?.paidViews) > 0 ||
+      Number(clip?.payout?.paidMoney) > 0 ||
+      (Array.isArray(clip?.payout?.history) && clip.payout.history.length > 0)
+    );
+    if (!cycle || !hasProvableCurrentActivity) {
+      legacyTracker.legacyCycleUnresolved = true;
+      legacyTracker.legacyCycleUnresolvedReason = cycle ? 'no_provable_current_cycle_activity' : 'campaign_cycle_unavailable';
+      unresolved.push({
+        trackerId: legacyId,
+        campaignId: legacyTracker.campaignId,
+        userId: legacyTracker.userId,
+        reason: legacyTracker.legacyCycleUnresolvedReason
+      });
+      continue;
+    }
+
+    const trackerId = getPayoutTrackerId(
+      legacyTracker.campaignId,
+      legacyTracker.userId,
+      cycle.earningRunKey,
+      cycle.cycleStartAt,
+      cycle.cycleEndAt
+    );
+    const tracker = data.payoutTrackers[trackerId] || {
+      ...legacyTracker,
+      id: trackerId,
+      earningRunKey: cycle.earningRunKey,
+      cycleStartAt: cycle.cycleStartAt,
+      cycleEndAt: cycle.cycleEndAt,
+      cycleType: cycle.cycleType,
+      lifetimeViewsForCycle: 0,
+      lifetimeEarnedForCycle: 0,
+      paidViewsForCycle: 0,
+      paidAmountForCycle: 0,
+      currentUnpaidViews: 0,
+      currentUnpaidMoney: 0,
+      cycleStatus: 'active',
+      closedAt: null,
+      migratedFromTrackerId: legacyId,
+      createdAt: legacyTracker.createdAt || now,
+      updatedAt: now
+    };
+    data.payoutTrackers[trackerId] = tracker;
+    calculateTrackerStats(tracker, { data, now });
+
+    legacyTracker.migratedToTrackerId = trackerId;
+    legacyTracker.legacyArchivedAt = now;
+    legacyTracker.legacyMessageId = legacyTracker.messageId || null;
+    legacyTracker.legacyChannelId = legacyTracker.channelId || null;
+    legacyTracker.messageId = null;
+    legacyTracker.channelId = null;
+    migrated.push({ legacyTrackerId: legacyId, trackerId, earningRunKey: cycle.earningRunKey });
+  }
+
+  const report = { completedAt: now, migrated, unresolved };
+  data.storageMigrations.payoutTrackerCycleIdentityV1 = report;
+  return { changed: true, ...report };
 }
 
 function ensureUser(data, member) {
@@ -3192,41 +3385,93 @@ function getUserPayoutSummary(data, userId, campaignId) {
 
 }
 
-function calculateTrackerStats(tracker) {
-    const data = loadData();
+function getPayoutCycleClips(data, campaignId, userId, cycle) {
+    const campaign = CAMPAIGNS[campaignId];
+    if (!campaign || !cycle?.earningRunKey) return [];
+    const clips = getUniqueClipRecords([
+        ...Object.values(data?.clips || {}),
+        ...Object.values(data?.clipReviews || {})
+    ]).filter(clip => {
+        if (String(clip.campaignId) !== String(campaignId) || String(clip.userId) !== String(userId)) return false;
+        const clipCycle = getCampaignPayoutCycle(campaign, { clip });
+        return String(clipCycle?.earningRunKey || '') === String(cycle.earningRunKey);
+    });
+    if (!campaign.separateEarningLifecycle || String(cycle.earningRunKey) !== String(getCampaignEarningRunKey(campaign))) return clips;
+    const currentRunById = new Map(getCurrentRunAccountingClips(data, campaignId, userId)
+        .map(clip => [getClipIdentityKey(clip), clip]));
+    return clips.map(clip => currentRunById.get(getClipIdentityKey(clip)) || clip);
+}
+
+function getTrackerCycle(tracker) {
+    if (!tracker?.earningRunKey) return null;
+    return {
+        earningRunKey: tracker.earningRunKey,
+        cycleStartAt: tracker.cycleStartAt || null,
+        cycleEndAt: tracker.cycleEndAt || null,
+        cycleType: tracker.cycleType || 'earning_run'
+    };
+}
+
+function calculateTrackerStats(tracker, options = {}) {
+    const data = options.data || loadData();
     const campaign = CAMPAIGNS[tracker.campaignId];
-    if (!campaign) return tracker;
+    const cycle = getTrackerCycle(tracker);
+    if (!campaign || !cycle) return tracker;
 
-    const allCampaignClips = Object.values(data.clips || {}).filter(clip =>
-        String(clip.userId) === String(tracker.userId) &&
-        String(clip.campaignId) === String(tracker.campaignId)
-    );
-    const eligibleClips = allCampaignClips.filter(isPayoutEligibleClip);
-    const currentRunEligibleClips = (campaign.separateEarningLifecycle
-        ? getCurrentRunAccountingClips(data, tracker.campaignId, tracker.userId)
-        : eligibleClips).filter(isPayoutEligibleClip);
-    const lifetimeViews = eligibleClips.reduce((sum, clip) => sum + getApprovedClipViews(clip), 0);
-    const lifetimePaid = allCampaignClips.reduce((sum, clip) => sum + (Number(clip.payout?.paidMoney) || 0), 0);
-    const lifetimeEarned = lifetimeViews / 1000000 * (Number(campaign.ratePerMillion) || 0);
-
-    tracker.lifetimeViews = lifetimeViews;
-    tracker.lifetimeEarned = lifetimeEarned;
-    tracker.lifetimePaid = lifetimePaid;
-    tracker.currentUnpaidViews = currentRunEligibleClips.reduce((sum, clip) =>
-        sum + Math.max(getApprovedClipViews(clip) - (Number(clip.payout?.paidViews) || 0), 0), 0);
-    tracker.currentUnpaidMoney = currentRunEligibleClips.reduce((sum, clip) => {
-        const unpaidViews = Math.max(getApprovedClipViews(clip) - (Number(clip.payout?.paidViews) || 0), 0);
-        return sum + unpaidViews / 1_000_000 * (Number(campaign.ratePerMillion) || 0);
-    }, 0);
+    const cycleClips = getPayoutCycleClips(data, tracker.campaignId, tracker.userId, cycle);
+    const accounting = calculateClipCollectionAccounting(cycleClips, campaign, {
+        scope: 'payout_cycle',
+        campaignId: tracker.campaignId,
+        userId: tracker.userId,
+        earningRunKey: tracker.earningRunKey
+    });
+    tracker.lifetimeViewsForCycle = accounting.totalViews;
+    tracker.lifetimeEarnedForCycle = accounting.totalMoney;
+    tracker.paidViewsForCycle = accounting.paidViews;
+    tracker.paidAmountForCycle = accounting.paidMoney;
+    tracker.currentUnpaidViews = accounting.unpaidViews;
+    tracker.currentUnpaidMoney = accounting.unpaidMoney;
+    tracker.lifetimeViews = accounting.totalViews;
+    tracker.lifetimeEarned = accounting.totalMoney;
+    tracker.lifetimePaid = accounting.paidMoney;
+    const now = Number(options.now ?? Date.now());
+    const cycleEnd = Date.parse(tracker.cycleEndAt || '');
+    tracker.cycleStatus = Number.isFinite(cycleEnd) && now >= cycleEnd ? 'closed' : 'active';
+    tracker.closedAt = tracker.cycleStatus === 'closed' ? (tracker.closedAt || cycleEnd) : null;
     if (tracker.status !== 'issue') {
         tracker.status = tracker.currentUnpaidViews === 0 ? 'paid' :
             tracker.currentUnpaidViews >= getCampaignPayoutThresholdViews(campaign) ? 'ready' : 'waiting';
     }
-    tracker.updatedAt = Date.now();
+    tracker.updatedAt = now;
     return tracker;
 }
 
-async function syncPayoutCard(guild, campaignId, userId) {
+function formatPayoutCycleLabel(tracker) {
+    const format = value => new Intl.DateTimeFormat('en-US', {
+        day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC'
+    }).format(new Date(value));
+    const start = Number.isFinite(Date.parse(tracker?.cycleStartAt || '')) ? format(tracker.cycleStartAt) : null;
+    const end = Number.isFinite(Date.parse(tracker?.cycleEndAt || '')) ? format(tracker.cycleEndAt) : null;
+    if (start && end) return `${start} → ${end}`;
+    if (start) return `${start} → ongoing`;
+    return tracker?.earningRunKey || 'Cycle identity unavailable';
+}
+
+function closeExpiredPayoutTrackers(data, now = Date.now()) {
+    const closedTrackerIds = [];
+    for (const tracker of Object.values(data?.payoutTrackers || {})) {
+        if (!tracker?.earningRunKey || tracker.migratedToTrackerId) continue;
+        const cycleEnd = Date.parse(tracker.cycleEndAt || '');
+        if (!Number.isFinite(cycleEnd) || Number(now) < cycleEnd || tracker.cycleStatus === 'closed') continue;
+        tracker.cycleStatus = 'closed';
+        tracker.closedAt = tracker.closedAt || cycleEnd;
+        tracker.updatedAt = Number(now);
+        closedTrackerIds.push(tracker.id);
+    }
+    return closedTrackerIds;
+}
+
+async function syncPayoutCard(guild, campaignId, userId, options = {}) {
 
     const data = loadData();
 
@@ -3260,30 +3505,18 @@ async function syncPayoutCard(guild, campaignId, userId) {
 
     if (!currentChannel) return;
 
-    const payoutId = `${campaignId}_${userId}`;
-
     if (!data.payoutTrackers) data.payoutTrackers = {};
-
-    const tracker = data.payoutTrackers[payoutId] || {
-        id: payoutId,
-        campaignId,
-        userId,
-        status: "waiting",
-        createdAt: Date.now(),
-        messageId: null,
-        channelId: null,
-        lifetimeViews: 0,
-        lifetimeEarned: 0,
-        lifetimePaid: 0,
-        currentUnpaidViews: 0,
-        currentUnpaidMoney: 0,
-        lastPaidAt: null,
-        lastIssueAt: null
-    };
+    const requestedTracker = options.trackerId ? data.payoutTrackers[options.trackerId] : null;
+    const cycle = requestedTracker
+        ? getTrackerCycle(requestedTracker)
+        : getCampaignPayoutCycle(campaign, options);
+    const tracker = requestedTracker || ensurePayoutTracker(campaignId, userId, { data, cycle });
+    if (!tracker || !cycle) return null;
+    const payoutId = tracker.id;
     const messageChannel = tracker.channelId
         ? await guild.channels.fetch(tracker.channelId).catch(() => null)
         : null;
-    calculateTrackerStats(tracker);
+    calculateTrackerStats(tracker, { data, now: options.now });
     const statusLabels = {
         waiting: '🟡 Waiting for threshold',
         ready: '🟢 Ready for payment',
@@ -3291,6 +3524,7 @@ async function syncPayoutCard(guild, campaignId, userId) {
         issue: '🔴 Payment issue'
     };
     const statusText = statusLabels[tracker.status] || statusLabels.waiting;
+    const cycleStatusText = tracker.cycleStatus === 'closed' ? '🔒 Closed' : '🟢 Active';
     tracker.updatedAt = Date.now();
     data.payoutTrackers[payoutId] = tracker;
 
@@ -3309,6 +3543,9 @@ async function syncPayoutCard(guild, campaignId, userId) {
 **Campaign**
 ${campaign.name}
 
+**Campaign Cycle**
+${formatPayoutCycleLabel(tracker)}
+
 **Unpaid Views**
 ${formatNumber(tracker.currentUnpaidViews)}
 
@@ -3321,12 +3558,12 @@ $${tracker.currentUnpaidMoney.toFixed(2)}
 );
 
     embed.addFields(
-        { name: 'Lifetime Views', value: formatNumber(tracker.lifetimeViews), inline: true },
-        { name: 'Lifetime Earned', value: '$' + tracker.lifetimeEarned.toFixed(2), inline: true },
-        { name: 'Lifetime Paid', value: '$' + tracker.lifetimePaid.toFixed(2), inline: true },
+        { name: 'Campaign Earned Views', value: formatNumber(tracker.lifetimeViewsForCycle), inline: true },
+        { name: 'Earned', value: '$' + tracker.lifetimeEarnedForCycle.toFixed(2), inline: true },
+        { name: 'Paid', value: '$' + tracker.paidAmountForCycle.toFixed(2), inline: true },
         { name: 'Current Unpaid Views', value: formatNumber(tracker.currentUnpaidViews), inline: true },
         { name: 'Current Unpaid Amount', value: '$' + tracker.currentUnpaidMoney.toFixed(2), inline: true },
-        { name: 'Status', value: statusText, inline: true }
+        { name: 'Status', value: `${statusText}\n${cycleStatusText}`, inline: true }
     );
 
     const row = new ActionRowBuilder()
@@ -3392,6 +3629,8 @@ $${tracker.currentUnpaidMoney.toFixed(2)}
     data.payoutTrackers[payoutId].channelId = msg.channel.id;
 
     saveData(data);
+
+    return { tracker: data.payoutTrackers[payoutId], message: msg };
 
 }
 
@@ -3891,27 +4130,20 @@ async function backfillPayoutCards() {
 
     if (!guild) return;
 
-    for (const campaignId of Object.keys(CAMPAIGNS)) {
-
-        const users = [
-            ...new Set(
-                Object.values(data.clips)
-                    .filter(c =>
-                        c.campaignId === campaignId &&
-                        isPayoutEligibleClip(c)
-                    )
-                    .map(c => c.userId)
-            )
-        ];
-
-        for (const userId of users) {
-
-            await syncPayoutCard(
-                guild,
-                campaignId,
-                userId
-            );
-        }
+    const cycleOwners = new Map();
+    for (const clip of Object.values(data.clips || {})) {
+        if (!isPayoutEligibleClip(clip) && Number(clip.payout?.paidViews) <= 0 && Number(clip.payout?.paidMoney) <= 0) continue;
+        const campaign = CAMPAIGNS[clip.campaignId];
+        const cycle = getCampaignPayoutCycle(campaign, { clip });
+        if (!cycle) continue;
+        cycleOwners.set(`${clip.campaignId}|${clip.userId}|${cycle.earningRunKey}`, {
+            campaignId: clip.campaignId,
+            userId: clip.userId,
+            earningRunKey: cycle.earningRunKey
+        });
+    }
+    for (const owner of cycleOwners.values()) {
+        await syncPayoutCard(guild, owner.campaignId, owner.userId, { earningRunKey: owner.earningRunKey });
     }
 
     console.log("✅ Existing payout cards generated.");
@@ -5143,17 +5375,33 @@ function reconcileRejectedCredits(data, campaignId, options = {}) {
   const before = getRejectedCreditAudit(data, campaignId, new Date(now));
   let changedClips = 0;
   const affectedUsers = new Set();
+  const affectedPayoutCycles = new Map();
   for (const collection of [data.clips || {}, data.clipReviews || {}]) {
     for (const clip of Object.values(collection)) {
       if (String(clip?.campaignId) !== String(campaignId) || !isPostApprovalRejectedClip(clip)) continue;
       const result = applyPostApprovalCreditReversal(clip, { now, appliedBy: options.appliedBy || null, reason: 'post_approval_rejection_reconciliation' });
       if (result.changed) changedClips++;
-      if (clip.userId) affectedUsers.add(String(clip.userId));
+      if (clip.userId) {
+        affectedUsers.add(String(clip.userId));
+        const cycle = getCampaignPayoutCycle(campaign, { clip });
+        if (cycle) affectedPayoutCycles.set(`${clip.userId}|${cycle.earningRunKey}`, {
+          userId: String(clip.userId),
+          earningRunKey: cycle.earningRunKey
+        });
+      }
     }
   }
   const campaignState = reconcileCampaignFulfillmentAfterCreditChange(data, campaignId, now);
   const after = getRejectedCreditAudit(data, campaignId, new Date(now));
-  return { changed: changedClips > 0 || campaignState.changed, changedClips, affectedUsers: [...affectedUsers], before, after, campaignState };
+  return {
+    changed: changedClips > 0 || campaignState.changed,
+    changedClips,
+    affectedUsers: [...affectedUsers],
+    affectedPayoutCycles: [...affectedPayoutCycles.values()],
+    before,
+    after,
+    campaignState
+  };
 }
 
 function getUniqueClipRecords(clips, diagnosticContext = {}) {
@@ -5416,9 +5664,16 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
   }
 
   const payoutEligible = payoutThreshold > 0 && unpaidViews >= payoutThreshold;
-  const payoutTracker = Object.values(data.payoutTrackers || {}).find(tracker =>
-    String(tracker.userId) === String(targetUserId) && String(tracker.campaignId) === String(campaignId)
-  );
+  const currentPayoutCycle = getCampaignPayoutCycle(campaign);
+  const payoutTracker = currentPayoutCycle
+    ? data.payoutTrackers?.[getPayoutTrackerId(
+        campaignId,
+        targetUserId,
+        currentPayoutCycle.earningRunKey,
+        currentPayoutCycle.cycleStartAt,
+        currentPayoutCycle.cycleEndAt
+      )]
+    : null;
   const payoutStatus = payoutTracker?.status === 'issue' ? '⚠️ Payment on hold' :
     payoutTracker?.status === 'ready' ? '✅ Ready for payout' :
     payoutTracker?.status === 'pending' ? '⏳ Payment pending' :
@@ -6172,31 +6427,21 @@ async function migratePayoutSystem() {
 
     let cardsCreated = 0;
 
-    for (const campaignId of Object.keys(CAMPAIGNS)) {
-
-        const users = [
-            ...new Set(
-                Object.values(data.clips || {})
-                    .filter(c =>
-                        c.campaignId === campaignId &&
-                        String(c.status).toLowerCase() === "approved"
-                    )
-                    .map(c => c.userId)
-            )
-        ];
-
-        for (const userId of users) {
-
-            await syncPayoutCard(
-                guild,
-                campaignId,
-                userId
-            );
-
-            cardsCreated++;
-
-        }
-
+    const cycleOwners = new Map();
+    for (const clip of Object.values(data.clips || {})) {
+        if (String(clip.status).toLowerCase() !== 'approved') continue;
+        const campaign = CAMPAIGNS[clip.campaignId];
+        const cycle = getCampaignPayoutCycle(campaign, { clip });
+        if (!cycle) continue;
+        cycleOwners.set(`${clip.campaignId}|${clip.userId}|${cycle.earningRunKey}`, {
+            campaignId: clip.campaignId,
+            userId: clip.userId,
+            earningRunKey: cycle.earningRunKey
+        });
+    }
+    for (const owner of cycleOwners.values()) {
+        await syncPayoutCard(guild, owner.campaignId, owner.userId, { earningRunKey: owner.earningRunKey });
+        cardsCreated++;
     }
 
     console.log(`✅ Payout migration complete.`);
@@ -8068,11 +8313,13 @@ async function autoTrackClipViews() {
 
     let changed = finalizeExpiredBudgetCycleClips(data);
     changed = finalizeOutOfRunClips(data, Date.now()).changed || changed;
+    const closedPayoutTrackerIds = closeExpiredPayoutTrackers(data, Date.now());
+    changed = closedPayoutTrackerIds.length > 0 || changed;
     for (const campaign of Object.values(CAMPAIGNS)) {
       if (isStraightCampaign(campaign)) changed = finalizeStraightCampaignIfFulfilled(data, campaign.id) || changed;
     }
     const updatedCampaignIds = new Set();
-    const updatedPayoutPairs = new Set();
+    const updatedPayoutPairs = new Map();
     const approvedClipIds = new Set(Object.entries(data.clips || {})
       .filter(([, clip]) => clip.status === 'approved')
       .map(([clipId]) => clipId));
@@ -8138,7 +8385,12 @@ async function autoTrackClipViews() {
           data.clips[clipId] = clip;
           changed = true;
           updatedCampaignIds.add(clip.campaignId);
-          updatedPayoutPairs.add(`${clip.campaignId}:${clip.userId}`);
+          const payoutCycle = getCampaignPayoutCycle(campaign, { clip });
+          if (payoutCycle) updatedPayoutPairs.set(`${clip.campaignId}|${clip.userId}|${payoutCycle.earningRunKey}`, {
+            campaignId: clip.campaignId,
+            userId: clip.userId,
+            earningRunKey: payoutCycle.earningRunKey
+          });
           if (guild) {
             try { await updateClipStaffMessage(guild, clip); }
             catch (error) { console.error(`Could not update approved staff message ${clipId}:`, error.message); }
@@ -8164,10 +8416,18 @@ async function autoTrackClipViews() {
       catch (error) { console.error('Could not refresh leaderboard:', error.message); }
       try { await updateServerStats(guild); }
       catch (error) { console.error('Could not refresh server counters:', error.message); }
-      for (const pair of updatedPayoutPairs) {
-        const [campaignId, userId] = pair.split(':');
-        try { await syncPayoutCard(guild, campaignId, userId); }
-        catch (error) { console.error(`Could not refresh payout card ${pair}:`, error.message); }
+    }
+
+    if (guild) {
+      for (const pair of updatedPayoutPairs.values()) {
+        try { await syncPayoutCard(guild, pair.campaignId, pair.userId, { earningRunKey: pair.earningRunKey }); }
+        catch (error) { console.error(`Could not refresh payout card ${pair.campaignId}:${pair.userId}:${pair.earningRunKey}:`, error.message); }
+      }
+      for (const trackerId of closedPayoutTrackerIds) {
+        const tracker = data.payoutTrackers?.[trackerId];
+        if (!tracker) continue;
+        try { await syncPayoutCard(guild, tracker.campaignId, tracker.userId, { trackerId }); }
+        catch (error) { console.error(`Could not close payout card ${trackerId}:`, error.message); }
       }
     }
 
@@ -8398,9 +8658,9 @@ client.on('messageCreate', async message => {
   if (result.changed) saveData(data);
   try { await updateCampaignPanelMessage(message.guild, campaignId); }
   catch (error) { console.error(`Could not refresh campaign panels after rejected-credit reconciliation ${campaignId}:`, error.message); }
-  for (const userId of result.affectedUsers) {
-    try { await syncPayoutCard(message.guild, campaignId, userId); }
-    catch (error) { console.error(`Could not refresh payout card ${campaignId}:${userId}:`, error.message); }
+  for (const affected of result.affectedPayoutCycles) {
+    try { await syncPayoutCard(message.guild, campaignId, affected.userId, { earningRunKey: affected.earningRunKey }); }
+    catch (error) { console.error(`Could not refresh payout card ${campaignId}:${affected.userId}:${affected.earningRunKey}:`, error.message); }
   }
   try { await updateLeaderboardMessage(message.guild); }
   catch (error) { console.error('Could not refresh leaderboard after rejected-credit reconciliation:', error.message); }
@@ -9725,7 +9985,7 @@ client.on(Events.InteractionCreate, async interaction => {
         tracker.status = tracker.currentUnpaidViews === 0 ? 'paid' : tracker.currentUnpaidViews >= getCampaignPayoutThresholdViews(campaign) ? 'ready' : 'waiting';
         tracker.updatedAt = Date.now();
         savePayoutTracker(tracker);
-        await syncPayoutCard(interaction.guild, tracker.campaignId, tracker.userId);
+        await syncPayoutCard(interaction.guild, tracker.campaignId, tracker.userId, { trackerId });
         return interaction.reply({ content: 'Payout issue resolved.', flags: MessageFlags.Ephemeral });
     }
 
@@ -9738,7 +9998,7 @@ client.on(Events.InteractionCreate, async interaction => {
             return interaction.reply({ content: 'Payout tracker not found.', flags: MessageFlags.Ephemeral });
         }
 
-        await syncPayoutCard(interaction.guild, tracker.campaignId, tracker.userId);
+        await syncPayoutCard(interaction.guild, tracker.campaignId, tracker.userId, { trackerId });
         await interaction.reply({ content: 'Payout tracker refreshed.', flags: MessageFlags.Ephemeral });
         return;
     }
@@ -9777,7 +10037,7 @@ client.on(Events.InteractionCreate, async interaction => {
             });
         }
 
-        calculateTrackerStats(payout);
+        calculateTrackerStats(payout, { data });
         if (payout.status !== "ready") {
             return interaction.reply({
                 content: "❌ This creator has not reached the payout threshold yet.",
@@ -9785,15 +10045,24 @@ client.on(Events.InteractionCreate, async interaction => {
             });
         }
 
+        const payoutCycle = getTrackerCycle(payout);
+        if (!payoutCycle) {
+            return interaction.reply({
+                content: "❌ This legacy payout tracker has no verified campaign cycle and cannot be paid automatically.",
+                flags: MessageFlags.Ephemeral
+            });
+        }
         const approvedClips = Object.values(data.clips).filter(c =>
             String(c.userId) === String(userId) &&
             String(c.campaignId) === String(campaignId) &&
-            (!campaign.separateEarningLifecycle || isClipInCampaignEarningRun(c, campaign)) &&
+            String(getCampaignPayoutCycle(campaign, { clip: c })?.earningRunKey || '') === String(payoutCycle.earningRunKey) &&
             isPayoutEligibleClip(c)
         );
 
         let paidViews = 0;
         let paidMoney = 0;
+        const paidAt = Date.now();
+        const paymentId = createStablePaymentReference(`${payoutId}:${paidAt}`);
 
         approvedClips.forEach(clip => {
 
@@ -9805,8 +10074,12 @@ client.on(Events.InteractionCreate, async interaction => {
                 };
             }
 
+            const cycleCreditedViews = campaign.separateEarningLifecycle &&
+                String(payoutCycle.earningRunKey) === String(getCampaignEarningRunKey(campaign))
+                ? (getClipCurrentRunLedgerViews(clip, campaign) ?? getApprovedClipViews(clip))
+                : getApprovedClipViews(clip);
             const newViews = Math.max(
-                (getClipCurrentRunLedgerViews(clip, campaign) ?? getApprovedClipViews(clip)) - (Number(clip.payout.paidViews) || 0),
+                cycleCreditedViews - (Number(clip.payout.paidViews) || 0),
                 0
             );
 
@@ -9817,7 +10090,17 @@ client.on(Events.InteractionCreate, async interaction => {
                 campaign.ratePerMillion;
 
             clip.payout.history.push({
-                date: new Date().toISOString(),
+                date: new Date(paidAt).toISOString(),
+                paidAt,
+                paymentId,
+                campaignId,
+                campaignName: campaign.name,
+                payoutTrackerId: payoutId,
+                earningRunKey: payout.earningRunKey,
+                cycleStartAt: payout.cycleStartAt,
+                cycleEndAt: payout.cycleEndAt,
+                ratePerMillion: campaign.ratePerMillion,
+                status: 'paid',
                 views: newViews,
                 amount: money
             });
@@ -9834,7 +10117,9 @@ client.on(Events.InteractionCreate, async interaction => {
         payout.paidAt = Date.now();
         payout.paidViews = paidViews;
         payout.paidMoney = paidMoney;
-        payout.lifetimePaid = (Number(payout.lifetimePaid) || 0) + paidMoney;
+        payout.paidViewsForCycle = (Number(payout.paidViewsForCycle) || 0) + paidViews;
+        payout.paidAmountForCycle = (Number(payout.paidAmountForCycle) || 0) + paidMoney;
+        payout.lifetimePaid = payout.paidAmountForCycle;
         payout.currentUnpaidViews = 0;
         payout.currentUnpaidMoney = 0;
         payout.lastPaidAt = Date.now();
@@ -9900,7 +10185,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         }
 
-        await syncPayoutCard(interaction.guild, campaignId, userId);
+        await syncPayoutCard(interaction.guild, campaignId, userId, { trackerId: payoutId });
 
         await interaction.reply({
             content: 'Payment recorded and payout tracker refreshed.',
@@ -10036,7 +10321,7 @@ ${reason}
            console.log("Couldn't DM user.");
        }
 
-       await syncPayoutCard(interaction.guild, campaignId, userId);
+       await syncPayoutCard(interaction.guild, campaignId, userId, { trackerId: payoutId });
 
        await interaction.reply({
            content: 'Payout issue recorded and tracker refreshed.',
@@ -12287,6 +12572,7 @@ ${reason}
             const staffChannel = interaction.guild.channels.cache.get(targetChannelId);
             const clipId = makeClipId();
             const submittedTimestamp = Date.now();
+            const payoutCycle = getCampaignPayoutCycle(campaign, { now: submittedTimestamp });
             const submissionBudgetCycle = isStraightCampaign(campaign)
                 ? null
                 : getCampaignBudgetCycleIndex(campaign, new Date(submittedTimestamp));
@@ -12350,7 +12636,9 @@ ${reason}
                 wasEverApproved: false,
                 submittedTimestamp,
                 budgetCycleIndex: submissionBudgetCycle,
-                earningRunKey: campaign.separateEarningLifecycle ? getCampaignEarningRunKey(campaign) : undefined,
+                earningRunKey: payoutCycle?.earningRunKey,
+                payoutCycleStartAt: payoutCycle?.cycleStartAt || null,
+                payoutCycleEndAt: payoutCycle?.cycleEndAt || null,
                 trackingStatus: campaign.separateEarningLifecycle || isStraightCampaign(campaign) ? 'active' : undefined,
                 budgetCycleSubmittedAt: submittedTimestamp,
                 submittedAt: new Date(submittedTimestamp).toISOString(),
@@ -12954,7 +13242,7 @@ ${reason}
       }
 
       try {
-        await syncPayoutCard(interaction.guild, clip.campaignId, clip.userId);
+        await syncPayoutCard(interaction.guild, clip.campaignId, clip.userId, { earningRunKey: clip.earningRunKey });
       } catch (err) {
         console.error(`Could not sync payout card for approved clip ${clipId}:`, err.message);
       }
@@ -13231,7 +13519,7 @@ ${reason}
         try { await updateCampaignPanelMessage(interaction.guild, clip.campaignId); } catch (error) { console.error(`Could not refresh campaign panel ${clip.campaignId}:`, error.message); }
         try { await updateLeaderboardMessage(interaction.guild); } catch (error) { console.error('Could not refresh leaderboard:', error.message); }
         try { await updateServerStats(interaction.guild); } catch (error) { console.error('Could not refresh server counters:', error.message); }
-        try { await syncPayoutCard(interaction.guild, clip.campaignId, clip.userId); } catch (error) { console.error(`Could not refresh payout card ${clip.campaignId}:${clip.userId}:`, error.message); }
+        try { await syncPayoutCard(interaction.guild, clip.campaignId, clip.userId, { earningRunKey: clip.earningRunKey }); } catch (error) { console.error(`Could not refresh payout card ${clip.campaignId}:${clip.userId}:`, error.message); }
       }
 
       const member = await interaction.guild.members.fetch(clip.userId).catch(() => null);
@@ -13328,7 +13616,7 @@ ${reason}
             try { await updateCampaignPanelMessage(interaction.guild, clip.campaignId); } catch (error) { console.error(`Could not refresh campaign panel ${clip.campaignId}:`, error.message); }
             try { await updateLeaderboardMessage(interaction.guild); } catch (error) { console.error('Could not refresh leaderboard:', error.message); }
             try { await updateServerStats(interaction.guild); } catch (error) { console.error('Could not refresh server counters:', error.message); }
-            try { await syncPayoutCard(interaction.guild, clip.campaignId, clip.userId); } catch (error) { console.error(`Could not refresh payout card ${clip.campaignId}:${clip.userId}:`, error.message); }
+            try { await syncPayoutCard(interaction.guild, clip.campaignId, clip.userId, { earningRunKey: clip.earningRunKey }); } catch (error) { console.error(`Could not refresh payout card ${clip.campaignId}:${clip.userId}:`, error.message); }
         }
 
         await interaction.editReply({ content: "✅ Clip restored successfully." });
@@ -14392,15 +14680,22 @@ function getUserPaymentReceipts(data, userId) {
 
     legacyHistory.forEach((payment, index) => {
       const campaignId = payment?.campaignId || clip.campaignId || 'unknown';
+      const campaign = CAMPAIGNS[campaignId];
+      const derivedCycle = payment?.earningRunKey
+        ? getCampaignPayoutCycle(campaign, { earningRunKey: payment.earningRunKey })
+        : getCampaignPayoutCycle(campaign, { clip });
+      const earningRunKey = payment?.earningRunKey || derivedCycle?.earningRunKey || null;
+      const cycleStartAt = payment?.cycleStartAt || derivedCycle?.cycleStartAt || null;
+      const cycleEndAt = payment?.cycleEndAt || derivedCycle?.cycleEndAt || null;
       const timestampValue = payment?.paidAt || payment?.completedAt || payment?.createdAt || payment?.timestamp || payment?.date || null;
       const timestamp = Number.isFinite(Number(timestampValue))
         ? Number(timestampValue)
         : Date.parse(timestampValue || '');
       const paymentId = payment?.paymentId || payment?.transactionId || payment?.id || null;
       const groupKey = paymentId
-        ? `id:${campaignId}:${paymentId}`
+        ? `id:${campaignId}:${earningRunKey || 'unresolved'}:${paymentId}`
         : Number.isFinite(timestamp)
-          ? `time:${campaignId}:${Math.floor(timestamp / 1000)}`
+          ? `time:${campaignId}:${earningRunKey || 'unresolved'}:${Math.floor(timestamp / 1000)}`
           : `legacy:${campaignId}:${clip.id || clip.videoUrl || index}:${index}`;
       const ratePerMillion = Number(payment?.ratePerMillion ?? payment?.payoutRate ?? CAMPAIGNS[campaignId]?.ratePerMillion);
       const views = Number(payment?.views ?? payment?.paidViews ?? 0) || 0;
@@ -14408,6 +14703,9 @@ function getUserPaymentReceipts(data, userId) {
       const existing = grouped.get(groupKey) || {
         campaignId,
         campaignName: payment?.campaignName || clip.campaignName,
+        earningRunKey,
+        cycleStartAt,
+        cycleEndAt,
         paymentId,
         timestamp: Number.isFinite(timestamp) ? timestamp : null,
         timestampValue,
@@ -14422,6 +14720,9 @@ function getUserPaymentReceipts(data, userId) {
       existing.views += Math.max(views, 0);
       existing.amount += Math.max(amount, 0);
       if (!existing.campaignName) existing.campaignName = payment?.campaignName || clip.campaignName;
+      if (!existing.earningRunKey && earningRunKey) existing.earningRunKey = earningRunKey;
+      if (!existing.cycleStartAt && cycleStartAt) existing.cycleStartAt = cycleStartAt;
+      if (!existing.cycleEndAt && cycleEndAt) existing.cycleEndAt = cycleEndAt;
       if (!existing.paymentId && paymentId) existing.paymentId = paymentId;
       if (!Number.isFinite(existing.timestamp) && Number.isFinite(timestamp)) {
         existing.timestamp = timestamp;
@@ -14482,12 +14783,15 @@ function buildPaymentReceiptPage(interaction, payments, page) {
   const ratePerThousand = Number.isFinite(payment.ratePerMillion) ? payment.ratePerMillion / 1000 : null;
   const reason = payment.reason ? `\n\n**Reason:** ${String(payment.reason).replace(/[\r\n]+/g, ' ').slice(0, 500)}` : '';
   const clipCount = payment.clips > 1 ? `\n**Clips:** ${payment.clips}` : '';
+  const cycleText = payment.cycleStartAt || payment.cycleEndAt || payment.earningRunKey
+    ? `\n**Campaign Cycle:** ${formatPayoutCycleLabel(payment)}`
+    : '\n**Campaign Cycle:** Legacy cycle unresolved';
   const embed = new EmbedBuilder()
     .setColor(statusDetails.color)
     .setAuthor(author)
     .setTitle('Detailed Overview of Your Payments')
     .setDescription(
-      `**${campaignName}**\n\n` +
+      `**${campaignName}**${cycleText}\n\n` +
       `**Expected:** $${payment.amount.toFixed(2)}\n` +
       `**Status:** ${statusDetails.label}\n` +
       `**Date:** ${dateText}\n\n` +
@@ -14579,6 +14883,7 @@ module.exports.__clipLifecycleTest = {
   getCampaignOperationalState,
   getCampaignPanelFulfilledPercent,
   getCampaignPanelText,
+  getCampaignPayoutCycle,
   getCampaignPayoutThresholdViews,
   getCampaignSubmissionBlockMessage,
   getRejectedCreditAudit,
@@ -14587,9 +14892,15 @@ module.exports.__clipLifecycleTest = {
   getCampaignSubmissionAccounts,
   getCampaignSubmitButtonFromMessage,
   getStraightCampaignAccounting,
+  getPayoutCycleClips,
+  getPayoutTrackerId,
+  calculateTrackerStats,
+  closeExpiredPayoutTrackers,
+  formatPayoutCycleLabel,
   getCampaignPerClipPayoutLimit,
   getUserCurrentRunAccounting,
   getUserCurrentWeekAccounting,
+  getUserPaymentReceipts,
   getWeeklyAccountingAudit,
   getInitialSubmissionViewState,
   getClipAppealHelpLink,
@@ -14601,6 +14912,7 @@ module.exports.__clipLifecycleTest = {
   joinCampaignMember,
   repairApprovalSnapshotInvariants,
   repairAugustFirstWeekLegacyWeeklyAccounting,
+  migratePayoutTrackerCycles,
   reconcileCampaignFulfillmentAfterCreditChange,
   reconcileRejectedCredits,
   restorePostApprovalCreditReversal,

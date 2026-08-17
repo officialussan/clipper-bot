@@ -68,6 +68,7 @@ const {
   getCampaignOperationalState,
   getCampaignPanelFulfilledPercent,
   getCampaignPanelText,
+  getCampaignPayoutCycle,
   getCampaignPayoutThresholdViews,
   getCampaignPerClipPayoutLimit,
   getCampaignSubmissionBlockMessage,
@@ -77,6 +78,10 @@ const {
   getCampaignSubmissionAccounts,
   getCampaignSubmitButtonFromMessage,
   getStraightCampaignAccounting,
+  getPayoutCycleClips,
+  getPayoutTrackerId,
+  calculateTrackerStats,
+  closeExpiredPayoutTrackers,
   getClipAppealHelpLink,
   getClipActiveCreditedViews,
   getClipActiveWeekCreditedViews,
@@ -87,6 +92,7 @@ const {
   getVerifiedGlobalSocialsForPlatforms,
   getUserCurrentRunAccounting,
   getUserCurrentWeekAccounting,
+  getUserPaymentReceipts,
   getWeeklyAccountingAudit,
   getInitialSubmissionViewState,
   initializeClipTrackingFields,
@@ -95,6 +101,7 @@ const {
   joinCampaignMember,
   repairApprovalSnapshotInvariants,
   repairAugustFirstWeekLegacyWeeklyAccounting,
+  migratePayoutTrackerCycles,
   reconcileCampaignFulfillmentAfterCreditChange,
   reconcileRejectedCredits,
   restorePostApprovalCreditReversal,
@@ -2538,4 +2545,183 @@ test('Monsterlab campaign accounts are unlimited per platform and remain indepen
   assert.equal(userRecord.campaignAccounts.elephant.tiktok.length, 30);
   assert.equal(created[0].status, 'unlinked');
   assert.equal(created[0].demographics.tier, 'Tier 1');
+});
+
+function makeCycleClip(id, userId, earningRunKey, views, payout = {}) {
+  return {
+    id,
+    userId,
+    campaignId: 'elephant',
+    platform: 'tiktok',
+    videoId: id,
+    status: 'approved',
+    payoutEligible: true,
+    earningRunKey,
+    campaignCreditedViews: views,
+    views,
+    payout: {
+      paidViews: Number(payout.paidViews) || 0,
+      paidMoney: Number(payout.paidMoney) || 0,
+      history: payout.history || []
+    }
+  };
+}
+
+test('payout cycle identity stays constant across Elephant weekly resets and changes for the next earning run', () => {
+  const campaign = CAMPAIGNS.elephant;
+  const weekDates = [
+    '2026-08-03T07:00:00.000Z',
+    '2026-08-10T07:00:00.000Z',
+    '2026-08-17T07:00:00.000Z',
+    '2026-08-24T07:00:00.000Z'
+  ];
+  const cycles = weekDates.map(now => getCampaignPayoutCycle(campaign, { now }));
+  assert.equal(new Set(cycles.map(cycle => cycle.earningRunKey)).size, 1);
+  assert.equal(new Set(cycles.map(cycle => getPayoutTrackerId('elephant', 'creator', cycle.earningRunKey, cycle.cycleStartAt, cycle.cycleEndAt))).size, 1);
+  assert.equal(cycles[0].cycleStartAt, '2026-08-03T07:00:00.000Z');
+  assert.equal(cycles[0].cycleEndAt, '2026-08-31T07:00:00.000Z');
+
+  const nextCampaign = {
+    ...campaign,
+    startDate: '2026-08-31T07:00:00.000Z',
+    endDate: '2026-09-28T07:00:00.000Z'
+  };
+  const nextCycle = getCampaignPayoutCycle(nextCampaign, { now: '2026-09-01T00:00:00.000Z' });
+  assert.notEqual(nextCycle.earningRunKey, cycles[0].earningRunKey);
+  assert.notEqual(
+    getPayoutTrackerId('elephant', 'creator', nextCycle.earningRunKey, nextCycle.cycleStartAt, nextCycle.cycleEndAt),
+    getPayoutTrackerId('elephant', 'creator', cycles[0].earningRunKey, cycles[0].cycleStartAt, cycles[0].cycleEndAt)
+  );
+});
+
+test('cycle payout accounting, threshold, and payment totals never mix adjacent earning runs', () => {
+  const firstKey = 'elephant:2026-08-03T07:00:00.000Z:2026-08-31T07:00:00.000Z';
+  const secondKey = 'elephant:2026-08-31T07:00:00.000Z:2026-09-28T07:00:00.000Z';
+  const data = {
+    clips: {
+      first: makeCycleClip('first', 'creator', firstKey, 100000, { paidViews: 25000, paidMoney: 7.5 }),
+      second: makeCycleClip('second', 'creator', secondKey, 200000)
+    },
+    clipReviews: {},
+    payoutTrackers: {}
+  };
+  const firstCycle = getCampaignPayoutCycle(CAMPAIGNS.elephant, { earningRunKey: firstKey });
+  const secondCycle = getCampaignPayoutCycle(CAMPAIGNS.elephant, { earningRunKey: secondKey });
+  const firstTracker = {
+    id: getPayoutTrackerId('elephant', 'creator', firstKey, firstCycle.cycleStartAt, firstCycle.cycleEndAt),
+    campaignId: 'elephant', userId: 'creator', ...firstCycle, status: 'waiting'
+  };
+  const secondTracker = {
+    id: getPayoutTrackerId('elephant', 'creator', secondKey, secondCycle.cycleStartAt, secondCycle.cycleEndAt),
+    campaignId: 'elephant', userId: 'creator', ...secondCycle, status: 'waiting'
+  };
+  calculateTrackerStats(firstTracker, { data, now: Date.parse('2026-08-20T00:00:00Z') });
+  calculateTrackerStats(secondTracker, { data, now: Date.parse('2026-09-05T00:00:00Z') });
+  assert.equal(firstTracker.lifetimeViewsForCycle, 100000);
+  assert.equal(firstTracker.paidViewsForCycle, 25000);
+  assert.equal(firstTracker.currentUnpaidViews, 75000);
+  assert.equal(firstTracker.status, 'ready');
+  assert.equal(secondTracker.lifetimeViewsForCycle, 200000);
+  assert.equal(secondTracker.paidViewsForCycle, 0);
+  assert.equal(secondTracker.currentUnpaidViews, 200000);
+  assert.equal(getPayoutCycleClips(data, 'elephant', 'creator', firstCycle).length, 1);
+  assert.equal(getPayoutCycleClips(data, 'elephant', 'creator', secondCycle).length, 1);
+});
+
+test('expired payout cycles close once while a later cycle remains independent', () => {
+  const data = {
+    payoutTrackers: {
+      old: {
+        id: 'old', campaignId: 'elephant', userId: 'creator', earningRunKey: 'old-run',
+        cycleStartAt: '2026-08-03T07:00:00.000Z', cycleEndAt: '2026-08-31T07:00:00.000Z', cycleStatus: 'active'
+      },
+      next: {
+        id: 'next', campaignId: 'elephant', userId: 'creator', earningRunKey: 'next-run',
+        cycleStartAt: '2026-08-31T07:00:00.000Z', cycleEndAt: '2026-09-28T07:00:00.000Z', cycleStatus: 'active'
+      }
+    }
+  };
+  assert.deepEqual(closeExpiredPayoutTrackers(data, Date.parse('2026-08-30T07:00:00.000Z')), []);
+  assert.deepEqual(closeExpiredPayoutTrackers(data, Date.parse('2026-08-31T07:00:00.000Z')), ['old']);
+  assert.equal(data.payoutTrackers.old.cycleStatus, 'closed');
+  assert.equal(data.payoutTrackers.old.closedAt, Date.parse('2026-08-31T07:00:00.000Z'));
+  assert.equal(data.payoutTrackers.next.cycleStatus, 'active');
+  assert.deepEqual(closeExpiredPayoutTrackers(data, Date.parse('2026-09-01T07:00:00.000Z')), []);
+});
+
+test('legacy payout migration transfers a current card only with provable run activity and preserves ambiguous history', () => {
+  const currentKey = 'elephant:2026-08-03T07:00:00.000Z:2026-08-31T07:00:00.000Z';
+  const data = {
+    clips: {
+      current: makeCycleClip('current', 'current-user', currentKey, 50000),
+      legacy: {
+        ...makeCycleClip('legacy', 'legacy-user', null, 30000, { paidViews: 30000, paidMoney: 9 }),
+        submittedAt: '2026-07-20T00:00:00.000Z'
+      }
+    },
+    clipReviews: {},
+    payoutTrackers: {
+      elephant_current_user: {
+        id: 'elephant_current_user', campaignId: 'elephant', userId: 'current-user',
+        channelId: 'channel-current', messageId: 'message-current', status: 'waiting', createdAt: 1
+      },
+      elephant_legacy_user: {
+        id: 'elephant_legacy_user', campaignId: 'elephant', userId: 'legacy-user',
+        channelId: 'channel-legacy', messageId: 'message-legacy', status: 'paid', createdAt: 2
+      }
+    },
+    storageMigrations: {}
+  };
+  const report = migratePayoutTrackerCycles(data, { now: Date.parse('2026-08-17T12:00:00.000Z') });
+  assert.equal(report.migrated.length, 1);
+  assert.equal(report.unresolved.length, 1);
+  const migrated = data.payoutTrackers[report.migrated[0].trackerId];
+  assert.equal(migrated.earningRunKey, currentKey);
+  assert.equal(migrated.channelId, 'channel-current');
+  assert.equal(migrated.messageId, 'message-current');
+  assert.equal(migrated.lifetimeViewsForCycle, 50000);
+  assert.equal(data.payoutTrackers.elephant_current_user.migratedToTrackerId, migrated.id);
+  assert.equal(data.payoutTrackers.elephant_current_user.legacyMessageId, 'message-current');
+  assert.equal(data.payoutTrackers.elephant_legacy_user.legacyCycleUnresolved, true);
+  assert.equal(data.payoutTrackers.elephant_legacy_user.messageId, 'message-legacy');
+  assert.equal(data.clips.legacy.payout.paidMoney, 9);
+});
+
+test('old-cycle rejection accounting and payout receipts stay attached to the clip earning run', () => {
+  const oldKey = 'elephant:2026-08-03T07:00:00.000Z:2026-08-31T07:00:00.000Z';
+  const newKey = 'elephant:2026-08-31T07:00:00.000Z:2026-09-28T07:00:00.000Z';
+  const oldClip = makeCycleClip('old-clip', 'creator', oldKey, 100000, {
+    paidViews: 20000,
+    paidMoney: 6,
+    history: [{
+      paymentId: 'OLD-PAYMENT', paidAt: Date.parse('2026-08-20T00:00:00Z'), views: 20000, amount: 6,
+      campaignId: 'elephant', earningRunKey: oldKey,
+      cycleStartAt: '2026-08-03T07:00:00.000Z', cycleEndAt: '2026-08-31T07:00:00.000Z', status: 'paid'
+    }]
+  });
+  oldClip.status = 'rejected';
+  oldClip.payoutEligible = false;
+  oldClip.wasEverApproved = true;
+  oldClip.rejectionStage = 'post_approval';
+  const newClip = makeCycleClip('new-clip', 'creator', newKey, 60000, {
+    history: [{
+      paymentId: 'NEW-PAYMENT', paidAt: Date.parse('2026-09-10T00:00:00Z'), views: 10000, amount: 3,
+      campaignId: 'elephant', earningRunKey: newKey,
+      cycleStartAt: '2026-08-31T07:00:00.000Z', cycleEndAt: '2026-09-28T07:00:00.000Z', status: 'paid'
+    }]
+  });
+  const data = { clips: { old: oldClip, next: newClip }, clipReviews: {}, payoutTrackers: {} };
+  const oldCycle = getCampaignPayoutCycle(CAMPAIGNS.elephant, { earningRunKey: oldKey });
+  const newCycle = getCampaignPayoutCycle(CAMPAIGNS.elephant, { earningRunKey: newKey });
+  const oldTracker = { id: 'old', campaignId: 'elephant', userId: 'creator', ...oldCycle, status: 'waiting' };
+  const newTracker = { id: 'next', campaignId: 'elephant', userId: 'creator', ...newCycle, status: 'waiting' };
+  calculateTrackerStats(oldTracker, { data, now: Date.parse('2026-09-10T00:00:00Z') });
+  calculateTrackerStats(newTracker, { data, now: Date.parse('2026-09-10T00:00:00Z') });
+  assert.equal(oldTracker.lifetimeViewsForCycle, 20000);
+  assert.equal(oldTracker.currentUnpaidViews, 0);
+  assert.equal(newTracker.lifetimeViewsForCycle, 60000);
+  assert.equal(newTracker.currentUnpaidViews, 60000);
+  const receipts = getUserPaymentReceipts(data, 'creator');
+  assert.equal(receipts.length, 2);
+  assert.deepEqual(new Set(receipts.map(receipt => receipt.earningRunKey)), new Set([oldKey, newKey]));
 });
