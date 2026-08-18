@@ -628,6 +628,91 @@ const ELEPHANT_JULY_RECONCILIATION = Object.freeze({
   payoutChannelId: '1533817836311416972'
 });
 
+const CROWDER_HISTORICAL_RECONCILIATION = Object.freeze({
+  migrationName: 'crowderHistoricalCycleReconciliationV1',
+  campaignId: 'crowder',
+  payoutChannelId: '1533817837267718174',
+  ratePerMillion: 300,
+  historicalPayoutThresholdViews: 35_000,
+  currentPayoutThresholdViews: 17_500,
+  currentEarningRunKey: 'crowder:2026-08-03T07:00:00.000Z:2026-08-31T07:00:00.000Z',
+  currentCycleStartAt: '2026-08-03T07:00:00.000Z',
+  currentCycleEndAt: '2026-08-31T07:00:00.000Z',
+  expectedPostApprovalRejectedPaidViews: 70_000,
+  expectedPostApprovalRejectedPaidAmount: 21,
+  mixedMessageIds: Object.freeze(['1534540126087020707']),
+  cycles: Object.freeze({
+    cycleA: Object.freeze({
+      earningRunKey: 'crowder:2026-06-29T00:00:00.000Z:2026-07-27T00:00:00.000Z',
+      cycleStartAt: '2026-06-29T00:00:00.000Z',
+      cycleEndAt: '2026-07-27T00:00:00.000Z',
+      expectedSubmissionCount: 97,
+      expectedStatuses: Object.freeze({ approved: 60, rejected: 16, pending: 21 }),
+      expectedCreditedViews: 5_266_455,
+      expectedEarnings: 1_579.9365,
+      expectedPaidViews: 2_711_131,
+      expectedPaidAmount: 813.3393,
+      expectedUnpaidViews: 2_555_324,
+      expectedUnpaidAmount: 766.5972,
+      windows: Object.freeze([
+        Object.freeze({ startAt: '2026-06-29T00:00:00.000Z', endAt: '2026-07-06T00:00:00.000Z', creditedViews: 0 }),
+        Object.freeze({ startAt: '2026-07-06T00:00:00.000Z', endAt: '2026-07-13T00:00:00.000Z', creditedViews: 99_070 }),
+        Object.freeze({ startAt: '2026-07-13T00:00:00.000Z', endAt: '2026-07-20T00:00:00.000Z', creditedViews: 5_089_837 }),
+        Object.freeze({ startAt: '2026-07-20T00:00:00.000Z', endAt: '2026-07-27T00:00:00.000Z', creditedViews: 77_548 })
+      ]),
+      users: Object.freeze({
+        '1189010402533720127': Object.freeze({ creditedViews: 2_170_780, paidViews: 169_000, paidAmount: 50.7, carryForwardViews: 0, messageId: null }),
+        '1318322406976127156': Object.freeze({ creditedViews: 2_516_689, paidViews: 2_516_631, paidAmount: 754.9893, carryForwardViews: 58, messageId: null }),
+        '1379441616414314679': Object.freeze({ creditedViews: 16, paidViews: 0, paidAmount: 0, carryForwardViews: 16, messageId: null }),
+        '1437858346685173763': Object.freeze({ creditedViews: 14_763, paidViews: 0, paidAmount: 0, carryForwardViews: 14_763, messageId: null }),
+        '1446981610657419406': Object.freeze({ creditedViews: 7_004, paidViews: 0, paidAmount: 0, carryForwardViews: 7_004, messageId: null }),
+        '1468222318198259864': Object.freeze({ creditedViews: 547_664, paidViews: 25_500, paidAmount: 7.65, carryForwardViews: 0, messageId: '1533876856586244218' }),
+        '1469031652352327873': Object.freeze({ creditedViews: 826, paidViews: 0, paidAmount: 0, carryForwardViews: 826, messageId: null }),
+        '1480294670499320023': Object.freeze({ creditedViews: 8_476, paidViews: 0, paidAmount: 0, carryForwardViews: 8_476, messageId: null }),
+        '1495891626223079536': Object.freeze({ creditedViews: 138, paidViews: 0, paidAmount: 0, carryForwardViews: 138, messageId: '1534540100783050903' }),
+        '1522218555356086313': Object.freeze({ creditedViews: 99, paidViews: 0, paidAmount: 0, carryForwardViews: 99, messageId: '1534540127961874565' })
+      })
+    }),
+    cycleB: Object.freeze({
+      earningRunKey: 'crowder:2026-07-27T00:00:00.000Z:2026-08-03T07:00:00.000Z',
+      cycleStartAt: '2026-07-27T00:00:00.000Z',
+      cycleEndAt: '2026-08-03T07:00:00.000Z',
+      expectedSubmissionCount: 50,
+      expectedStatuses: Object.freeze({ approved: 48, rejected: 0, pending: 2 }),
+      expectedCreditedViews: 50_579,
+      expectedEarnings: 15.1737,
+      expectedPaidViews: 0,
+      expectedPaidAmount: 0,
+      expectedUnpaidViews: 50_579,
+      expectedUnpaidAmount: 15.1737,
+      windows: Object.freeze([
+        Object.freeze({ startAt: '2026-07-27T00:00:00.000Z', endAt: '2026-08-03T07:00:00.000Z', creditedViews: 50_579 })
+      ]),
+      users: Object.freeze({
+        '1379441616414314679': Object.freeze({ creditedViews: 2, paidViews: 0, paidAmount: 0 }),
+        '1437858346685173763': Object.freeze({ creditedViews: 5_486, paidViews: 0, paidAmount: 0 }),
+        '1446981610657419406': Object.freeze({ creditedViews: 3_689, paidViews: 0, paidAmount: 0 }),
+        '1469031652352327873': Object.freeze({ creditedViews: 18_250, paidViews: 0, paidAmount: 0 }),
+        '1480294670499320023': Object.freeze({ creditedViews: 23_001, paidViews: 0, paidAmount: 0 }),
+        '1516030505710129312': Object.freeze({ creditedViews: 151, paidViews: 0, paidAmount: 0 })
+      })
+    })
+  }),
+  finalCarry: Object.freeze({
+    '1318322406976127156': Object.freeze({ views: 58, amount: 0.0174 }),
+    '1379441616414314679': Object.freeze({ views: 18, amount: 0.0054 }),
+    '1437858346685173763': Object.freeze({ views: 20_249, amount: 6.0747 }),
+    '1446981610657419406': Object.freeze({ views: 10_693, amount: 3.2079 }),
+    '1469031652352327873': Object.freeze({ views: 19_076, amount: 5.7228 }),
+    '1480294670499320023': Object.freeze({ views: 31_477, amount: 9.4431 }),
+    '1495891626223079536': Object.freeze({ views: 138, amount: 0.0414 }),
+    '1516030505710129312': Object.freeze({ views: 151, amount: 0.0453 }),
+    '1522218555356086313': Object.freeze({ views: 99, amount: 0.0297 })
+  }),
+  expectedCarryViews: 81_959,
+  expectedCarryAmount: 24.5877
+});
+
 function writeJsonAtomic(filePath, jsonText) {
   const directory = path.dirname(filePath);
   if (!fs.existsSync(directory)) fs.mkdirSync(directory, { recursive: true });
@@ -958,6 +1043,18 @@ function loadData() {
       julyTrackers: report.julyTrackerCount,
       carryForwardViews: report.carryForwardViews,
       totalCreditedViews: report.totalCreditedViews
+    });
+  }
+  if (!raw.storageMigrations[CROWDER_HISTORICAL_RECONCILIATION.migrationName] &&
+      getCrowderHistoricalCycleRecords(raw, CROWDER_HISTORICAL_RECONCILIATION.cycles.cycleA).length > 0) {
+    const report = applyCrowderHistoricalReconciliation(raw, { now: Date.now() });
+    migrationChanged = report.changed || migrationChanged;
+    console.log('[Crowder Historical Reconciliation]', {
+      status: report.status,
+      cycleATrackers: report.cycleATrackerIds.length,
+      cycleBTrackers: report.cycleBTrackerIds.length,
+      carryForwardViews: report.carryForwardViews,
+      carryForwardAmount: report.carryForwardAmount
     });
   }
   if (!raw.storageMigrations.approvalSnapshotInvariantV1) {
@@ -1408,12 +1505,19 @@ function buildElephantJulyReconciliationDryRun(data) {
 
 function getReconciledCreatorAllocation(data, tracker) {
   const ledger = data?.campaignPayoutReconciliations?.[tracker?.earningRunKey];
-  if (ledger?.reconciliationStatus !== 'reconstructed') return null;
+  if (!['reconstructed', 'recovered'].includes(ledger?.reconciliationStatus)) return null;
   return ledger.users?.[String(tracker.userId)] || null;
 }
 
 function getTrackerCarryBalances(tracker) {
   return Array.isArray(tracker?.carryInBalances) ? tracker.carryInBalances : [];
+}
+
+function getOldestFirstTrackerCarryBalances(tracker) {
+  return [...getTrackerCarryBalances(tracker)].sort((left, right) =>
+    Date.parse(left.sourceCycleStartAt || '') - Date.parse(right.sourceCycleStartAt || '') ||
+    String(left.sourceEarningRunKey || '').localeCompare(String(right.sourceEarningRunKey || ''))
+  );
 }
 
 function applyElephantJulyReconciliation(data, options = {}) {
@@ -1504,6 +1608,425 @@ function applyElephantJulyReconciliation(data, options = {}) {
     totalEarnings: dryRun.totalEarnings, carryForwardViews: dryRun.carryForwardViews,
     carryForwardAmount: dryRun.carryForwardAmount, dryRun,
     cardSyncTrackerIds: [...julyTrackerIds, ...augustCarryTrackerIds]
+  };
+  data.storageMigrations[config.migrationName] = report;
+  return { changed: true, ...report };
+}
+
+function getCrowderHistoricalCycleRecords(data, cycle) {
+  const start = Date.parse(cycle.cycleStartAt);
+  const end = Date.parse(cycle.cycleEndAt);
+  const unique = new Map();
+  for (const clip of [...Object.values(data?.clips || {}), ...Object.values(data?.clipReviews || {})]) {
+    const submittedAt = getClipSubmissionTimestamp(clip);
+    if (String(clip?.campaignId) !== CROWDER_HISTORICAL_RECONCILIATION.campaignId ||
+        !Number.isFinite(submittedAt) || submittedAt < start || submittedAt >= end) continue;
+    const identity = getClipIdentityKey(clip) || `id:${clip.id}`;
+    if (!unique.has(identity)) unique.set(identity, clip);
+  }
+  return [...unique.values()];
+}
+
+function getCrowderCurrentAccountingInvariant(data, now = Date.now()) {
+  const config = CROWDER_HISTORICAL_RECONCILIATION;
+  const campaign = CAMPAIGNS[config.campaignId];
+  const date = new Date(now);
+  const weekly = getCampaignCurrentWeekAccounting(data, config.campaignId, date);
+  const currentRun = getCampaignCurrentRunAccounting(data, config.campaignId);
+  const operational = getCampaignOperationalState(data, campaign, date);
+  const currentStart = Date.parse(config.currentCycleStartAt);
+  const currentEnd = Date.parse(config.currentCycleEndAt);
+  const criticalClips = [...Object.values(data?.clips || {}), ...Object.values(data?.clipReviews || {})]
+    .filter(clip => {
+      const submittedAt = getClipSubmissionTimestamp(clip);
+      return String(clip?.campaignId) === config.campaignId && Number.isFinite(submittedAt) &&
+        submittedAt >= currentStart && submittedAt < currentEnd;
+    })
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+    .map(clip => ({
+      id: clip.id,
+      status: clip.status,
+      earningRunKey: clip.earningRunKey || null,
+      campaignCreditedViews: Number(clip.campaignCreditedViews) || 0,
+      weeklyViews: Number(clip.weeklyViews) || 0,
+      weeklyBaselineViews: Number(clip.weeklyBaselineViews) || 0,
+      budgetTracking: clip.budgetTracking || null,
+      payoutPaidViews: Number(clip.payout?.paidViews) || 0,
+      payoutPaidMoney: Number(clip.payout?.paidMoney) || 0
+    }));
+  return {
+    earningRunKey: currentRun?.earningRunKey || null,
+    currentRun: currentRun ? {
+      users: currentRun.users, videos: currentRun.videos, paidViews: currentRun.paidViews,
+      unpaidViews: currentRun.unpaidViews, totalViews: currentRun.totalViews,
+      paidMoney: currentRun.paidMoney, unpaidMoney: currentRun.unpaidMoney, totalMoney: currentRun.totalMoney
+    } : null,
+    weekly: weekly ? {
+      weekKey: weekly.weekKey, periodStart: weekly.periodStart?.toISOString?.() || weekly.periodStart,
+      periodEnd: weekly.periodEnd?.toISOString?.() || weekly.periodEnd,
+      rawCreditedViews: weekly.rawCreditedViews, creditedViews: weekly.creditedViews,
+      capReached: weekly.capReached, weeklyCap: weekly.weeklyCap
+    } : null,
+    fulfilled: getCampaignPanelFulfilledPercent(campaign, data, date),
+    operationalState: operational?.state || null,
+    currentClipAccountingHash: crypto.createHash('sha256').update(JSON.stringify(criticalClips)).digest('hex')
+  };
+}
+
+function summarizeCrowderHistoricalCycle(data, cycle) {
+  const records = getCrowderHistoricalCycleRecords(data, cycle);
+  const statuses = records.reduce((result, clip) => {
+    const status = String(clip.status || 'unknown').toLowerCase();
+    result[status] = (result[status] || 0) + 1;
+    return result;
+  }, {});
+  const users = {};
+  for (const clip of records) {
+    const userId = String(clip.userId || '');
+    users[userId] ||= { userId, approvedClips: 0, rejectedClips: 0, pendingClips: 0, creditedViews: 0, paidViews: 0, paidAmount: 0 };
+    if (clip.status === 'approved') {
+      users[userId].approvedClips++;
+      users[userId].creditedViews += Math.max(Number(clip.campaignCreditedViews) || 0, 0);
+      users[userId].paidViews += Math.max(Number(clip.payout?.paidViews) || 0, 0);
+      users[userId].paidAmount += Math.max(Number(clip.payout?.paidMoney) || 0, 0);
+    } else if (clip.status === 'rejected') users[userId].rejectedClips++;
+    else if (clip.status === 'pending') users[userId].pendingClips++;
+  }
+  const creditedViews = Object.values(users).reduce((sum, user) => sum + user.creditedViews, 0);
+  const paidViews = Object.values(users).reduce((sum, user) => sum + user.paidViews, 0);
+  const paidAmount = Object.values(users).reduce((sum, user) => sum + user.paidAmount, 0);
+  const earnings = creditedViews / 1_000_000 * CROWDER_HISTORICAL_RECONCILIATION.ratePerMillion;
+  return {
+    records,
+    submissionCount: records.length,
+    statuses,
+    creditedViews,
+    earnings,
+    paidViews,
+    paidAmount,
+    unpaidViews: Math.max(creditedViews - paidViews, 0),
+    unpaidAmount: Math.max(earnings - paidAmount, 0),
+    users
+  };
+}
+
+function buildCrowderHistoricalReconciliationDryRun(data, options = {}) {
+  const config = CROWDER_HISTORICAL_RECONCILIATION;
+  const mismatches = [];
+  const cycles = {};
+  const closeEnough = (actual, expected) => Math.abs(Number(actual) - Number(expected)) <= 1e-9;
+  for (const [cycleName, cycle] of Object.entries(config.cycles)) {
+    const summary = summarizeCrowderHistoricalCycle(data, cycle);
+    cycles[cycleName] = summary;
+    if (summary.submissionCount !== cycle.expectedSubmissionCount) mismatches.push(`${cycleName}_submission_count:${summary.submissionCount}`);
+    for (const [status, expected] of Object.entries(cycle.expectedStatuses)) {
+      if ((summary.statuses[status] || 0) !== expected) mismatches.push(`${cycleName}_status_${status}:${summary.statuses[status] || 0}`);
+    }
+    for (const [field, expected] of [
+      ['creditedViews', cycle.expectedCreditedViews], ['earnings', cycle.expectedEarnings],
+      ['paidViews', cycle.expectedPaidViews], ['paidAmount', cycle.expectedPaidAmount],
+      ['unpaidViews', cycle.expectedUnpaidViews], ['unpaidAmount', cycle.expectedUnpaidAmount]
+    ]) if (!closeEnough(summary[field], expected)) mismatches.push(`${cycleName}_${field}:${summary[field]}`);
+    for (const [userId, expected] of Object.entries(cycle.users)) {
+      const user = summary.users[userId] || { creditedViews: 0, paidViews: 0, paidAmount: 0 };
+      for (const field of ['creditedViews', 'paidViews', 'paidAmount']) {
+        if (!closeEnough(user[field], expected[field])) mismatches.push(`${cycleName}_${userId}_${field}:${user[field]}`);
+      }
+    }
+    for (const window of cycle.windows) {
+      const start = Date.parse(window.startAt);
+      const end = Date.parse(window.endAt);
+      const creditedViews = summary.records.reduce((sum, clip) => {
+        const submittedAt = getClipSubmissionTimestamp(clip);
+        return clip.status === 'approved' && submittedAt >= start && submittedAt < end
+          ? sum + Math.max(Number(clip.campaignCreditedViews) || 0, 0)
+          : sum;
+      }, 0);
+      if (creditedViews !== window.creditedViews) mismatches.push(`${cycleName}_window_${window.startAt}:${creditedViews}`);
+    }
+  }
+  const carry = {};
+  const allCarryUsers = new Set([
+    ...Object.keys(config.cycles.cycleA.users),
+    ...Object.keys(config.cycles.cycleB.users),
+    ...Object.keys(config.finalCarry)
+  ]);
+  for (const userId of allCarryUsers) {
+    const cycleA = cycles.cycleA.users[userId] || { creditedViews: 0, paidViews: 0, paidAmount: 0 };
+    const cycleB = cycles.cycleB.users[userId] || { creditedViews: 0, paidViews: 0, paidAmount: 0 };
+    const cycleAUnpaidViews = Math.max(cycleA.creditedViews - cycleA.paidViews, 0);
+    const cycleAUnpaidAmount = Math.max(cycleA.creditedViews / 1_000_000 * config.ratePerMillion - cycleA.paidAmount, 0);
+    const cycleACarryViews = cycleAUnpaidViews > 0 && cycleAUnpaidViews < config.historicalPayoutThresholdViews ? cycleAUnpaidViews : 0;
+    const cycleACarryAmount = cycleACarryViews > 0 ? cycleAUnpaidAmount : 0;
+    const cycleBCarryViews = cycleB.creditedViews;
+    const cycleBCarryAmount = cycleB.creditedViews / 1_000_000 * config.ratePerMillion;
+    const finalViews = cycleACarryViews + cycleBCarryViews;
+    const finalAmount = cycleACarryAmount + cycleBCarryAmount;
+    carry[userId] = { cycleACarryViews, cycleACarryAmount, cycleBCarryViews, cycleBCarryAmount, views: finalViews, amount: finalAmount };
+    const expected = config.finalCarry[userId];
+    if (expected && (!closeEnough(finalViews, expected.views) || !closeEnough(finalAmount, expected.amount))) {
+      mismatches.push(`carry_${userId}:${finalViews}/${finalAmount}`);
+    }
+    if (!expected && (finalViews > 0 || finalAmount > 0)) mismatches.push(`unexpected_carry_${userId}:${finalViews}/${finalAmount}`);
+  }
+  const carryViews = Object.values(carry).reduce((sum, item) => sum + item.views, 0);
+  const carryAmount = Object.values(carry).reduce((sum, item) => sum + item.amount, 0);
+  if (carryViews !== config.expectedCarryViews) mismatches.push(`carry_views:${carryViews}`);
+  if (!closeEnough(carryAmount, config.expectedCarryAmount)) mismatches.push(`carry_amount:${carryAmount}`);
+
+  const currentStart = Date.parse(config.currentCycleStartAt);
+  const currentEnd = Date.parse(config.currentCycleEndAt);
+  const postApprovalRejected = [...Object.values(data?.clips || {}), ...Object.values(data?.clipReviews || {})]
+    .filter(clip => {
+      const submittedAt = getClipSubmissionTimestamp(clip);
+      return String(clip?.campaignId) === config.campaignId && clip.status === 'rejected' &&
+        clip.rejectionStage === 'post_approval' && submittedAt >= currentStart && submittedAt < currentEnd;
+    });
+  const postApprovalRejectedPaidViews = postApprovalRejected.reduce((sum, clip) => sum + Math.max(Number(clip.payout?.paidViews) || 0, 0), 0);
+  const postApprovalRejectedPaidAmount = postApprovalRejected.reduce((sum, clip) => sum + Math.max(Number(clip.payout?.paidMoney) || 0, 0), 0);
+  if (postApprovalRejectedPaidViews !== config.expectedPostApprovalRejectedPaidViews) mismatches.push(`post_rejected_paid_views:${postApprovalRejectedPaidViews}`);
+  if (!closeEnough(postApprovalRejectedPaidAmount, config.expectedPostApprovalRejectedPaidAmount)) mismatches.push(`post_rejected_paid_amount:${postApprovalRejectedPaidAmount}`);
+  return {
+    valid: mismatches.length === 0,
+    mismatches,
+    cycleA: { ...cycles.cycleA, records: undefined },
+    cycleB: { ...cycles.cycleB, records: undefined },
+    carry,
+    carryViews,
+    carryAmount,
+    postApprovalRejectedPaidViews,
+    postApprovalRejectedPaidAmount,
+    currentInvariant: getCrowderCurrentAccountingInvariant(data, options.now ?? Date.now())
+  };
+}
+
+function buildCanonicalCrowderHistoricalPaymentHistory(records, userId, cycle) {
+  return records
+    .filter(clip => String(clip.userId) === String(userId) && clip.status === 'approved' &&
+      (Number(clip.payout?.paidViews) > 0 || Number(clip.payout?.paidMoney) > 0))
+    .map(clip => {
+      const rawDates = (clip.payout?.history || []).map(item => Date.parse(item?.date || item?.paidAt || '')).filter(Number.isFinite);
+      const paidAt = Number(clip.payout?.lastPaidAt) || (rawDates.length ? Math.max(...rawDates) : Date.parse(cycle.cycleEndAt));
+      return {
+        paymentId: `CROWDER-HIST-${crypto.createHash('sha256').update(`${cycle.earningRunKey}:${clip.id}`).digest('hex').slice(0, 12)}`,
+        date: new Date(paidAt).toISOString(),
+        paidAt,
+        campaignId: CROWDER_HISTORICAL_RECONCILIATION.campaignId,
+        campaignName: CAMPAIGNS.crowder.name,
+        earningRunKey: cycle.earningRunKey,
+        cycleStartAt: cycle.cycleStartAt,
+        cycleEndAt: cycle.cycleEndAt,
+        ratePerMillion: CROWDER_HISTORICAL_RECONCILIATION.ratePerMillion,
+        status: 'paid',
+        views: Math.max(Number(clip.payout?.paidViews) || 0, 0),
+        amount: Math.max(Number(clip.payout?.paidMoney) || 0, 0),
+        paymentSource: 'canonical_clip_paid_totals',
+        sourceClipId: clip.id,
+        duplicateRawHistoryIgnored: Math.max((clip.payout?.history || []).length - 1, 0)
+      };
+    });
+}
+
+function makeCrowderCarryBalance(userId, sourceCycle, views, amount, carriedAt) {
+  return {
+    sourceCampaignId: 'crowder',
+    sourceEarningRunKey: sourceCycle.earningRunKey,
+    sourceCycleStartAt: sourceCycle.cycleStartAt,
+    sourceCycleEndAt: sourceCycle.cycleEndAt,
+    views,
+    amount,
+    paidViews: 0,
+    paidAmount: 0,
+    status: 'unpaid',
+    carriedAt,
+    userId
+  };
+}
+
+function applyCrowderHistoricalReconciliation(data, options = {}) {
+  const config = CROWDER_HISTORICAL_RECONCILIATION;
+  data.storageMigrations ||= {};
+  if (data.storageMigrations[config.migrationName]) return { changed: false, ...data.storageMigrations[config.migrationName] };
+  const reconciledAt = Number(options.now ?? Date.now());
+  const dryRun = buildCrowderHistoricalReconciliationDryRun(data, { now: reconciledAt });
+  if (!dryRun.valid) throw new Error(`Crowder historical reconciliation aborted: ${dryRun.mismatches.join(', ')}`);
+  const beforeInvariant = dryRun.currentInvariant;
+  const cycleA = config.cycles.cycleA;
+  const cycleB = config.cycles.cycleB;
+  const cycleARecords = getCrowderHistoricalCycleRecords(data, cycleA);
+  const cycleBRecords = getCrowderHistoricalCycleRecords(data, cycleB);
+  data.campaignPayoutReconciliations ||= {};
+  const createLedger = (cycle, summary, users) => {
+    const ledger = data.campaignPayoutReconciliations[cycle.earningRunKey] = {
+      campaignId: config.campaignId,
+      earningRunKey: cycle.earningRunKey,
+      cycleStartAt: cycle.cycleStartAt,
+      cycleEndAt: cycle.cycleEndAt,
+      reconciliationStatus: 'recovered',
+      reconciliationMethod: 'approved_historical_credit_direct_no_cap',
+      reconciliationReason: 'Authoritative Crowder cycle boundaries confirmed; every historical weekly pool remained below the 7M cap.',
+      reconciliationRawPool: summary.creditedViews,
+      reconciliationCap: 7_000_000,
+      reconciledAt,
+      users: {}
+    };
+    for (const userId of users) {
+      const row = summary.users[userId] || { creditedViews: 0 };
+      ledger.users[userId] = {
+        userId,
+        totalCreditedViews: row.creditedViews || 0,
+        earnings: (row.creditedViews || 0) / 1_000_000 * config.ratePerMillion
+      };
+    }
+    return ledger;
+  };
+  const allCarryUsers = Object.keys(config.finalCarry);
+  createLedger(cycleA, dryRun.cycleA, Object.keys(cycleA.users));
+  createLedger(cycleB, dryRun.cycleB, [...new Set([...Object.keys(cycleB.users), ...allCarryUsers])]);
+  for (const clip of cycleARecords) {
+    clip.earningRunKey = cycleA.earningRunKey;
+    clip.historicalReconciliationKey = cycleA.earningRunKey;
+  }
+  for (const clip of cycleBRecords) {
+    clip.earningRunKey = cycleB.earningRunKey;
+    clip.historicalReconciliationKey = cycleB.earningRunKey;
+  }
+  data.payoutTrackers ||= {};
+  const cycleATrackerIds = [];
+  const cycleBTrackerIds = [];
+  const currentCarryTrackerIds = [];
+  const reusedHistoricalMessageIds = [];
+  const currentCycle = getCampaignPayoutCycle(CAMPAIGNS.crowder, { earningRunKey: config.currentEarningRunKey });
+
+  for (const [userId, expected] of Object.entries(cycleA.users)) {
+    const trackerId = getPayoutTrackerId(config.campaignId, userId, cycleA.earningRunKey, cycleA.cycleStartAt, cycleA.cycleEndAt);
+    if (expected.messageId) {
+      for (const other of Object.values(data.payoutTrackers)) {
+        if (other?.id !== trackerId && String(other?.messageId || '') === String(expected.messageId)) {
+          other.messageId = null;
+          other.channelId = null;
+          other.historicalMessageReassignedToTrackerId = trackerId;
+        }
+      }
+      reusedHistoricalMessageIds.push(expected.messageId);
+    }
+    const paymentHistory = buildCanonicalCrowderHistoricalPaymentHistory(cycleARecords, userId, cycleA);
+    const carry = dryRun.carry[userId];
+    const tracker = data.payoutTrackers[trackerId] = {
+      ...(data.payoutTrackers[trackerId] || {}),
+      id: trackerId, campaignId: config.campaignId, userId,
+      earningRunKey: cycleA.earningRunKey, cycleStartAt: cycleA.cycleStartAt, cycleEndAt: cycleA.cycleEndAt,
+      cycleType: 'earning_run', channelId: expected.messageId ? config.payoutChannelId : null,
+      messageId: expected.messageId || null, requiresHistoricalMessageVerification: Boolean(expected.messageId),
+      reconciliationStatus: 'recovered', reconciliationMethod: 'approved_historical_credit_direct_no_cap',
+      reconciliationRawPool: cycleA.expectedCreditedViews, reconciliationCap: 7_000_000,
+      historicalPayoutThresholdViews: config.historicalPayoutThresholdViews,
+      paymentHistory,
+      carriedForwardViews: carry?.cycleACarryViews || 0,
+      carriedForwardAmount: carry?.cycleACarryAmount || 0,
+      carriedForwardTotalViews: carry?.cycleACarryViews || 0,
+      carriedForwardTotalAmount: carry?.cycleACarryAmount || 0,
+      carryForwardEarningRunKey: carry?.cycleACarryViews ? cycleB.earningRunKey : null,
+      carryOutBalances: carry?.cycleACarryViews ? [makeCrowderCarryBalance(userId, cycleA, carry.cycleACarryViews, carry.cycleACarryAmount, reconciledAt)] : [],
+      cycleStatus: 'closed', closedAt: Date.parse(cycleA.cycleEndAt),
+      createdAt: data.payoutTrackers[trackerId]?.createdAt || reconciledAt, updatedAt: reconciledAt
+    };
+    calculateTrackerStats(tracker, { data, now: reconciledAt });
+    cycleATrackerIds.push(trackerId);
+  }
+
+  for (const userId of allCarryUsers) {
+    const carry = dryRun.carry[userId];
+    const trackerId = getPayoutTrackerId(config.campaignId, userId, cycleB.earningRunKey, cycleB.cycleStartAt, cycleB.cycleEndAt);
+    const carryInBalances = [];
+    if (carry.cycleACarryViews) carryInBalances.push(makeCrowderCarryBalance(userId, cycleA, carry.cycleACarryViews, carry.cycleACarryAmount, reconciledAt));
+    const carryOutBalances = [...carryInBalances];
+    if (carry.cycleBCarryViews) carryOutBalances.push(makeCrowderCarryBalance(userId, cycleB, carry.cycleBCarryViews, carry.cycleBCarryAmount, reconciledAt));
+    const tracker = data.payoutTrackers[trackerId] = {
+      ...(data.payoutTrackers[trackerId] || {}),
+      id: trackerId, campaignId: config.campaignId, userId,
+      earningRunKey: cycleB.earningRunKey, cycleStartAt: cycleB.cycleStartAt, cycleEndAt: cycleB.cycleEndAt,
+      cycleType: 'earning_run', channelId: null, messageId: null,
+      reconciliationStatus: 'recovered', reconciliationMethod: 'approved_historical_credit_direct_no_cap',
+      reconciliationRawPool: cycleB.expectedCreditedViews, reconciliationCap: 7_000_000,
+      historicalPayoutThresholdViews: config.historicalPayoutThresholdViews,
+      paymentHistory: [], carryInBalances,
+      carriedForwardViews: carry.cycleBCarryViews,
+      carriedForwardAmount: carry.cycleBCarryAmount,
+      carriedForwardCarryInViews: carry.cycleACarryViews,
+      carriedForwardCarryInAmount: carry.cycleACarryAmount,
+      carriedForwardTotalViews: carry.views,
+      carriedForwardTotalAmount: carry.amount,
+      carryForwardEarningRunKey: config.currentEarningRunKey,
+      carryOutBalances,
+      cycleStatus: 'closed', closedAt: Date.parse(cycleB.cycleEndAt),
+      createdAt: data.payoutTrackers[trackerId]?.createdAt || reconciledAt, updatedAt: reconciledAt
+    };
+    calculateTrackerStats(tracker, { data, now: reconciledAt });
+    cycleBTrackerIds.push(trackerId);
+
+    const current = ensurePayoutTracker(config.campaignId, userId, { data, cycle: currentCycle, force: true });
+    current.carryInBalances ||= [];
+    const sourceBalances = [];
+    if (carry.cycleACarryViews) sourceBalances.push(makeCrowderCarryBalance(userId, cycleA, carry.cycleACarryViews, carry.cycleACarryAmount, reconciledAt));
+    if (carry.cycleBCarryViews) sourceBalances.push(makeCrowderCarryBalance(userId, cycleB, carry.cycleBCarryViews, carry.cycleBCarryAmount, reconciledAt));
+    for (const balance of sourceBalances) {
+      if (!current.carryInBalances.some(item => String(item.sourceEarningRunKey) === String(balance.sourceEarningRunKey))) current.carryInBalances.push(balance);
+    }
+    calculateTrackerStats(current, { data, now: reconciledAt });
+    currentCarryTrackerIds.push(current.id);
+  }
+
+  let legacyTrackersArchived = 0;
+  const mixedLegacyTrackers = [];
+  for (const tracker of Object.values(data.payoutTrackers)) {
+    if (tracker?.campaignId !== config.campaignId || tracker.earningRunKey) continue;
+    if (config.mixedMessageIds.includes(String(tracker.messageId || tracker.legacyMessageId || ''))) {
+      tracker.legacyMixedCycle = true;
+      tracker.historicalReconciliationReferences = [cycleA.earningRunKey, cycleB.earningRunKey];
+      mixedLegacyTrackers.push(tracker.id);
+      continue;
+    }
+    tracker.legacyCycleUnresolved = false;
+    tracker.legacyArchivedAt ||= reconciledAt;
+    tracker.historicalReconciledAt = reconciledAt;
+    legacyTrackersArchived++;
+  }
+  const afterInvariant = getCrowderCurrentAccountingInvariant(data, reconciledAt);
+  if (JSON.stringify(beforeInvariant) !== JSON.stringify(afterInvariant)) {
+    throw new Error('Crowder historical reconciliation aborted: current campaign accounting changed');
+  }
+  const duplicateRawHistoryEntriesIgnored = cycleATrackerIds.reduce((sum, trackerId) =>
+    sum + (data.payoutTrackers[trackerId].paymentHistory || []).reduce((inner, item) => inner + (item.duplicateRawHistoryIgnored || 0), 0), 0);
+  const report = {
+    completedAt: reconciledAt,
+    status: 'applied',
+    cycleAEarningRunKey: cycleA.earningRunKey,
+    cycleBEarningRunKey: cycleB.earningRunKey,
+    cycleATrackerIds,
+    cycleBTrackerIds,
+    currentCarryTrackerIds,
+    reusedHistoricalMessageIds,
+    mixedMessageIdsLeftUntouched: [...config.mixedMessageIds],
+    legacyTrackersArchived,
+    mixedLegacyTrackers,
+    duplicateRawHistoryEntriesIgnored,
+    cycleATotals: {
+      creditedViews: dryRun.cycleA.creditedViews, earnings: dryRun.cycleA.earnings,
+      paidViews: dryRun.cycleA.paidViews, paidAmount: dryRun.cycleA.paidAmount,
+      unpaidViews: dryRun.cycleA.unpaidViews, unpaidAmount: dryRun.cycleA.unpaidAmount
+    },
+    cycleBTotals: {
+      creditedViews: dryRun.cycleB.creditedViews, earnings: dryRun.cycleB.earnings,
+      paidViews: dryRun.cycleB.paidViews, paidAmount: dryRun.cycleB.paidAmount
+    },
+    carryForwardViews: dryRun.carryViews,
+    carryForwardAmount: dryRun.carryAmount,
+    postApprovalRejectedPaidViews: dryRun.postApprovalRejectedPaidViews,
+    postApprovalRejectedPaidAmount: dryRun.postApprovalRejectedPaidAmount,
+    currentInvariantBefore: beforeInvariant,
+    currentInvariantAfter: afterInvariant,
+    cardSyncTrackerIds: [...cycleATrackerIds, ...cycleBTrackerIds, ...currentCarryTrackerIds]
   };
   data.storageMigrations[config.migrationName] = report;
   return { changed: true, ...report };
@@ -3693,6 +4216,14 @@ function calculateTrackerStats(tracker, options = {}) {
     const carryInAmount = carryBalances.reduce((sum, item) => sum + Math.max(Number(item.amount) || 0, 0), 0);
     const carryInPaidViews = carryBalances.reduce((sum, item) => sum + Math.min(Math.max(Number(item.paidViews) || 0, 0), Math.max(Number(item.views) || 0, 0)), 0);
     const carryInPaidAmount = carryBalances.reduce((sum, item) => sum + Math.min(Math.max(Number(item.paidAmount) || 0, 0), Math.max(Number(item.amount) || 0, 0)), 0);
+    const carriedOutCarryInViews = Math.min(
+        Math.max(Number(tracker.carriedForwardCarryInViews) || 0, 0),
+        Math.max(carryInViews - carryInPaidViews, 0)
+    );
+    const carriedOutCarryInAmount = Math.min(
+        Math.max(Number(tracker.carriedForwardCarryInAmount) || 0, 0),
+        Math.max(carryInAmount - carryInPaidAmount, 0)
+    );
     accounting.unpaidViews = Math.max(accounting.totalViews - accounting.paidViews - carriedOutViews, 0);
     accounting.unpaidMoney = Math.max(accounting.totalMoney - accounting.paidMoney - carriedOutAmount, 0);
     tracker.campaignViewsForCycle = accounting.totalViews;
@@ -3705,8 +4236,8 @@ function calculateTrackerStats(tracker, options = {}) {
     tracker.lifetimeEarnedForCycle = accounting.totalMoney;
     tracker.paidViewsForCycle = accounting.paidViews + carryInPaidViews;
     tracker.paidAmountForCycle = accounting.paidMoney + carryInPaidAmount;
-    tracker.currentUnpaidViews = accounting.unpaidViews + Math.max(carryInViews - carryInPaidViews, 0);
-    tracker.currentUnpaidMoney = accounting.unpaidMoney + Math.max(carryInAmount - carryInPaidAmount, 0);
+    tracker.currentUnpaidViews = accounting.unpaidViews + Math.max(carryInViews - carryInPaidViews - carriedOutCarryInViews, 0);
+    tracker.currentUnpaidMoney = accounting.unpaidMoney + Math.max(carryInAmount - carryInPaidAmount - carriedOutCarryInAmount, 0);
     tracker.lifetimeViews = accounting.totalViews;
     tracker.lifetimeEarned = accounting.totalMoney;
     tracker.lifetimePaid = accounting.paidMoney + carryInPaidAmount;
@@ -3715,18 +4246,24 @@ function calculateTrackerStats(tracker, options = {}) {
     tracker.cycleStatus = Number.isFinite(cycleEnd) && now >= cycleEnd ? 'closed' : 'active';
     tracker.closedAt = tracker.cycleStatus === 'closed' ? (tracker.closedAt || cycleEnd) : null;
     if (tracker.status !== 'issue') {
-        tracker.status = carriedOutViews > 0 && tracker.currentUnpaidViews === 0 ? 'carried_forward' :
+        const payoutThresholdViews = Math.max(Number(tracker.historicalPayoutThresholdViews) || getCampaignPayoutThresholdViews(campaign), 0);
+        tracker.status = (carriedOutViews > 0 || carriedOutCarryInViews > 0) && tracker.currentUnpaidViews === 0 ? 'carried_forward' :
             tracker.currentUnpaidViews === 0 ? 'paid' :
-            tracker.currentUnpaidViews >= getCampaignPayoutThresholdViews(campaign) ? 'ready' : 'waiting';
+            tracker.currentUnpaidViews >= payoutThresholdViews ? 'ready' : 'waiting';
     }
     tracker.updatedAt = now;
     return tracker;
 }
 
 function formatPayoutCycleLabel(tracker) {
-    const format = value => new Intl.DateTimeFormat('en-US', {
-        day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC'
-    }).format(new Date(value));
+    const format = value => {
+        const date = new Date(value);
+        const day = new Intl.DateTimeFormat('en-US', {
+            day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC'
+        }).format(date);
+        if (date.getUTCHours() === 0 && date.getUTCMinutes() === 0) return day;
+        return `${day} ${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')} UTC`;
+    };
     const start = Number.isFinite(Date.parse(tracker?.cycleStartAt || '')) ? format(tracker.cycleStartAt) : null;
     const end = Number.isFinite(Date.parse(tracker?.cycleEndAt || '')) ? format(tracker.cycleEndAt) : null;
     if (start && end) return `${start} → ${end}`;
@@ -3808,11 +4345,14 @@ async function syncPayoutCard(guild, campaignId, userId, options = {}) {
 
     saveData(data);
 
+    const isRecoveredHistoricalCycle = tracker.reconciliationStatus === 'recovered';
     const embed = new EmbedBuilder()
 
         .setColor(0x00AE86)
 
-        .setTitle("💰 Creator Ready For Payment")
+        .setTitle(isRecoveredHistoricalCycle
+            ? `${campaign.id.charAt(0).toUpperCase()}${campaign.id.slice(1)} Payout`
+            : "💰 Creator Ready For Payment")
 
         .setDescription(
 
@@ -3836,21 +4376,28 @@ $${tracker.currentUnpaidMoney.toFixed(2)}
 );
 
     embed.addFields(
-        { name: 'Campaign Earned Views', value: formatNumber(tracker.lifetimeViewsForCycle), inline: true },
-        { name: 'Earned', value: '$' + tracker.lifetimeEarnedForCycle.toFixed(2), inline: true },
+        { name: isRecoveredHistoricalCycle ? 'Cycle Earned Views' : 'Campaign Earned Views', value: formatNumber(tracker.lifetimeViewsForCycle), inline: true },
+        { name: isRecoveredHistoricalCycle ? 'Cycle Earned' : 'Earned', value: '$' + tracker.lifetimeEarnedForCycle.toFixed(2), inline: true },
         { name: 'Paid', value: '$' + tracker.paidAmountForCycle.toFixed(2), inline: true },
         { name: 'Current Unpaid Views', value: formatNumber(tracker.currentUnpaidViews), inline: true },
         { name: 'Current Unpaid Amount', value: '$' + tracker.currentUnpaidMoney.toFixed(2), inline: true },
         { name: 'Status', value: `${statusText}\n${cycleStatusText}`, inline: true }
     );
-    if (tracker.reconciliationStatus === 'reconstructed') {
-        embed.addFields({ name: 'Historical Reconciliation', value: `Reconstructed Historical Cycle\nMethod: \`${tracker.reconciliationMethod}\``, inline: false });
+    if (['reconstructed', 'recovered'].includes(tracker.reconciliationStatus)) {
+        const label = tracker.reconciliationStatus === 'recovered' ? 'Recovered Historical Cycle' : 'Reconstructed Historical Cycle';
+        embed.addFields({ name: 'Historical Reconciliation', value: `${label}\nMethod: \`${tracker.reconciliationMethod}\``, inline: false });
     }
-    if (Number(tracker.carriedForwardViews) > 0) {
-        embed.addFields({ name: 'Carried Forward', value: `${formatNumber(tracker.carriedForwardViews)} views • $${Number(tracker.carriedForwardAmount).toFixed(4)}\nMoved to ${formatPayoutCycleLabel({ cycleStartAt: CAMPAIGNS.elephant.startDate, cycleEndAt: CAMPAIGNS.elephant.endDate })}`, inline: false });
+    const carriedForwardDisplayViews = Math.max(Number(tracker.carriedForwardTotalViews ?? tracker.carriedForwardViews) || 0, 0);
+    const carriedForwardDisplayAmount = Math.max(Number(tracker.carriedForwardTotalAmount ?? tracker.carriedForwardAmount) || 0, 0);
+    if (carriedForwardDisplayViews > 0) {
+        const destination = tracker.carryForwardEarningRunKey
+            ? getCampaignPayoutCycle(campaign, { earningRunKey: tracker.carryForwardEarningRunKey })
+            : null;
+        const destinationText = destination ? `\nMoved to ${formatPayoutCycleLabel(destination)}` : '';
+        embed.addFields({ name: 'Carried Forward', value: `${formatNumber(carriedForwardDisplayViews)} views • $${carriedForwardDisplayAmount.toFixed(4)}${destinationText}`, inline: false });
     }
     if (Number(tracker.carryInViews) > 0) {
-        embed.addFields({ name: 'Previous Cycle Carry-In', value: `${formatNumber(Math.max(tracker.carryInViews - tracker.carryInPaidViews, 0))} unpaid views • $${Math.max(tracker.carryInAmount - tracker.carryInPaidAmount, 0).toFixed(4)}\nPayout liability only — excluded from campaign credit and Fulfilled.`, inline: false });
+        embed.addFields({ name: 'Previous Balance', value: `${formatNumber(Math.max(tracker.carryInViews - tracker.carryInPaidViews, 0))} unpaid views • $${Math.max(tracker.carryInAmount - tracker.carryInPaidAmount, 0).toFixed(4)}\nPayout liability only — excluded from campaign credit and Fulfilled.`, inline: false });
     }
 
     const row = new ActionRowBuilder()
@@ -3907,7 +4454,7 @@ $${tracker.currentUnpaidMoney.toFixed(2)}
             const rendered = JSON.stringify(msg.embeds?.map(item => item.toJSON?.() || item) || []);
             if (client.user?.id && String(msg.author?.id) !== String(client.user.id)) throw new Error(`Historical payout message ${tracker.messageId} is not owned by this bot.`);
             if (String(msg.channelId) !== String(payoutChannelId)) throw new Error(`Historical payout message ${tracker.messageId} is outside the payout channel.`);
-            if (!rendered.includes(String(userId)) || !rendered.toLowerCase().includes('elephant')) throw new Error(`Historical payout message ${tracker.messageId} does not match creator ${userId}.`);
+            if (!rendered.includes(String(userId)) || !rendered.toLowerCase().includes(String(campaign.id).toLowerCase())) throw new Error(`Historical payout message ${tracker.messageId} does not match creator ${userId}.`);
         }
     }
 
@@ -3953,6 +4500,42 @@ async function syncElephantJulyReconciliationCards(guild) {
         } catch (error) {
             results[trackerId] = { status: 'failed', error: error.message, attemptedAt: Date.now() };
             console.error(`[Elephant July Reconciliation] Card sync failed for ${trackerId}:`, error.message);
+        }
+    }
+    const latest = loadData();
+    const latestMigration = latest.storageMigrations?.[migrationName];
+    if (!latestMigration) return results;
+    latestMigration.cardSyncResults = results;
+    if ((latestMigration.cardSyncTrackerIds || []).every(id => results[id]?.status === 'synced')) latestMigration.cardsCompletedAt = Date.now();
+    saveData(latest);
+    return results;
+}
+
+async function syncCrowderHistoricalReconciliationCards(guild) {
+    const migrationName = CROWDER_HISTORICAL_RECONCILIATION.migrationName;
+    const snapshot = loadData();
+    const migration = snapshot.storageMigrations?.[migrationName];
+    if (!migration || migration.status !== 'applied' || migration.cardsCompletedAt) return null;
+    const results = { ...(migration.cardSyncResults || {}) };
+    for (const trackerId of migration.cardSyncTrackerIds || []) {
+        if (results[trackerId]?.status === 'synced') continue;
+        const current = loadData();
+        const tracker = current.payoutTrackers?.[trackerId];
+        if (!tracker) {
+            results[trackerId] = { status: 'failed', error: 'tracker_not_found', attemptedAt: Date.now() };
+            continue;
+        }
+        try {
+            const hadMessage = Boolean(tracker.messageId);
+            const synced = await syncPayoutCard(guild, tracker.campaignId, tracker.userId, { trackerId });
+            results[trackerId] = {
+                status: 'synced', messageId: synced?.message?.id || null,
+                channelId: synced?.message?.channelId || null,
+                reusedExistingMessage: hadMessage, syncedAt: Date.now()
+            };
+        } catch (error) {
+            results[trackerId] = { status: 'failed', error: error.message, attemptedAt: Date.now() };
+            console.error(`[Crowder Historical Reconciliation] Card sync failed for ${trackerId}:`, error.message);
         }
     }
     const latest = loadData();
@@ -5974,7 +6557,6 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
     if (totalViews > campaignAudit.views) console.warn('[Clip Accounting cross-scope anomaly]', { campaignId, userId: targetUserId, myStatsViews: totalViews, campaignStatusViews: campaignAudit.views });
   }
 
-  const viewsNeeded = Math.max(payoutThreshold - unpaidViews, 0);
   const weeklyUserAccounting = campaign.separateEarningLifecycle
     ? getUserCurrentWeekAccounting(data, campaignId, targetUserId)
     : null;
@@ -5993,7 +6575,6 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
     });
   }
 
-  const payoutEligible = payoutThreshold > 0 && unpaidViews >= payoutThreshold;
   const currentPayoutCycle = getCampaignPayoutCycle(campaign);
   const payoutTracker = currentPayoutCycle
     ? data.payoutTrackers?.[getPayoutTrackerId(
@@ -6004,6 +6585,13 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
         currentPayoutCycle.cycleEndAt
       )]
     : null;
+  if (payoutTracker) calculateTrackerStats(payoutTracker, { data });
+  const previousBalanceViews = Math.max((Number(payoutTracker?.carryInViews) || 0) - (Number(payoutTracker?.carryInPaidViews) || 0), 0);
+  const previousBalanceAmount = Math.max((Number(payoutTracker?.carryInAmount) || 0) - (Number(payoutTracker?.carryInPaidAmount) || 0), 0);
+  const totalUnpaidViews = unpaidViews + previousBalanceViews;
+  const totalUnpaidMoney = unpaidMoney + previousBalanceAmount;
+  const viewsNeeded = Math.max(payoutThreshold - totalUnpaidViews, 0);
+  const payoutEligible = payoutThreshold > 0 && totalUnpaidViews >= payoutThreshold;
   const payoutStatus = payoutTracker?.status === 'issue' ? '⚠️ Payment on hold' :
     payoutTracker?.status === 'ready' ? '✅ Ready for payout' :
     payoutTracker?.status === 'pending' ? '⏳ Payment pending' :
@@ -6011,6 +6599,11 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
   const payoutSection = payoutEligible
     ? `<a:Cash1:1504871843419521115> **Payout Status**\n${payoutStatus}\n\n`
     : `<a:Cash1:1504871843419521115> **Payout Target: ${formatPayoutThresholdViews(payoutThreshold)} Views**\nNeed **${formatPayoutThresholdViews(viewsNeeded)}** more unpaid views\n\n`;
+  const carrySection = previousBalanceViews > 0
+    ? `<a:Cash1:1504871843419521115> **Previous Balance**\n${formatNumber(previousBalanceViews)} views • $${previousBalanceAmount.toFixed(4)}\n\n` +
+      `<a:chart1:1504773558415523931> **Current Cycle Earned**\n${formatNumber(totalViews)} views • $${totalMoney.toFixed(2)}\n\n` +
+      `<a:flyin:1506234392920723546> **Total Unpaid**\n${formatNumber(totalUnpaidViews)} views • $${totalUnpaidMoney.toFixed(4)}\n\n`
+    : '';
 
   return new EmbedBuilder()
     .setColor(0x7ED957)
@@ -6036,6 +6629,8 @@ function buildCampaignStatsEmbed(data, userRecord, campaignId, campaignName, use
         minimumFractionDigits: 2,
         maximumFractionDigits: 2
       })}\n\n` +
+
+      carrySection +
 
       payoutSection +
 
@@ -8891,7 +9486,10 @@ client.once(Events.ClientReady, async () => {
       : `Instagram API configuration missing: ${instagramConfig.missing.join(', ')}`);
 
     const guild = client.guilds.cache.first();
-    if (guild) await syncElephantJulyReconciliationCards(guild);
+    if (guild) {
+      await syncElephantJulyReconciliationCards(guild);
+      await syncCrowderHistoricalReconciliationCards(guild);
+    }
 
     autoTrackClipViews();
     setInterval(autoTrackClipViews, CLIP_TRACK_SCHEDULER_MS);
@@ -10399,23 +10997,8 @@ client.on(Events.InteractionCreate, async interaction => {
         const paymentId = createStablePaymentReference(`${payoutId}:${paidAt}`);
 
         payout.paymentHistory ||= [];
-        if (reconstructedAllocation) {
-            const reconciledUnpaidViews = Math.max(Number(payout.currentUnpaidViews) || 0, 0);
-            const reconciledUnpaidAmount = Math.max(Number(payout.currentUnpaidMoney) || 0, 0);
-            if (reconciledUnpaidViews > 0) {
-                paidViews += reconciledUnpaidViews;
-                paidMoney += reconciledUnpaidAmount;
-                payout.paymentHistory.push({
-                    date: new Date(paidAt).toISOString(), paidAt, paymentId, campaignId,
-                    campaignName: campaign.name, payoutTrackerId: payoutId,
-                    earningRunKey: payout.earningRunKey, cycleStartAt: payout.cycleStartAt,
-                    cycleEndAt: payout.cycleEndAt, ratePerMillion: campaign.ratePerMillion,
-                    status: 'paid', views: reconciledUnpaidViews, amount: reconciledUnpaidAmount,
-                    paymentSource: 'reconstructed_cycle_allocation', reconciliationStatus: 'reconstructed'
-                });
-            }
-        }
-        for (const carry of getTrackerCarryBalances(payout)) {
+        const oldestCarryBalances = getOldestFirstTrackerCarryBalances(payout);
+        for (const carry of oldestCarryBalances) {
             const unpaidCarryViews = Math.max((Number(carry.views) || 0) - (Number(carry.paidViews) || 0), 0);
             const unpaidCarryAmount = Math.max((Number(carry.amount) || 0) - (Number(carry.paidAmount) || 0), 0);
             if (unpaidCarryViews <= 0 && unpaidCarryAmount <= 0) continue;
@@ -10432,8 +11015,26 @@ client.on(Events.InteractionCreate, async interaction => {
                 earningRunKey: payout.earningRunKey, cycleStartAt: payout.cycleStartAt,
                 cycleEndAt: payout.cycleEndAt, ratePerMillion: campaign.ratePerMillion,
                 status: 'paid', views: unpaidCarryViews, amount: unpaidCarryAmount,
-                paymentSource: 'carry_in', sourceEarningRunKey: carry.sourceEarningRunKey
+                paymentSource: 'carry_in', sourceEarningRunKey: carry.sourceEarningRunKey,
+                sourceCycleStartAt: carry.sourceCycleStartAt, sourceCycleEndAt: carry.sourceCycleEndAt
             });
+        }
+        if (reconstructedAllocation) {
+            const reconciledUnpaidViews = Math.max(Number(payout.currentUnpaidViews) || 0, 0);
+            const reconciledUnpaidAmount = Math.max(Number(payout.currentUnpaidMoney) || 0, 0);
+            if (reconciledUnpaidViews > 0) {
+                paidViews += reconciledUnpaidViews;
+                paidMoney += reconciledUnpaidAmount;
+                payout.paymentHistory.push({
+                    date: new Date(paidAt).toISOString(), paidAt, paymentId, campaignId,
+                    campaignName: campaign.name, payoutTrackerId: payoutId,
+                    earningRunKey: payout.earningRunKey, cycleStartAt: payout.cycleStartAt,
+                    cycleEndAt: payout.cycleEndAt, ratePerMillion: campaign.ratePerMillion,
+                    status: 'paid', views: reconciledUnpaidViews, amount: reconciledUnpaidAmount,
+                    paymentSource: `${payout.reconciliationStatus || 'reconstructed'}_cycle_allocation`,
+                    reconciliationStatus: payout.reconciliationStatus || 'reconstructed'
+                });
+            }
         }
 
         approvedClips.forEach(clip => {
@@ -15216,6 +15817,7 @@ module.exports.__clipLifecycleTest = {
   applyPostApprovalCreditReversal,
   applyStraightCampaignRefill,
   applyTrackedMetadata,
+  applyCrowderHistoricalReconciliation,
   applyElephantJulyReconciliation,
   assignCampaignJoinRoles,
   autoJoinReturnCampaignAfterGlobalVerification,
@@ -15248,6 +15850,7 @@ module.exports.__clipLifecycleTest = {
   buildGlobalSocialVerificationPrompt,
   buildInstagramVerificationFailureResponse,
   buildInstagramVerificationSuccessEmbed,
+  buildCrowderHistoricalReconciliationDryRun,
   buildElephantJulyReconciliationDryRun,
   buildMissingGlobalAccountResponse,
   buildMissingCampaignDemographicsResponse,
@@ -15293,6 +15896,7 @@ module.exports.__clipLifecycleTest = {
   getStraightCampaignAccounting,
   getPayoutCycleClips,
   getPayoutTrackerId,
+  getOldestFirstTrackerCarryBalances,
   calculateTrackerStats,
   closeExpiredPayoutTrackers,
   formatPayoutCycleLabel,

@@ -9,6 +9,7 @@ const {
   applyPostApprovalCreditReversal,
   applyStraightCampaignRefill,
   applyTrackedMetadata,
+  applyCrowderHistoricalReconciliation,
   applyElephantJulyReconciliation,
   assignCampaignJoinRoles,
   autoJoinReturnCampaignAfterGlobalVerification,
@@ -40,6 +41,7 @@ const {
   buildGlobalSocialVerificationPrompt,
   buildInstagramVerificationFailureResponse,
   buildInstagramVerificationSuccessEmbed,
+  buildCrowderHistoricalReconciliationDryRun,
   buildElephantJulyReconciliationDryRun,
   buildMissingGlobalAccountResponse,
   buildMissingCampaignDemographicsResponse,
@@ -82,6 +84,7 @@ const {
   getStraightCampaignAccounting,
   getPayoutCycleClips,
   getPayoutTrackerId,
+  getOldestFirstTrackerCarryBalances,
   calculateTrackerStats,
   closeExpiredPayoutTrackers,
   getClipAppealHelpLink,
@@ -2735,6 +2738,174 @@ test('authorized Elephant July reconciliation aborts on totals or payable gap ac
   const dryRun = buildElephantJulyReconciliationDryRun(gap);
   assert.equal(dryRun.valid, false);
   assert.match(dryRun.mismatches.join(','), /payable_activity_in_august_3_gap/);
+});
+
+function makeAuthorizedCrowderHistoricalFixture() {
+  const data = { users: {}, clips: {}, clipReviews: {}, payoutTrackers: {}, storageMigrations: {} };
+  let index = 0;
+  const addBatch = ({ userId, status, count, submittedAt, creditedViews = 0, paidViews = 0, paidAmount = 0, duplicateHistory = false }) => {
+    for (let item = 0; item < count; item++) {
+      const id = `crowder_history_${++index}`;
+      const first = item === 0;
+      data.clips[id] = {
+        id, campaignId: 'crowder', userId, status, submittedAt,
+        campaignCreditedViews: first ? creditedViews : 0,
+        publicViews: first ? creditedViews : 0,
+        currentViews: first ? creditedViews : 0,
+        views: first ? creditedViews : 0,
+        payoutEligible: status === 'approved',
+        wasEverApproved: status === 'approved',
+        payout: {
+          paidViews: first ? paidViews : 0,
+          paidMoney: first ? paidAmount : 0,
+          history: first && paidViews > 0 ? [
+            { date: '2026-08-05T00:00:00.000Z', views: paidViews, amount: paidAmount },
+            ...(duplicateHistory ? [{ date: '2026-08-05T01:00:00.000Z', views: paidViews, amount: paidAmount }] : [])
+          ] : []
+        }
+      };
+    }
+  };
+  const cycleA = [
+    ['1189010402533720127', 4, 2, 2, 2_170_780, 169_000, 50.7, true],
+    ['1318322406976127156', 8, 0, 1, 2_516_689, 2_516_631, 754.9893, true],
+    ['1379441616414314679', 2, 3, 1, 16, 0, 0, false],
+    ['1437858346685173763', 7, 1, 0, 14_763, 0, 0, false],
+    ['1446981610657419406', 9, 4, 12, 7_004, 0, 0, false],
+    ['1468222318198259864', 2, 0, 0, 547_664, 25_500, 7.65, true],
+    ['1469031652352327873', 4, 0, 0, 826, 0, 0, false],
+    ['1480294670499320023', 22, 0, 1, 8_476, 0, 0, false],
+    ['1495891626223079536', 1, 0, 0, 138, 0, 0, false],
+    ['1518535459720925268', 0, 1, 0, 0, 0, 0, false],
+    ['1522218555356086313', 1, 5, 4, 99, 0, 0, false]
+  ];
+  for (const [userId, approved, rejected, pending, views, paidViews, paidAmount, duplicateHistory] of cycleA) {
+    if (approved) addBatch({ userId, status: 'approved', count: approved, submittedAt: '2026-07-15T00:00:00.000Z', creditedViews: views, paidViews, paidAmount, duplicateHistory });
+    if (rejected) addBatch({ userId, status: 'rejected', count: rejected, submittedAt: '2026-07-15T00:00:00.000Z' });
+    if (pending) addBatch({ userId, status: 'pending', count: pending, submittedAt: '2026-07-15T00:00:00.000Z' });
+  }
+  // Move 99,070 of the approved cohort into the Jul 6 window and 77,548 into the Jul 20 window.
+  const approvedCycleA = Object.values(data.clips).filter(clip => clip.status === 'approved');
+  approvedCycleA[0].submittedAt = '2026-07-10T00:00:00.000Z';
+  approvedCycleA[0].campaignCreditedViews = approvedCycleA[0].publicViews = approvedCycleA[0].currentViews = approvedCycleA[0].views = 99_070;
+  approvedCycleA[1].campaignCreditedViews = approvedCycleA[1].publicViews = approvedCycleA[1].currentViews = approvedCycleA[1].views = 1_994_162;
+  approvedCycleA[1].payout = approvedCycleA[0].payout;
+  approvedCycleA[0].payout = { paidViews: 0, paidMoney: 0, history: [] };
+  approvedCycleA[2].submittedAt = '2026-07-22T00:00:00.000Z';
+  approvedCycleA[2].campaignCreditedViews = approvedCycleA[2].publicViews = approvedCycleA[2].currentViews = approvedCycleA[2].views = 77_548;
+
+  const cycleB = [
+    ['1379441616414314679', 1, 0, 2],
+    ['1437858346685173763', 11, 0, 5_486],
+    ['1446981610657419406', 10, 1, 3_689],
+    ['1469031652352327873', 4, 0, 18_250],
+    ['1480294670499320023', 19, 1, 23_001],
+    ['1516030505710129312', 3, 0, 151]
+  ];
+  for (const [userId, approved, pending, views] of cycleB) {
+    addBatch({ userId, status: 'approved', count: approved, submittedAt: '2026-07-28T00:00:00.000Z', creditedViews: views });
+    if (pending) addBatch({ userId, status: 'pending', count: pending, submittedAt: '2026-07-28T00:00:00.000Z' });
+  }
+  const currentKey = 'crowder:2026-08-03T07:00:00.000Z:2026-08-31T07:00:00.000Z';
+  for (const [userId, views] of [
+    ['1189010402533720127', 100], ['1318322406976127156', 100_000],
+    ['1437858346685173763', 1_000], ['1446981610657419406', 1_000],
+    ['1469031652352327873', 1_000], ['1480294670499320023', 1_000],
+    ['1516030505710129312', 1_000]
+  ]) {
+    addBatch({ userId, status: 'approved', count: 1, submittedAt: '2026-08-05T00:00:00.000Z', creditedViews: views });
+    data.clips[`crowder_history_${index}`].earningRunKey = currentKey;
+  }
+  addBatch({ userId: '1189010402533720127', status: 'rejected', count: 1, submittedAt: '2026-08-05T12:00:00.000Z', creditedViews: 122_330_060, paidViews: 70_000, paidAmount: 21, duplicateHistory: true });
+  const rejected = data.clips[`crowder_history_${index}`];
+  rejected.earningRunKey = currentKey;
+  rejected.rejectionStage = 'post_approval';
+  rejected.wasEverApproved = true;
+  const legacyMessages = {
+    '1189010402533720127': 'current-118', '1318322406976127156': 'current-131',
+    '1437858346685173763': 'current-143', '1446981610657419406': 'current-144',
+    '1469031652352327873': 'current-146', '1480294670499320023': 'current-148',
+    '1516030505710129312': 'current-151', '1468222318198259864': '1533876856586244218',
+    '1495891626223079536': '1534540100783050903', '1522218555356086313': '1534540127961874565',
+    '1379441616414314679': '1534540126087020707'
+  };
+  for (const [userId, messageId] of Object.entries(legacyMessages)) data.payoutTrackers[`crowder_${userId}`] = {
+    id: `crowder_${userId}`, campaignId: 'crowder', userId, channelId: 'crowder-payouts', messageId,
+    status: 'waiting', createdAt: 1
+  };
+  return data;
+}
+
+test('authorized Crowder reconciliation applies exact cycles, canonical payments, and attributed carry', () => {
+  const data = makeAuthorizedCrowderHistoricalFixture();
+  const dryRun = buildCrowderHistoricalReconciliationDryRun(data, { now: Date.parse('2026-08-09T00:00:00Z') });
+  assert.equal(dryRun.valid, true, dryRun.mismatches.join(', '));
+  assert.equal(dryRun.cycleA.creditedViews, 5_266_455);
+  assert.equal(dryRun.cycleA.paidViews, 2_711_131);
+  assert.equal(dryRun.cycleA.paidAmount, 813.3393);
+  assert.equal(dryRun.cycleB.creditedViews, 50_579);
+  assert.equal(dryRun.carryViews, 81_959);
+  assert.ok(Math.abs(dryRun.carryAmount - 24.5877) < 1e-9);
+  assert.equal(dryRun.postApprovalRejectedPaidViews, 70_000);
+  assert.equal(dryRun.postApprovalRejectedPaidAmount, 21);
+
+  migratePayoutTrackerCycles(data, { now: Date.parse('2026-08-18T12:00:00Z') });
+  const currentBefore = getCampaignCurrentRunAccounting(data, 'crowder');
+  const weeklyBefore = getCampaignCurrentWeekAccounting(data, 'crowder', new Date('2026-08-09T00:00:00Z'));
+  const applied = applyCrowderHistoricalReconciliation(data, { now: Date.parse('2026-08-18T12:00:00Z') });
+  assert.equal(applied.changed, true);
+  assert.equal(applied.cycleATrackerIds.length, 10);
+  assert.equal(applied.cycleBTrackerIds.length, 9);
+  assert.equal(applied.currentCarryTrackerIds.length, 9);
+  assert.deepEqual(applied.reusedHistoricalMessageIds.sort(), ['1533876856586244218', '1534540100783050903', '1534540127961874565'].sort());
+  assert.deepEqual(applied.mixedMessageIdsLeftUntouched, ['1534540126087020707']);
+  assert.equal(data.payoutTrackers.crowder_1379441616414314679.messageId, '1534540126087020707');
+  assert.equal(applied.duplicateRawHistoryEntriesIgnored, 3);
+
+  const cycleATrackers = applied.cycleATrackerIds.map(id => data.payoutTrackers[id]);
+  assert.equal(cycleATrackers.find(tracker => tracker.userId === '1189010402533720127').status, 'ready');
+  assert.equal(cycleATrackers.find(tracker => tracker.userId === '1468222318198259864').status, 'ready');
+  assert.equal(cycleATrackers.find(tracker => tracker.userId === '1189010402533720127').currentUnpaidViews, 2_001_780);
+  assert.equal(cycleATrackers.find(tracker => tracker.userId === '1468222318198259864').currentUnpaidViews, 522_164);
+  assert.ok(cycleATrackers.filter(tracker => !['1189010402533720127', '1468222318198259864'].includes(tracker.userId)).every(tracker => tracker.status === 'carried_forward'));
+
+  const currentCarry = applied.currentCarryTrackerIds.map(id => data.payoutTrackers[id]);
+  assert.equal(currentCarry.reduce((sum, tracker) => sum + tracker.carryInViews, 0), 81_959);
+  const creator143 = currentCarry.find(tracker => tracker.userId === '1437858346685173763');
+  assert.deepEqual(getOldestFirstTrackerCarryBalances(creator143).map(item => item.sourceEarningRunKey), [
+    'crowder:2026-06-29T00:00:00.000Z:2026-07-27T00:00:00.000Z',
+    'crowder:2026-07-27T00:00:00.000Z:2026-08-03T07:00:00.000Z'
+  ]);
+  assert.equal(creator143.campaignViewsForCycle, 1_000);
+  assert.equal(creator143.currentUnpaidViews, 21_249);
+  assert.equal(creator143.status, 'ready');
+  assert.equal(data.payoutTrackers[creator143.id].messageId, 'current-143');
+  const stats = buildCampaignStatsEmbed(data, {}, 'crowder', CAMPAIGNS.crowder.name, '1437858346685173763').data.description;
+  assert.match(stats, /Previous Balance/);
+  assert.match(stats, /Current Cycle Earned/);
+  assert.match(stats, /Total Unpaid/);
+
+  assert.deepEqual(getCampaignCurrentRunAccounting(data, 'crowder'), currentBefore);
+  const weeklyAfter = getCampaignCurrentWeekAccounting(data, 'crowder', new Date('2026-08-09T00:00:00Z'));
+  assert.equal(weeklyAfter.creditedViews, weeklyBefore.creditedViews);
+  assert.equal(weeklyAfter.capReached, weeklyBefore.capReached);
+  assert.deepEqual(applied.currentInvariantAfter, applied.currentInvariantBefore);
+  const preservedRejected = Object.values(data.clips).find(clip => clip.rejectionStage === 'post_approval');
+  assert.equal(preservedRejected.payout.paidViews, 70_000);
+  assert.equal(preservedRejected.payout.paidMoney, 21);
+
+  const state = structuredClone(data);
+  const second = applyCrowderHistoricalReconciliation(data, { now: Date.parse('2026-08-19T12:00:00Z') });
+  assert.equal(second.changed, false);
+  assert.deepEqual(data, state);
+});
+
+test('Crowder reconciliation aborts before mutation when an authorized total changes', () => {
+  const data = makeAuthorizedCrowderHistoricalFixture();
+  const clip = Object.values(data.clips).find(item => item.campaignId === 'crowder' && item.status === 'approved' && item.submittedAt < '2026-07-27');
+  clip.campaignCreditedViews++;
+  assert.throws(() => applyCrowderHistoricalReconciliation(data), /Crowder historical reconciliation aborted/);
+  assert.equal(data.storageMigrations.crowderHistoricalCycleReconciliationV1, undefined);
 });
 
 test('legacy payout migration transfers a current card only with provable run activity and preserves ambiguous history', () => {
