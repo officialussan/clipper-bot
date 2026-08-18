@@ -85,6 +85,8 @@ const {
   getPayoutCycleClips,
   getPayoutTrackerId,
   getOldestFirstTrackerCarryBalances,
+  settleReconciledTrackerAllocation,
+  settleTrackerCarryBalances,
   calculateTrackerStats,
   closeExpiredPayoutTrackers,
   getClipAppealHelpLink,
@@ -2836,54 +2838,90 @@ function makeAuthorizedCrowderHistoricalFixture() {
   return data;
 }
 
-test('authorized Crowder reconciliation applies exact cycles, canonical payments, and attributed carry', () => {
+test('final Crowder reconciliation merges the historical cycle, resets canonical paid, and carries only sub-threshold balances', () => {
   const data = makeAuthorizedCrowderHistoricalFixture();
-  const dryRun = buildCrowderHistoricalReconciliationDryRun(data, { now: Date.parse('2026-08-09T00:00:00Z') });
+  const dryRun = buildCrowderHistoricalReconciliationDryRun(data, {
+    now: Date.parse('2026-08-09T00:00:00Z'),
+    enforceProductionFingerprint: false
+  });
   assert.equal(dryRun.valid, true, dryRun.mismatches.join(', '));
-  assert.equal(dryRun.cycleA.creditedViews, 5_266_455);
-  assert.equal(dryRun.cycleA.paidViews, 2_711_131);
-  assert.equal(dryRun.cycleA.paidAmount, 813.3393);
-  assert.equal(dryRun.cycleB.creditedViews, 50_579);
-  assert.equal(dryRun.carryViews, 81_959);
-  assert.ok(Math.abs(dryRun.carryAmount - 24.5877) < 1e-9);
-  assert.equal(dryRun.postApprovalRejectedPaidViews, 70_000);
-  assert.equal(dryRun.postApprovalRejectedPaidAmount, 21);
+  assert.equal(dryRun.earningRunKey, 'crowder:2026-06-29T00:00:00.000Z:2026-08-03T07:00:00.000Z');
+  assert.equal(dryRun.historicalCreditedViews, 5_317_034);
+  assert.ok(Math.abs(dryRun.historicalEarnings - 1_595.1102) < 1e-9);
+  assert.equal(dryRun.legacyRecordedPaidViews, 2_711_131);
+  assert.ok(Math.abs(dryRun.legacyRecordedPaidAmount - 813.3393) < 1e-9);
+  assert.equal(dryRun.actualPaidViews, 0);
+  assert.equal(dryRun.actualPaidAmount, 0);
+  assert.equal(dryRun.readyViews, 5_305_935);
+  assert.ok(Math.abs(dryRun.readyAmount - 1_591.7805) < 1e-9);
+  assert.equal(dryRun.carryViews, 11_099);
+  assert.ok(Math.abs(dryRun.carryAmount - 3.3297) < 1e-9);
+  const dryCreators = Object.fromEntries(dryRun.creators.map(row => [row.userId, row]));
+  for (const userId of ['1189010402533720127', '1318322406976127156', '1437858346685173763', '1468222318198259864', '1469031652352327873', '1480294670499320023']) {
+    assert.equal(dryCreators[userId].finalAction, 'ready');
+    assert.equal(dryCreators[userId].carryInViews, 0);
+  }
+  for (const userId of ['1379441616414314679', '1446981610657419406', '1495891626223079536', '1516030505710129312', '1522218555356086313']) {
+    assert.equal(dryCreators[userId].finalAction, 'carry_forward');
+  }
+  assert.equal(dryCreators['1437858346685173763'].cycleEarnedViews, 20_249);
+  assert.equal(dryCreators['1437858346685173763'].cycleEarnedAmount, 6.0747);
+  assert.equal(dryCreators['1469031652352327873'].cycleEarnedViews, 19_076);
+  assert.equal(dryCreators['1480294670499320023'].cycleEarnedViews, 31_477);
+  assert.equal(dryCreators['1446981610657419406'].carryInViews, 10_693);
+  assert.equal(dryCreators['1379441616414314679'].carryInViews, 18);
+  assert.equal(dryCreators['1189010402533720127'].correctedUnpaidViews, 2_170_780);
+  assert.equal(dryCreators['1189010402533720127'].actualPaidViews, 0);
 
   migratePayoutTrackerCycles(data, { now: Date.parse('2026-08-18T12:00:00Z') });
   const currentBefore = getCampaignCurrentRunAccounting(data, 'crowder');
   const weeklyBefore = getCampaignCurrentWeekAccounting(data, 'crowder', new Date('2026-08-09T00:00:00Z'));
-  const applied = applyCrowderHistoricalReconciliation(data, { now: Date.parse('2026-08-18T12:00:00Z') });
+  const applied = applyCrowderHistoricalReconciliation(data, {
+    now: Date.parse('2026-08-18T12:00:00Z'),
+    enforceProductionFingerprint: false
+  });
   assert.equal(applied.changed, true);
-  assert.equal(applied.cycleATrackerIds.length, 10);
-  assert.equal(applied.cycleBTrackerIds.length, 9);
-  assert.equal(applied.currentCarryTrackerIds.length, 9);
-  assert.deepEqual(applied.reusedHistoricalMessageIds.sort(), ['1533876856586244218', '1534540100783050903', '1534540127961874565'].sort());
-  assert.deepEqual(applied.mixedMessageIdsLeftUntouched, ['1534540126087020707']);
-  assert.equal(data.payoutTrackers.crowder_1379441616414314679.messageId, '1534540126087020707');
-  assert.equal(applied.duplicateRawHistoryEntriesIgnored, 3);
+  assert.equal(applied.earningRunKey, 'crowder:2026-06-29T00:00:00.000Z:2026-08-03T07:00:00.000Z');
+  assert.equal(applied.historicalTrackerIds.length, 12);
+  assert.equal(applied.currentCarryTrackerIds.length, 5);
+  assert.deepEqual(applied.reusedHistoricalMessageIds.sort(), [
+    '1533876856586244218', '1534540100783050903',
+    '1534540126087020707', '1534540127961874565'
+  ].sort());
+  assert.equal(applied.legacyTrackersArchived, 11);
 
-  const cycleATrackers = applied.cycleATrackerIds.map(id => data.payoutTrackers[id]);
-  assert.equal(cycleATrackers.find(tracker => tracker.userId === '1189010402533720127').status, 'ready');
-  assert.equal(cycleATrackers.find(tracker => tracker.userId === '1468222318198259864').status, 'ready');
-  assert.equal(cycleATrackers.find(tracker => tracker.userId === '1189010402533720127').currentUnpaidViews, 2_001_780);
-  assert.equal(cycleATrackers.find(tracker => tracker.userId === '1468222318198259864').currentUnpaidViews, 522_164);
-  assert.ok(cycleATrackers.filter(tracker => !['1189010402533720127', '1468222318198259864'].includes(tracker.userId)).every(tracker => tracker.status === 'carried_forward'));
+  const historicalTrackers = applied.historicalTrackerIds.map(id => data.payoutTrackers[id]);
+  const historicalByUser = Object.fromEntries(historicalTrackers.map(tracker => [tracker.userId, tracker]));
+  for (const userId of ['1189010402533720127', '1318322406976127156', '1437858346685173763', '1468222318198259864', '1469031652352327873', '1480294670499320023']) {
+    assert.equal(historicalByUser[userId].status, 'ready');
+    assert.equal(historicalByUser[userId].carriedForwardViews, 0);
+    assert.equal(historicalByUser[userId].actualPaidViews, 0);
+    assert.equal(historicalByUser[userId].paidViewsForCycle, 0);
+  }
+  assert.equal(historicalByUser['1518535459720925268'].status, 'closed_no_payout');
+  assert.equal(historicalByUser['1437858346685173763'].cycleStartAt, '2026-06-29T00:00:00.000Z');
+  assert.equal(historicalByUser['1437858346685173763'].cycleEndAt, '2026-08-03T07:00:00.000Z');
+  assert.equal(historicalByUser['1437858346685173763'].lifetimeViewsForCycle, 20_249);
+  assert.equal(historicalByUser['1437858346685173763'].lifetimeEarnedForCycle, 6.0747);
+  assert.equal(historicalByUser['1437858346685173763'].currentUnpaidViews, 20_249);
+  assert.equal(historicalByUser['1437858346685173763'].currentUnpaidMoney, 6.0747);
+  assert.equal(historicalByUser['1189010402533720127'].legacyRecordedPaidViews, 169_000);
+  assert.equal(historicalByUser['1189010402533720127'].legacyPaymentAudit.settlementCorrectionReason, 'business_confirmed_no_actual_payment_sent');
 
   const currentCarry = applied.currentCarryTrackerIds.map(id => data.payoutTrackers[id]);
-  assert.equal(currentCarry.reduce((sum, tracker) => sum + tracker.carryInViews, 0), 81_959);
-  const creator143 = currentCarry.find(tracker => tracker.userId === '1437858346685173763');
-  assert.deepEqual(getOldestFirstTrackerCarryBalances(creator143).map(item => item.sourceEarningRunKey), [
-    'crowder:2026-06-29T00:00:00.000Z:2026-07-27T00:00:00.000Z',
-    'crowder:2026-07-27T00:00:00.000Z:2026-08-03T07:00:00.000Z'
-  ]);
-  assert.equal(creator143.campaignViewsForCycle, 1_000);
-  assert.equal(creator143.currentUnpaidViews, 21_249);
-  assert.equal(creator143.status, 'ready');
-  assert.equal(data.payoutTrackers[creator143.id].messageId, 'current-143');
-  const stats = buildCampaignStatsEmbed(data, {}, 'crowder', CAMPAIGNS.crowder.name, '1437858346685173763').data.description;
-  assert.match(stats, /Previous Balance/);
-  assert.match(stats, /Current Cycle Earned/);
-  assert.match(stats, /Total Unpaid/);
+  assert.equal(currentCarry.reduce((sum, tracker) => sum + tracker.carryInViews, 0), 11_099);
+  assert.ok(currentCarry.every(tracker => getOldestFirstTrackerCarryBalances(tracker).length === 1));
+  assert.ok(currentCarry.every(tracker => getOldestFirstTrackerCarryBalances(tracker)[0].sourceEarningRunKey === applied.earningRunKey));
+  const creator144 = currentCarry.find(tracker => tracker.userId === '1446981610657419406');
+  assert.equal(creator144.carryInViews, 10_693);
+  assert.equal(creator144.campaignViewsForCycle, 1_000);
+  assert.equal(creator144.currentUnpaidViews, 11_693);
+  const carryStats = buildCampaignStatsEmbed(data, {}, 'crowder', CAMPAIGNS.crowder.name, '1446981610657419406').data.description;
+  assert.match(carryStats, /Previous Balance/);
+  assert.match(carryStats, /Current Cycle Earned/);
+  assert.match(carryStats, /Total Unpaid/);
+  const readyStats = buildCampaignStatsEmbed(data, {}, 'crowder', CAMPAIGNS.crowder.name, '1437858346685173763').data.description;
+  assert.doesNotMatch(readyStats, /Previous Balance/);
 
   assert.deepEqual(getCampaignCurrentRunAccounting(data, 'crowder'), currentBefore);
   const weeklyAfter = getCampaignCurrentWeekAccounting(data, 'crowder', new Date('2026-08-09T00:00:00Z'));
@@ -2893,19 +2931,82 @@ test('authorized Crowder reconciliation applies exact cycles, canonical payments
   const preservedRejected = Object.values(data.clips).find(clip => clip.rejectionStage === 'post_approval');
   assert.equal(preservedRejected.payout.paidViews, 70_000);
   assert.equal(preservedRejected.payout.paidMoney, 21);
+  assert.deepEqual(getUserPaymentReceipts(data, '1189010402533720127'), []);
+
+  const paidHistorical = historicalByUser['1480294670499320023'];
+  const settlement = settleReconciledTrackerAllocation(data, paidHistorical, CAMPAIGNS.crowder, {
+    paidAt: Date.parse('2026-08-20T00:00:00Z'), paymentId: 'REAL-CROWDER-HISTORICAL'
+  });
+  assert.equal(settlement.earningRunKey, applied.earningRunKey);
+  assert.equal(settlement.paidViews, 31_477);
+  assert.equal(settlement.paidMoney, 9.4431);
+  calculateTrackerStats(paidHistorical, { data, now: Date.parse('2026-08-20T00:00:01Z') });
+  assert.equal(paidHistorical.actualPaidViews, 31_477);
+  assert.equal(paidHistorical.actualPaidAmount, 9.4431);
+  assert.equal(paidHistorical.currentUnpaidViews, 0);
+  assert.equal(paidHistorical.status, 'paid');
+  assert.equal(paidHistorical.paymentHistory.at(-1).earningRunKey, applied.earningRunKey);
+  const realReceipts = getUserPaymentReceipts(data, '1480294670499320023');
+  assert.equal(realReceipts.length, 1);
+  assert.equal(realReceipts[0].paymentId, 'REAL-CROWDER-HISTORICAL');
+
+  const carrySettlement = settleTrackerCarryBalances(creator144, CAMPAIGNS.crowder, {
+    paidAt: Date.parse('2026-08-21T00:00:00Z'), paymentId: 'REAL-CROWDER-CARRY'
+  });
+  assert.equal(carrySettlement.paidViews, 10_693);
+  assert.equal(creator144.paymentHistory.at(-1).sourceEarningRunKey, applied.earningRunKey);
 
   const state = structuredClone(data);
-  const second = applyCrowderHistoricalReconciliation(data, { now: Date.parse('2026-08-19T12:00:00Z') });
+  const second = applyCrowderHistoricalReconciliation(data, {
+    now: Date.parse('2026-08-22T12:00:00Z'),
+    enforceProductionFingerprint: false
+  });
   assert.equal(second.changed, false);
   assert.deepEqual(data, state);
 });
 
-test('Crowder reconciliation aborts before mutation when an authorized total changes', () => {
+test('final Crowder reconciliation aborts transactionally when an authorized total changes', () => {
   const data = makeAuthorizedCrowderHistoricalFixture();
   const clip = Object.values(data.clips).find(item => item.campaignId === 'crowder' && item.status === 'approved' && item.submittedAt < '2026-07-27');
   clip.campaignCreditedViews++;
-  assert.throws(() => applyCrowderHistoricalReconciliation(data), /Crowder historical reconciliation aborted/);
-  assert.equal(data.storageMigrations.crowderHistoricalCycleReconciliationV1, undefined);
+  const before = structuredClone(data);
+  assert.throws(() => applyCrowderHistoricalReconciliation(data, { enforceProductionFingerprint: false }), /Crowder historical reconciliation aborted/);
+  assert.deepEqual(data, before);
+  assert.equal(data.storageMigrations.crowderHistoricalCycleReconciliationV2, undefined);
+});
+
+test('final Crowder reconciliation supersedes partial-cycle trackers and removes their incorrect current carry', () => {
+  const data = makeAuthorizedCrowderHistoricalFixture();
+  const now = Date.parse('2026-08-18T12:00:00Z');
+  migratePayoutTrackerCycles(data, { now });
+  const userId = '1437858346685173763';
+  const oldA = getCampaignPayoutCycle(CAMPAIGNS.crowder, {
+    earningRunKey: 'crowder:2026-06-29T00:00:00.000Z:2026-07-27T00:00:00.000Z'
+  });
+  const oldB = getCampaignPayoutCycle(CAMPAIGNS.crowder, {
+    earningRunKey: 'crowder:2026-07-27T00:00:00.000Z:2026-08-03T07:00:00.000Z'
+  });
+  const oldAId = getPayoutTrackerId('crowder', userId, oldA.earningRunKey, oldA.cycleStartAt, oldA.cycleEndAt);
+  const oldBId = getPayoutTrackerId('crowder', userId, oldB.earningRunKey, oldB.cycleStartAt, oldB.cycleEndAt);
+  data.payoutTrackers[oldAId] = { id: oldAId, campaignId: 'crowder', userId, ...oldA, messageId: 'old-a-card', channelId: 'crowder-payouts' };
+  data.payoutTrackers[oldBId] = { id: oldBId, campaignId: 'crowder', userId, ...oldB, messageId: 'old-b-card', channelId: 'crowder-payouts' };
+  const current = Object.values(data.payoutTrackers).find(tracker => tracker.userId === userId && tracker.earningRunKey === 'crowder:2026-08-03T07:00:00.000Z:2026-08-31T07:00:00.000Z');
+  current.carryInBalances = [
+    { sourceEarningRunKey: oldA.earningRunKey, sourceCycleStartAt: oldA.cycleStartAt, views: 14_763, amount: 4.4289 },
+    { sourceEarningRunKey: oldB.earningRunKey, sourceCycleStartAt: oldB.cycleStartAt, views: 5_486, amount: 1.6458 }
+  ];
+  data.storageMigrations.crowderHistoricalCycleReconciliationV1 = { status: 'applied' };
+
+  const applied = applyCrowderHistoricalReconciliation(data, { now, enforceProductionFingerprint: false });
+  const historical = data.payoutTrackers[applied.historicalTrackerIds.find(id => data.payoutTrackers[id].userId === userId)];
+  const migratedCurrent = Object.values(data.payoutTrackers).find(tracker => tracker.userId === userId && tracker.earningRunKey === 'crowder:2026-08-03T07:00:00.000Z:2026-08-31T07:00:00.000Z');
+  assert.equal(historical.messageId, 'old-a-card');
+  assert.equal(historical.status, 'ready');
+  assert.equal(historical.currentUnpaidViews, 20_249);
+  assert.deepEqual(migratedCurrent.carryInBalances, []);
+  assert.equal(data.payoutTrackers[oldAId].messageId, null);
+  assert.equal(data.payoutTrackers[oldBId].messageId, 'old-b-card');
+  assert.deepEqual(applied.supersededCardSyncTrackerIds, [oldBId]);
 });
 
 test('legacy payout migration transfers a current card only with provable run activity and preserves ambiguous history', () => {
