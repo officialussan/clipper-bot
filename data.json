@@ -11,7 +11,8 @@
         "videosRejected": 0,
         "totalViews": 0,
         "moneyMade": 0
-      }
+      },
+      "socials": []
     },
     "1468222318198259864": {
       "discordId": "1468222318198259864",
@@ -26,7 +27,8 @@
         "moneyMade": 0
       },
       "campaignAccounts": {},
-      "campaignStats": {}
+      "campaignStats": {},
+      "socials": []
     },
     "1450126813815771270": {
       "discordId": "1450126813815771270",
@@ -42,7 +44,8 @@
       },
       "campaignAccounts": {},
       "campaignStats": {},
-      "hideFromLeaderboard": false
+      "hideFromLeaderboard": false,
+      "socials": []
     },
     "1084018437640167444": {
       "discordId": "1084018437640167444",
@@ -57,7 +60,8 @@
         "moneyMade": 0
       },
       "campaignAccounts": {},
-      "campaignStats": {}
+      "campaignStats": {},
+      "socials": []
     },
     "1318324803895165000": {
       "discordId": "1318324803895165000",
@@ -72,7 +76,8 @@
         "moneyMade": 0
       },
       "campaignAccounts": {},
-      "campaignStats": {}
+      "campaignStats": {},
+      "socials": []
     },
     "1318322406976127156": {
       "discordId": "1318322406976127156",
@@ -87,7 +92,8 @@
         "moneyMade": 0
       },
       "campaignAccounts": {},
-      "campaignStats": {}
+      "campaignStats": {},
+      "socials": []
     },
     "1516030505710129312": {
       "discordId": "1516030505710129312",
@@ -101,7 +107,8 @@
         "moneyMade": 0
       },
       "campaigns": [],
-      "campaignAccounts": {}
+      "campaignAccounts": {},
+      "socials": []
     },
     "1522218555356086313": {
       "discordId": "1522218555356086313",
@@ -115,7 +122,8 @@
         "moneyMade": 0
       },
       "campaigns": [],
-      "campaignAccounts": {}
+      "campaignAccounts": {},
+      "socials": []
     }
   },
   "applications": {
@@ -306,5 +314,74 @@
     }
   },
   "campaignStatus": {},
-  "payoutTrackers": {}
+  "payoutTrackers": {},
+  "globalSocialVerificationRequests": {},
+  "demographicsSubmissions": {},
+  "campaignAllocations": {},
+  "clipReviews": {},
+  "storageMigrations": {
+    "clipReviewSplitV1": true,
+    "clipTrackingScheduleV1": true,
+    "rejectionLifecycleV1": true,
+    "submissionBudgetCycleV1": true,
+    "viewCapTrackingLifecycleV1": true,
+    "elephantWeeklyBudgetMonthlyEarningsV1": true,
+    "crowderWeeklyBudgetMonthlyEarningsV1": true,
+    "monthlyEarningRunLifecycleV1": true,
+    "monthlyEarningRunBackfillV2": true,
+    "payoutTrackerCycleIdentityV1": {
+      "completedAt": 1787142029154,
+      "migrated": [],
+      "unresolved": []
+    },
+    "approvalSnapshotInvariantV1": {
+      "completedAt": 1787142029155,
+      "impossibleApprovalSnapshots": 0,
+      "repairedApprovalSnapshots": 0
+    },
+    "publicCurrentViewsInvariantV1": {
+      "completedAt": 1787142029156,
+      "repairedCurrentPublicSnapshots": 0
+    },
+    "augustFirstWeekLegacyWeeklyBackfillV1": {
+      "migrationName": "augustFirstWeekLegacyWeeklyBackfillV1",
+      "campaignId": "elephant",
+      "earningRunKey": "elephant:2026-08-03T07:00:00.000Z:2026-08-31T07:00:00.000Z",
+      "weekKey": "2026-08-03T07:00:00.000Z",
+      "weekStart": "2026-08-03T07:00:00.000Z",
+      "weekEnd": "2026-08-10T07:00:00.000Z",
+      "executedAt": 1787142029156,
+      "allocationMethod": "missing pre-upgrade credit segments first, then stored credit segments; each phase ordered by best available approval/submission/credit timestamps",
+      "exactPerViewCreditOrderAvailable": false,
+      "allocationWarning": "The legacy schema has no per-view credit-event ledger. Allocation uses the best persisted timestamps and preserves all raw campaign, public, and payment history fields.",
+      "status": "skipped_outside_august_week_1",
+      "clips": [],
+      "users": []
+    },
+    "globalSocialAccountsV1": {
+      "completedAt": 1787142029158,
+      "initializedUsers": 8
+    },
+    "accountSpecificDemographicsV1": {
+      "completedAt": 1787142029158,
+      "migrated": 0,
+      "alreadyAccountSpecific": 0,
+      "unresolved": 0,
+      "userLevelRecordsCopied": 0
+    }
+  },
+  "campaignSubmissionPanels": {
+    "elephant": {
+      "guildId": "1413113505565118524",
+      "channelId": "1521567266058272810",
+      "messageId": "1522952585538179083",
+      "updatedAt": 1787488647002
+    },
+    "crowder": {
+      "guildId": "1413113505565118524",
+      "channelId": "1521566099022413844",
+      "messageId": "1521820004029567057",
+      "updatedAt": 1787488685370
+    }
+  }
 }

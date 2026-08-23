@@ -472,7 +472,7 @@ const CAMPAIGNS = {
     monsterCampaignId: "fbFMAJpxpQkZ0Honf7z4",
     status: 'active',
     
-    panelText: `# <a:fire1:1504871649491554487> **Earn Money Posting Clips – Elephant Clipping Campaign**
+    panelText: `# <a:fire1:1504871649491554487> **Earn Money Posting Clips – Republican Clipping Campaign**
 
 Create and post engaging clips and edits that follow the campaign rules to earn
 based on performance.
