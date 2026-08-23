@@ -72,6 +72,7 @@ const {
   getCampaignOperationalState,
   getCampaignPanelFulfilledPercent,
   getCampaignPanelText,
+  getCampaignPanelRefreshSkipReason,
   getCampaignPayoutCycle,
   getCampaignPayoutThresholdViews,
   getCampaignPerClipPayoutLimit,
@@ -108,6 +109,7 @@ const {
   joinCampaignMember,
   repairApprovalSnapshotInvariants,
   repairAugustFirstWeekLegacyWeeklyAccounting,
+  runBackgroundMaintenanceTask,
   migratePayoutTrackerCycles,
   reconcileCampaignFulfillmentAfterCreditChange,
   reconcileRejectedCredits,
@@ -127,6 +129,9 @@ const {
   validateCampaignPublicationDate,
   validateCampaignVideoDuration,
   shouldTrackClip,
+  syncCrowderHistoricalReconciliationCards,
+  syncPayoutCard,
+  updateCampaignPanelMessage,
   updateApprovedClipTracking,
   updateCampaignSubmissionPanelMessage,
   validateAccountSubmission,
@@ -3007,6 +3012,215 @@ test('final Crowder reconciliation supersedes partial-cycle trackers and removes
   assert.equal(data.payoutTrackers[oldAId].messageId, null);
   assert.equal(data.payoutTrackers[oldBId].messageId, 'old-b-card');
   assert.deepEqual(applied.supersededCardSyncTrackerIds, [oldBId]);
+});
+
+function makeCrowderCardSyncFixture() {
+  const userId = '1437858346685173763';
+  const earningRunKey = 'crowder:2026-06-29T00:00:00.000Z:2026-08-03T07:00:00.000Z';
+  const cycleStartAt = '2026-06-29T00:00:00.000Z';
+  const cycleEndAt = '2026-08-03T07:00:00.000Z';
+  const trackerId = getPayoutTrackerId('crowder', userId, earningRunKey, cycleStartAt, cycleEndAt);
+  const supersededKey = 'crowder:2026-07-27T00:00:00.000Z:2026-08-03T07:00:00.000Z';
+  const supersededId = getPayoutTrackerId('crowder', userId, supersededKey, '2026-07-27T00:00:00.000Z', cycleEndAt);
+  const channelId = 'crowder-payouts';
+  const canonicalMessageId = 'canonical-card';
+  const supersededMessageId = 'superseded-card';
+  let persisted = {
+    users: { [userId]: { paymentDetails: { exchange: 'wallet', paymentId: 'creator-wallet' } } },
+    clips: {}, clipReviews: {},
+    campaignStaffChannels: { crowder: { payouts: channelId } },
+    campaignPayoutReconciliations: {
+      [earningRunKey]: {
+        reconciliationStatus: 'recovered',
+        users: { [userId]: { userId, totalCreditedViews: 20_249, earnings: 6.0747 } }
+      }
+    },
+    payoutTrackers: {
+      [trackerId]: {
+        id: trackerId, campaignId: 'crowder', userId, earningRunKey, cycleStartAt, cycleEndAt,
+        channelId, messageId: canonicalMessageId, reconciliationStatus: 'recovered',
+        reconciliationMethod: 'approved_historical_credit_direct_no_cap_merged_payout_cycle',
+        canonicalSettlementModel: 'actual_payment_only', actualPaidViews: 0, actualPaidAmount: 0,
+        historicalPayoutThresholdViews: 17_500, status: 'ready', cycleStatus: 'closed'
+      },
+      [supersededId]: {
+        id: supersededId, campaignId: 'crowder', userId, earningRunKey: supersededKey,
+        cycleStartAt: '2026-07-27T00:00:00.000Z', cycleEndAt,
+        channelId, messageId: supersededMessageId, supersededByEarningRunKey: earningRunKey
+      }
+    },
+    storageMigrations: {
+      crowderHistoricalCycleReconciliationV2: {
+        status: 'applied', cardSyncTrackerIds: [trackerId],
+        supersededCardSyncTrackerIds: [supersededId]
+      }
+    }
+  };
+  let sent = 0;
+  const makeMessage = id => ({
+    id, channelId, channel: { id: channelId }, author: { id: 'bot-user' },
+    embeds: [{ description: `<@${userId}> Crowder payout` }], components: [], editCount: 0,
+    async edit(payload) {
+      this.embeds = payload.embeds || this.embeds;
+      this.components = payload.components || [];
+      this.editCount++;
+      return this;
+    }
+  });
+  const messages = new Map([
+    [canonicalMessageId, makeMessage(canonicalMessageId)],
+    [supersededMessageId, makeMessage(supersededMessageId)]
+  ]);
+  const channel = {
+    id: channelId,
+    messages: {
+      async fetch(id) {
+        if (messages.has(String(id))) return messages.get(String(id));
+        const error = new Error('Unknown Message');
+        error.code = 10008;
+        throw error;
+      }
+    },
+    async send(payload) {
+      sent++;
+      const message = makeMessage(`new-card-${sent}`);
+      message.embeds = payload.embeds;
+      message.components = payload.components;
+      messages.set(message.id, message);
+      return message;
+    }
+  };
+  const guild = {
+    id: 'guild-1',
+    channels: {
+      cache: new Map([[channelId, channel]]),
+      async fetch(id) { return String(id) === channelId ? channel : null; }
+    }
+  };
+  return {
+    trackerId, supersededId, canonicalMessageId, supersededMessageId, guild, messages,
+    loadData: () => structuredClone(persisted),
+    saveData: value => { persisted = structuredClone(value); },
+    getPersisted: () => structuredClone(persisted),
+    getSent: () => sent
+  };
+}
+
+test('Crowder startup card sync has no scope crash and remains idempotent across three restarts', async () => {
+  const fixture = makeCrowderCardSyncFixture();
+  const options = {
+    loadData: fixture.loadData,
+    saveData: fixture.saveData,
+    botUserId: 'bot-user',
+    logger: { info() {}, error(error) { assert.fail(`Unexpected sync error: ${error}`); } }
+  };
+  const financialBefore = fixture.getPersisted().payoutTrackers[fixture.trackerId];
+  const first = await syncCrowderHistoricalReconciliationCards(fixture.guild, options);
+  const second = await syncCrowderHistoricalReconciliationCards(fixture.guild, options);
+  const third = await syncCrowderHistoricalReconciliationCards(fixture.guild, options);
+
+  assert.equal(first.complete, true);
+  assert.equal(first.diagnostics.cardsUpdated, 1);
+  assert.equal(first.diagnostics.cardsNewlyCreated, 0);
+  assert.equal(first.diagnostics.missingMessages, 0);
+  assert.equal(first.diagnostics.duplicateCandidateCards, 0);
+  assert.equal(first.diagnostics.supersededCardsUpdated, 1);
+  assert.equal(second.restartAudit, true);
+  assert.equal(third.restartAudit, true);
+  assert.equal(second.diagnostics.cardsUpdated, 1);
+  assert.equal(third.diagnostics.cardsUpdated, 1);
+  assert.equal(second.diagnostics.cardsNewlyCreated, 0);
+  assert.equal(third.diagnostics.cardsNewlyCreated, 0);
+  assert.equal(second.diagnostics.existingValidDiscordCards, 1);
+  assert.equal(fixture.getSent(), 0);
+  assert.equal(fixture.messages.get(fixture.canonicalMessageId).editCount, 3);
+  assert.equal(fixture.messages.get(fixture.supersededMessageId).editCount, 1);
+  const persisted = fixture.getPersisted();
+  assert.equal(persisted.payoutTrackers[fixture.trackerId].messageId, fixture.canonicalMessageId);
+  assert.equal(persisted.payoutTrackers[fixture.trackerId].channelId, 'crowder-payouts');
+  assert.equal(persisted.payoutTrackers[fixture.trackerId].actualPaidViews, financialBefore.actualPaidViews);
+  assert.equal(persisted.payoutTrackers[fixture.trackerId].actualPaidAmount, financialBefore.actualPaidAmount);
+});
+
+test('Crowder startup replaces only a genuinely missing payout card and reuses the replacement on restart', async () => {
+  const fixture = makeCrowderCardSyncFixture();
+  const state = fixture.getPersisted();
+  state.payoutTrackers[fixture.trackerId].requiresHistoricalMessageVerification = true;
+  state.storageMigrations.crowderHistoricalCycleReconciliationV2.supersededCardSyncTrackerIds = [];
+  fixture.saveData(state);
+  fixture.messages.delete(fixture.canonicalMessageId);
+  const options = {
+    loadData: fixture.loadData,
+    saveData: fixture.saveData,
+    botUserId: 'bot-user',
+    logger: { info() {}, error(error) { assert.fail(`Unexpected sync error: ${error}`); } }
+  };
+
+  const first = await syncCrowderHistoricalReconciliationCards(fixture.guild, options);
+  const replacementId = fixture.getPersisted().payoutTrackers[fixture.trackerId].messageId;
+  const second = await syncCrowderHistoricalReconciliationCards(fixture.guild, options);
+
+  assert.equal(first.diagnostics.cardsNewlyCreated, 1);
+  assert.equal(first.diagnostics.missingMessages, 1);
+  assert.notEqual(replacementId, fixture.canonicalMessageId);
+  assert.equal(second.restartAudit, true);
+  assert.equal(second.diagnostics.cardsNewlyCreated, 0);
+  assert.equal(second.diagnostics.cardsUpdated, 1);
+  assert.equal(fixture.getSent(), 1);
+  assert.equal(fixture.getPersisted().payoutTrackers[fixture.trackerId].messageId, replacementId);
+});
+
+test('background payout maintenance logs Discord update failure and allows later tasks to continue', async () => {
+  const fixture = makeCrowderCardSyncFixture();
+  const state = fixture.getPersisted();
+  state.storageMigrations.crowderHistoricalCycleReconciliationV2.supersededCardSyncTrackerIds = [];
+  fixture.saveData(state);
+  const errors = [];
+  const logger = { info() {}, error(...args) { errors.push(args); } };
+  const syncResult = await runBackgroundMaintenanceTask(
+    'syncCrowderHistoricalReconciliationCards',
+    { campaignId: 'crowder' },
+    () => syncCrowderHistoricalReconciliationCards(fixture.guild, {
+      loadData: fixture.loadData,
+      saveData: fixture.saveData,
+      botUserId: 'bot-user',
+      logger,
+      syncPayoutCard: async () => { throw new Error('Discord message edit failed'); }
+    }),
+    { logger }
+  );
+  let laterTaskRan = false;
+  const later = await runBackgroundMaintenanceTask('nextMaintenanceTask', { campaignId: 'all' }, async () => {
+    laterTaskRan = true;
+  }, { logger });
+  const boundaryFailure = await runBackgroundMaintenanceTask('unexpectedMaintenanceFailure', { campaignId: 'crowder' }, async () => {
+    throw new ReferenceError('simulated programming failure');
+  }, { logger });
+
+  assert.equal(syncResult.ok, true);
+  assert.equal(syncResult.value.complete, false);
+  assert.equal(syncResult.value.diagnostics.failedCards, 1);
+  assert.equal(later.ok, true);
+  assert.equal(laterTaskRan, true);
+  assert.equal(boundaryFailure.ok, false);
+  assert.ok(errors.some(entry => JSON.stringify(entry).includes('Discord message edit failed')));
+  assert.ok(errors.some(entry => JSON.stringify(entry).includes('unexpectedMaintenanceFailure')));
+});
+
+test('ICE panel refresh skips cleanly while launchAt is not configured', async () => {
+  assert.equal(CAMPAIGNS.ice.panelChannelId, '1535996383209988158');
+  assert.equal(CAMPAIGNS.ice.panelMessageId, '1536305479116914739');
+  assert.equal(getCampaignPanelRefreshSkipReason(CAMPAIGNS.ice), 'campaign launchAt is not configured');
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  try {
+    const result = await updateCampaignPanelMessage({}, 'ice');
+    assert.equal(result, false);
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.deepEqual(warnings, ['[ICE Panel Refresh] Skipped — campaign launchAt is not configured.']);
 });
 
 test('legacy payout migration transfers a current card only with provable run activity and preserves ambiguous history', () => {

@@ -571,9 +571,9 @@ Click the button below to start clipping and earning.`
     roleId: process.env.ICE_ROLE_ID,
     entryChannelId: process.env.ICE_ENTRY_CHANNEL_ID,
     launchAt: null,
-    panelChannelId: 1535996383209988158,
-    panelMessageId: 1536305479116914739,
-    rulesChannelId: 1535996676056023152,
+    panelChannelId: '1535996383209988158',
+    panelMessageId: '1536305479116914739',
+    rulesChannelId: '1535996676056023152',
     status: 'pending_launch',
     panelText: `# <a:fire1:1504871649491554487> Earn Money Posting Clips & Edits – ICE
 
@@ -4394,10 +4394,12 @@ function closeExpiredPayoutTrackers(data, now = Date.now()) {
 
 async function syncPayoutCard(guild, campaignId, userId, options = {}) {
 
-    const data = loadData();
+    const load = options.loadData || loadData;
+    const persist = options.saveData || saveData;
+    const data = load();
 
     const campaign = CAMPAIGNS[campaignId];
-    if (!campaign) return;
+    if (!campaign) throw new Error(`Payout card campaign not found: ${campaignId}`);
     
     const user = data.users?.[userId];
 
@@ -4420,11 +4422,14 @@ async function syncPayoutCard(guild, campaignId, userId, options = {}) {
     const payoutChannelId =
         data.campaignStaffChannels?.[campaignId]?.payouts;
 
-    if (!payoutChannelId) return;
+    if (!payoutChannelId) throw new Error(`Payout channel is not configured for ${campaignId}.`);
 
-    const currentChannel = guild.channels.cache.get(payoutChannelId);
+    const currentChannel = guild.channels.cache.get(payoutChannelId) ||
+        await guild.channels.fetch(payoutChannelId).catch(error => {
+            throw new Error(`Payout channel ${payoutChannelId} could not be fetched for ${campaignId}: ${error.message}`);
+        });
 
-    if (!currentChannel) return;
+    if (!currentChannel?.messages) throw new Error(`Payout channel ${payoutChannelId} is unavailable for ${campaignId}.`);
 
     if (!data.payoutTrackers) data.payoutTrackers = {};
     const requestedTracker = options.trackerId ? data.payoutTrackers[options.trackerId] : null;
@@ -4432,11 +4437,8 @@ async function syncPayoutCard(guild, campaignId, userId, options = {}) {
         ? getTrackerCycle(requestedTracker)
         : getCampaignPayoutCycle(campaign, options);
     const tracker = requestedTracker || ensurePayoutTracker(campaignId, userId, { data, cycle });
-    if (!tracker || !cycle) return null;
+    if (!tracker || !cycle) throw new Error(`Payout tracker is unavailable for ${campaignId}/${userId}.`);
     const payoutId = tracker.id;
-    const messageChannel = tracker.channelId
-        ? await guild.channels.fetch(tracker.channelId).catch(() => null)
-        : null;
     calculateTrackerStats(tracker, { data, now: options.now });
     const statusLabels = {
         waiting: '🟡 Waiting for threshold',
@@ -4462,7 +4464,7 @@ async function syncPayoutCard(guild, campaignId, userId, options = {}) {
     tracker.updatedAt = Date.now();
     data.payoutTrackers[payoutId] = tracker;
 
-    saveData(data);
+    persist(data);
 
     const amountDigits = isRecoveredHistoricalCycle ? 4 : 2;
     const paidDisplay = isRecoveredHistoricalCycle && tracker.paidAmountForCycle === 0
@@ -4575,31 +4577,75 @@ $${unpaidDisplay}
     }
 
     let msg = null;
+    let locatorMissing = false;
+    let locatorMissingReason = null;
     if (tracker.messageId) {
-        msg = await messageChannel?.messages.fetch(tracker.messageId).catch(() => null);
+        let messageChannel = null;
+        if (tracker.channelId) {
+            try {
+                messageChannel = guild.channels.cache.get(tracker.channelId) || await guild.channels.fetch(tracker.channelId);
+            } catch (error) {
+                if (![10003, 10008].includes(Number(error?.code))) throw error;
+                locatorMissing = true;
+                locatorMissingReason = `channel:${error.code}`;
+            }
+        } else {
+            locatorMissing = true;
+            locatorMissingReason = 'channel_id_missing';
+        }
+        if (messageChannel?.messages) {
+            try {
+                msg = await messageChannel.messages.fetch(tracker.messageId);
+            } catch (error) {
+                if (Number(error?.code) !== 10008) throw error;
+                locatorMissing = true;
+                locatorMissingReason = `message:${error.code}`;
+            }
+        }
         if (tracker.requiresHistoricalMessageVerification) {
-            if (!msg) throw new Error(`Historical payout message ${tracker.messageId} could not be fetched; replacement not posted.`);
+            const genuinelyMissing = ['channel:10003', 'message:10008'].includes(locatorMissingReason);
+            if (!msg && !genuinelyMissing) {
+                throw new Error(`Historical payout message ${tracker.messageId} could not be verified; replacement not posted.`);
+            }
+        }
+        if (msg) {
             const rendered = JSON.stringify(msg.embeds?.map(item => item.toJSON?.() || item) || []);
-            if (client.user?.id && String(msg.author?.id) !== String(client.user.id)) throw new Error(`Historical payout message ${tracker.messageId} is not owned by this bot.`);
+            const botUserId = options.botUserId || client.user?.id;
+            if (botUserId && String(msg.author?.id) !== String(botUserId)) throw new Error(`Payout message ${tracker.messageId} is not owned by this bot.`);
             if (String(msg.channelId) !== String(payoutChannelId)) throw new Error(`Historical payout message ${tracker.messageId} is outside the payout channel.`);
-            if (!rendered.includes(String(userId)) || !rendered.toLowerCase().includes(String(campaign.id).toLowerCase())) throw new Error(`Historical payout message ${tracker.messageId} does not match creator ${userId}.`);
+            if (!rendered.includes(String(userId)) || !rendered.toLowerCase().includes(String(campaign.id).toLowerCase())) throw new Error(`Payout message ${tracker.messageId} does not match creator ${userId}.`);
         }
     }
 
+    let action;
     if (msg) {
         await msg.edit(payload);
+        action = 'updated';
     } else {
         msg = await currentChannel.send(payload);
+        action = tracker.messageId ? 'replaced_missing' : 'created';
     }
 
-    console.log("✅ Payout card sent");
+    console.log(`[Payout Card Sync] ${action} ${campaignId}/${userId}/${tracker.earningRunKey}`, {
+        channelId: msg.channel?.id || msg.channelId,
+        messageId: msg.id,
+        previousLocatorMissing: locatorMissing,
+        locatorMissingReason
+    });
 
     data.payoutTrackers[payoutId].messageId = msg.id;
-    data.payoutTrackers[payoutId].channelId = msg.channel.id;
+    data.payoutTrackers[payoutId].channelId = msg.channel?.id || msg.channelId;
 
-    saveData(data);
+    persist(data);
 
-    return { tracker: data.payoutTrackers[payoutId], message: msg };
+    return {
+        tracker: data.payoutTrackers[payoutId],
+        message: msg,
+        action,
+        locatorWasValid: action === 'updated',
+        locatorMissing,
+        locatorMissingReason
+    };
 
 }
 
@@ -4609,7 +4655,6 @@ async function syncElephantJulyReconciliationCards(guild) {
     const migration = snapshot.storageMigrations?.[migrationName];
     if (!migration || migration.status !== 'applied' || migration.cardsCompletedAt) return null;
     const results = { ...(migration.cardSyncResults || {}) };
-    const supersededResults = { ...(migration.supersededCardSyncResults || {}) };
     for (const trackerId of migration.cardSyncTrackerIds || []) {
         if (results[trackerId]?.status === 'synced') continue;
         const current = loadData();
@@ -4640,46 +4685,140 @@ async function syncElephantJulyReconciliationCards(guild) {
     return results;
 }
 
-async function syncCrowderHistoricalReconciliationCards(guild) {
+function countPayoutCardDuplicateCandidates(data, campaignId) {
+    const identityOwners = new Map();
+    const messageOwners = new Map();
+    const duplicates = new Set();
+    for (const tracker of Object.values(data?.payoutTrackers || {})) {
+        if (tracker?.campaignId !== campaignId || !tracker.earningRunKey || tracker.supersededByEarningRunKey) continue;
+        const identity = `${tracker.campaignId}:${tracker.userId}:${tracker.earningRunKey}`;
+        if (identityOwners.has(identity)) {
+            duplicates.add(tracker.id);
+            duplicates.add(identityOwners.get(identity));
+        } else identityOwners.set(identity, tracker.id);
+        if (tracker.messageId) {
+            if (messageOwners.has(String(tracker.messageId))) {
+                duplicates.add(tracker.id);
+                duplicates.add(messageOwners.get(String(tracker.messageId)));
+            } else messageOwners.set(String(tracker.messageId), tracker.id);
+        }
+    }
+    return duplicates.size;
+}
+
+async function syncCrowderHistoricalReconciliationCards(guild, options = {}) {
     const migrationName = CROWDER_HISTORICAL_RECONCILIATION.migrationName;
-    const snapshot = loadData();
+    const load = options.loadData || loadData;
+    const persist = options.saveData || saveData;
+    const syncCard = options.syncPayoutCard || syncPayoutCard;
+    const logger = options.logger || console;
+    const snapshot = load();
     const migration = snapshot.storageMigrations?.[migrationName];
-    if (!migration || migration.status !== 'applied' || migration.cardsCompletedAt) return null;
-    const results = { ...(migration.cardSyncResults || {}) };
-    for (const trackerId of migration.cardSyncTrackerIds || []) {
-        if (results[trackerId]?.status === 'synced') continue;
-        const current = loadData();
+    const trackerIds = [...new Set(migration?.cardSyncTrackerIds || [])];
+    const supersededTrackerIds = [...new Set(migration?.supersededCardSyncTrackerIds || [])];
+    const results = { ...(migration?.cardSyncResults || {}) };
+    const supersededResults = { ...(migration?.supersededCardSyncResults || {}) };
+    const restartAudit = Boolean(migration?.cardsCompletedAt);
+    const diagnostics = {
+        campaignId: 'crowder',
+        existingTrackers: trackerIds.filter(id => snapshot.payoutTrackers?.[id]).length,
+        existingValidDiscordCards: 0,
+        validDiscordCardsAfterSync: 0,
+        cardsUpdated: 0,
+        cardsNewlyCreated: 0,
+        missingMessages: 0,
+        duplicateCandidateCards: countPayoutCardDuplicateCandidates(snapshot, 'crowder'),
+        skippedCards: 0,
+        failedCards: 0,
+        supersededCardsUpdated: 0
+    };
+    const countPersistedValidCards = currentData => trackerIds.filter(id => {
+        const tracker = currentData.payoutTrackers?.[id];
+        const result = results[id];
+        return result?.status === 'synced' && tracker?.messageId && tracker?.channelId &&
+            String(result.messageId) === String(tracker.messageId) && String(result.channelId) === String(tracker.channelId);
+    }).length;
+    diagnostics.existingValidDiscordCards = countPersistedValidCards(snapshot);
+    const persistProgress = complete => {
+        const latest = load();
+        const latestMigration = latest.storageMigrations?.[migrationName];
+        if (!latestMigration) return;
+        latestMigration.cardSyncResults = results;
+        latestMigration.supersededCardSyncResults = supersededResults;
+        latestMigration.lastCardSyncDiagnostics = { ...diagnostics, recordedAt: Date.now() };
+        if (complete) latestMigration.cardsCompletedAt ||= Date.now();
+        persist(latest);
+    };
+
+    if (!migration || migration.status !== 'applied') {
+        diagnostics.skippedCards = trackerIds.length;
+        return { skipped: true, reason: 'migration_not_applied', cards: results, supersededCards: supersededResults, diagnostics };
+    }
+    for (const trackerId of trackerIds) {
+        if (results[trackerId]?.status === 'synced' && !restartAudit) {
+            diagnostics.skippedCards++;
+            continue;
+        }
+        const current = load();
         const tracker = current.payoutTrackers?.[trackerId];
         if (!tracker) {
             results[trackerId] = { status: 'failed', error: 'tracker_not_found', attemptedAt: Date.now() };
+            diagnostics.failedCards++;
+            persistProgress(false);
             continue;
         }
         try {
-            const hadMessage = Boolean(tracker.messageId);
-            const synced = await syncPayoutCard(guild, tracker.campaignId, tracker.userId, { trackerId });
+            const synced = await syncCard(guild, tracker.campaignId, tracker.userId, {
+                trackerId,
+                loadData: load,
+                saveData: persist,
+                botUserId: options.botUserId
+            });
+            if (!synced?.message?.id || !(synced?.message?.channelId || synced?.message?.channel?.id)) {
+                throw new Error('Payout card sync completed without a persisted Discord message locator.');
+            }
+            const channelId = synced.message.channelId || synced.message.channel.id;
             results[trackerId] = {
-                status: 'synced', messageId: synced?.message?.id || null,
-                channelId: synced?.message?.channelId || null,
-                reusedExistingMessage: hadMessage, syncedAt: Date.now()
+                status: 'synced', messageId: synced.message.id, channelId,
+                action: synced.action || (tracker.messageId ? 'updated' : 'created'),
+                reusedExistingMessage: synced.action === 'updated', syncedAt: Date.now()
             };
+            if (results[trackerId].action === 'updated') {
+                diagnostics.cardsUpdated++;
+            } else {
+                diagnostics.cardsNewlyCreated++;
+                if (results[trackerId].action === 'replaced_missing') diagnostics.missingMessages++;
+            }
         } catch (error) {
-            results[trackerId] = { status: 'failed', error: error.message, attemptedAt: Date.now() };
-            console.error(`[Crowder Historical Reconciliation] Card sync failed for ${trackerId}:`, error.message);
+            results[trackerId] = { status: 'failed', error: error.message, stack: error.stack, attemptedAt: Date.now() };
+            diagnostics.failedCards++;
+            logger.error?.(`[Crowder Historical Reconciliation] Card sync failed`, {
+                task: 'syncCrowderHistoricalReconciliationCards', campaignId: 'crowder', trackerId,
+                userId: tracker.userId, stack: error.stack || error.message
+            });
         }
+        persistProgress(false);
     }
-    for (const trackerId of migration.supersededCardSyncTrackerIds || []) {
-        if (supersededResults[trackerId]?.status === 'synced') continue;
-        const current = loadData();
+
+    for (const trackerId of supersededTrackerIds) {
+        if (supersededResults[trackerId]?.status === 'synced') {
+            diagnostics.skippedCards++;
+            continue;
+        }
+        const current = load();
         const tracker = current.payoutTrackers?.[trackerId];
         if (!tracker?.messageId || !tracker?.channelId) {
             supersededResults[trackerId] = { status: 'failed', error: 'superseded_message_not_bound', attemptedAt: Date.now() };
+            diagnostics.failedCards++;
+            persistProgress(false);
             continue;
         }
         try {
-            const channel = await guild.channels.fetch(tracker.channelId).catch(() => null);
-            const message = await channel?.messages.fetch(tracker.messageId).catch(() => null);
+            const channel = guild.channels.cache.get(tracker.channelId) || await guild.channels.fetch(tracker.channelId);
+            const message = await channel.messages.fetch(tracker.messageId);
             if (!message) throw new Error(`Superseded payout message ${tracker.messageId} could not be fetched.`);
-            if (client.user?.id && String(message.author?.id) !== String(client.user.id)) {
+            const botUserId = options.botUserId || client.user?.id;
+            if (botUserId && String(message.author?.id) !== String(botUserId)) {
                 throw new Error(`Superseded payout message ${tracker.messageId} is not owned by this bot.`);
             }
             const rendered = JSON.stringify(message.embeds?.map(item => item.toJSON?.() || item) || []);
@@ -4708,22 +4847,24 @@ async function syncCrowderHistoricalReconciliationCards(guild) {
                 status: 'synced', messageId: message.id, channelId: message.channelId,
                 canonicalTrackerId: canonicalId, syncedAt: Date.now()
             };
+            diagnostics.supersededCardsUpdated++;
         } catch (error) {
-            supersededResults[trackerId] = { status: 'failed', error: error.message, attemptedAt: Date.now() };
-            console.error(`[Crowder Historical Reconciliation] Superseded card sync failed for ${trackerId}:`, error.message);
+            supersededResults[trackerId] = { status: 'failed', error: error.message, stack: error.stack, attemptedAt: Date.now() };
+            diagnostics.failedCards++;
+            logger.error?.('[Crowder Historical Reconciliation] Superseded card sync failed', {
+                task: 'syncCrowderHistoricalReconciliationCards', campaignId: 'crowder', trackerId,
+                userId: tracker.userId, stack: error.stack || error.message
+            });
         }
+        persistProgress(false);
     }
-    const latest = loadData();
-    const latestMigration = latest.storageMigrations?.[migrationName];
-    if (!latestMigration) return results;
-    latestMigration.cardSyncResults = results;
-    latestMigration.supersededCardSyncResults = supersededResults;
-    if ((latestMigration.cardSyncTrackerIds || []).every(id => results[id]?.status === 'synced') &&
-        (latestMigration.supersededCardSyncTrackerIds || []).every(id => supersededResults[id]?.status === 'synced')) {
-        latestMigration.cardsCompletedAt = Date.now();
-    }
-    saveData(latest);
-    return { cards: results, supersededCards: supersededResults };
+
+    const complete = trackerIds.every(id => results[id]?.status === 'synced') &&
+        supersededTrackerIds.every(id => supersededResults[id]?.status === 'synced');
+    diagnostics.validDiscordCardsAfterSync = countPersistedValidCards(load());
+    persistProgress(complete);
+    logger.info?.('[Crowder Historical Card Sync] Completed', diagnostics);
+    return { skipped: false, restartAudit, complete, cards: results, supersededCards: supersededResults, diagnostics };
 }
 
 function getCampaignCycle(campaign, date = new Date()) {
@@ -7929,8 +8070,23 @@ Only moderators should use these buttons.`,
 
 }
 
+function getCampaignPanelRefreshSkipReason(campaign) {
+  if (!campaign?.panelChannelId || !campaign?.panelMessageId) return 'panel channel/message not configured';
+  if (isNonMonsterlabCampaign(campaign) &&
+      (campaign.status === 'pending_launch' || !Number.isFinite(Date.parse(campaign.launchAt || '')))) {
+    return 'campaign launchAt is not configured';
+  }
+  return null;
+}
+
 async function updateCampaignPanelMessage(guild, campaignId) {
   const campaign = CAMPAIGNS[campaignId];
+  if (!campaign) return false;
+  const skipReason = getCampaignPanelRefreshSkipReason(campaign);
+  if (skipReason) {
+    console.warn(`[${String(campaign.id || campaignId).toUpperCase()} Panel Refresh] Skipped — ${skipReason}.`);
+    return false;
+  }
 
   try {
     await updateCampaignSubmissionPanelMessage(guild, campaignId);
@@ -8159,10 +8315,14 @@ function scheduleNextWeeklyCampaignPanelRefresh(guildId) {
   const nextRefreshAt = Math.min(...refreshBoundaries);
   if (!Number.isFinite(nextRefreshAt)) return;
   const delay = Math.max(nextRefreshAt - nowMs + 1000, 1000);
-  setTimeout(async () => {
+  setTimeout(() => {
     const guild = client.guilds.cache.get(guildId);
-    if (guild) await refreshAllCampaignPanelMessages(guild);
-    scheduleNextWeeklyCampaignPanelRefresh(guildId);
+    void runBackgroundMaintenanceTask('refreshAllCampaignPanelMessages', {
+      campaignId: 'all', trigger: 'weekly_boundary', guildId
+    }, async () => {
+      if (guild) await refreshAllCampaignPanelMessages(guild);
+      scheduleNextWeeklyCampaignPanelRefresh(guildId);
+    });
   }, delay);
 }
 
@@ -9656,7 +9816,29 @@ async function updateSocialStaffMessage(guild, request) {
   }
 }
 
-client.once(Events.ClientReady, async () => {
+async function runBackgroundMaintenanceTask(task, context, operation, options = {}) {
+  const logger = options.logger || console;
+  try {
+    return { ok: true, value: await operation() };
+  } catch (error) {
+    logger.error?.('[Background Maintenance] Task failed', {
+      task,
+      ...context,
+      stack: error?.stack || String(error)
+    });
+    return { ok: false, error };
+  }
+}
+
+client.on('error', error => {
+  console.error('[Discord Client Error]', {
+    task: 'discord_client',
+    stack: error?.stack || String(error)
+  });
+});
+
+client.once(Events.ClientReady, () => {
+  void runBackgroundMaintenanceTask('client_ready_payout_maintenance', { campaignId: 'all' }, async () => {
     
     console.log(`Online as ${client.user.tag}`);
     const instagramConfig = getInstagramConfigurationStatus();
@@ -9666,15 +9848,22 @@ client.once(Events.ClientReady, async () => {
 
     const guild = client.guilds.cache.first();
     if (guild) {
-      await syncElephantJulyReconciliationCards(guild);
-      await syncCrowderHistoricalReconciliationCards(guild);
+      await runBackgroundMaintenanceTask('syncElephantJulyReconciliationCards', { campaignId: 'elephant' },
+        () => syncElephantJulyReconciliationCards(guild));
+      await runBackgroundMaintenanceTask('syncCrowderHistoricalReconciliationCards', { campaignId: 'crowder' },
+        () => syncCrowderHistoricalReconciliationCards(guild));
     }
 
-    autoTrackClipViews();
-    setInterval(autoTrackClipViews, CLIP_TRACK_SCHEDULER_MS);
+    await runBackgroundMaintenanceTask('autoTrackClipViews', { campaignId: 'all', trigger: 'startup' }, autoTrackClipViews);
+    setInterval(() => {
+      void runBackgroundMaintenanceTask('autoTrackClipViews', { campaignId: 'all', trigger: 'interval' }, autoTrackClipViews);
+    }, CLIP_TRACK_SCHEDULER_MS);
 
-    archiveFinishedCampaigns();
-    setInterval(archiveFinishedCampaigns, 5 * 60 * 1000);
+    await runBackgroundMaintenanceTask('archiveFinishedCampaigns', { campaignId: 'all', trigger: 'startup' }, archiveFinishedCampaigns);
+    setInterval(() => {
+      void runBackgroundMaintenanceTask('archiveFinishedCampaigns', { campaignId: 'all', trigger: 'interval' }, archiveFinishedCampaigns);
+    }, 5 * 60 * 1000);
+  });
 });
 
 client.on('messageCreate', async message => {
@@ -15339,7 +15528,8 @@ if (require.main === module) {
   });
 }
 
-client.once('ready', async () => {
+client.once('ready', () => {
+  void runBackgroundMaintenanceTask('client_ready_server_maintenance', { campaignId: 'all' }, async () => {
     console.log(`🤖 Online and registered as ${client.user.tag}`);
 
     // Fetch target server cleanly via environment key arrays
@@ -15352,20 +15542,25 @@ client.once('ready', async () => {
     const mainGuild = client.guilds.cache.get(targetGuildId);
     if (mainGuild) {
         // Execute initial load
-        await updateServerStats(mainGuild);
-        await refreshAllCampaignPanelMessages(mainGuild);
+        await runBackgroundMaintenanceTask('updateServerStats', { campaignId: 'all', trigger: 'startup', guildId: targetGuildId },
+          () => updateServerStats(mainGuild));
+        await runBackgroundMaintenanceTask('refreshAllCampaignPanelMessages', { campaignId: 'all', trigger: 'startup', guildId: targetGuildId },
+          () => refreshAllCampaignPanelMessages(mainGuild));
         scheduleNextWeeklyCampaignPanelRefresh(targetGuildId);
 
         // Run the timer every 5 minutes passing the cached mainGuild variable layout
-        setInterval(async () => {
+        setInterval(() => {
             const freshGuildRef = client.guilds.cache.get(targetGuildId);
             if (freshGuildRef) {
-                await updateServerStats(freshGuildRef);
+                void runBackgroundMaintenanceTask('updateServerStats', {
+                  campaignId: 'all', trigger: 'interval', guildId: targetGuildId
+                }, () => updateServerStats(freshGuildRef));
             }
         }, 5 * 60 * 1000);
     } else {
         console.error(`❌ Bot could not locate or access server with matching ID: ${targetGuildId}`);
     }
+  });
 });
 
 // ==========================================
@@ -16039,6 +16234,7 @@ module.exports.__clipLifecycleTest = {
   getCampaignOperationalState,
   getCampaignPanelFulfilledPercent,
   getCampaignPanelText,
+  getCampaignPanelRefreshSkipReason,
   getCampaignPayoutCycle,
   getCampaignPayoutThresholdViews,
   getCampaignSubmissionBlockMessage,
@@ -16071,6 +16267,7 @@ module.exports.__clipLifecycleTest = {
   joinCampaignMember,
   repairApprovalSnapshotInvariants,
   repairAugustFirstWeekLegacyWeeklyAccounting,
+  runBackgroundMaintenanceTask,
   migratePayoutTrackerCycles,
   reconcileCampaignFulfillmentAfterCreditChange,
   reconcileRejectedCredits,
@@ -16098,6 +16295,9 @@ module.exports.__clipLifecycleTest = {
   verifyGlobalSocialVerificationRequest,
   shouldTrackClip,
   updateApprovedClipTracking,
+  syncCrowderHistoricalReconciliationCards,
+  syncPayoutCard,
+  updateCampaignPanelMessage,
   updateCampaignSubmissionPanelMessage,
   updatePendingReviewTracking,
   CAMPAIGNS
