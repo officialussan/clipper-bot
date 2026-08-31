@@ -2,7 +2,22 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { ButtonStyle, ComponentType, MessageFlags } = require('discord.js');
 
+// Lifecycle fixtures below model the active Aug 3-Aug 31 earning run. Freeze
+// before loading index.js because campaign cycle configuration is initialized
+// at module load; boundary-specific tests still pass explicit dates.
+const NativeDate = Date;
+const DEFAULT_TEST_NOW = Date.parse('2026-08-09T12:00:00.000Z');
+global.Date = class FixedLifecycleTestDate extends NativeDate {
+  constructor(...args) {
+    super(...(args.length ? args : [DEFAULT_TEST_NOW]));
+  }
+  static now() {
+    return DEFAULT_TEST_NOW;
+  }
+};
+
 const {
+  approveClipReview,
   applyDemographicsApprovalToAccount,
   applyCampaignMembership,
   applyApprovalSnapshotAccounting,
@@ -45,6 +60,7 @@ const {
   buildElephantJulyReconciliationDryRun,
   buildMissingGlobalAccountResponse,
   buildMissingCampaignDemographicsResponse,
+  buildOrphanClipModerationPayload,
   buildPreLaunchSubmissionEmbed,
   buildRejectedClipUserDm,
   buildRejectedClipUserEmbed,
@@ -54,8 +70,10 @@ const {
   CAMPAIGNS,
   clearClipAppealWindow,
   createGlobalSocialVerificationRequest,
+  createClipReviewModerationCard,
   finalizeStraightCampaignIfFulfilled,
   fetchInstagramPublicProfile,
+  findClipRecord,
   findOtherVerifiedClipAccountOwner,
   findAllCampaignSubmissionPanelMessages,
   findCampaignSubmissionPanelMessage,
@@ -125,6 +143,10 @@ const {
   normalizeTypedSocialPlatform,
   normalizeApifyInstagramProfile,
   normalizeVideoDurationSeconds,
+  persistClipReviewBeforeStaffMessage,
+  attachClipReviewStaffMessageLocator,
+  refreshClipApprovalMetadata,
+  runClipApprovalSideEffect,
   userHasEligibleGlobalSocial,
   validateCampaignPublicationDate,
   validateCampaignVideoDuration,
@@ -138,6 +160,17 @@ const {
   validateVideoOwnership,
   verifyGlobalSocialVerificationRequest
 } = require('./index.js').__clipLifecycleTest;
+
+// Historical lifecycle fixtures intentionally exercise the Aug 3-Aug 31 run,
+// independent of whichever live earning period is currently configured.
+Object.assign(CAMPAIGNS.elephant, {
+  startDate: '2026-08-03T07:00:00.000Z',
+  endDate: '2026-08-31T07:00:00.000Z'
+});
+Object.assign(CAMPAIGNS.crowder, {
+  startDate: '2026-08-03T07:00:00.000Z',
+  endDate: '2026-08-31T07:00:00.000Z'
+});
 
 function getComponentsV2ContainerJson(page) {
   return page.components[0].toJSON();
@@ -802,6 +835,314 @@ test('weekly accounting D: Elephant clamps fulfilled money at the 8M weekly cap'
   assert.equal(accounting.creditedMoney, 2400);
   assert.equal(accounting.remainingBudget, 0);
   assert.equal(accounting.capReached, true);
+});
+
+function makeClipApprovalFixture(campaignId, identityOverrides = {}) {
+  const reviewKey = `review-${campaignId}`;
+  const clipId = `approved-${campaignId}`;
+  const userId = `creator-${campaignId}`;
+  const submittedTimestamp = Date.parse('2026-08-07T12:00:00.000Z');
+  const clip = {
+    id: clipId,
+    userId,
+    campaignId,
+    campaignName: CAMPAIGNS[campaignId].name,
+    platform: 'tiktok',
+    username: 'creator',
+    videoId: `video-${campaignId}`,
+    videoUrl: `https://www.tiktok.com/@creator/video/${campaignId}`,
+    status: 'pending',
+    payoutEligible: false,
+    wasEverApproved: false,
+    submittedTimestamp,
+    submittedAt: new Date(submittedTimestamp).toISOString(),
+    createdAt: new Date(submittedTimestamp).toISOString(),
+    publicViews: 1_000,
+    currentViews: 1_000,
+    submissionViews: 1_000,
+    views: 0,
+    campaignCreditedViews: 0,
+    trackingStatus: 'active',
+    budgetTracking: CAMPAIGNS[campaignId].separateEarningLifecycle ? {
+      budgetCycleKey: 'test-week', baselinePublicViews: 1_000, lastPublicViews: 1_000,
+      creditedViewsThisCycle: 0, initializedAt: submittedTimestamp
+    } : undefined,
+    straightTracking: isStraightCampaign(CAMPAIGNS[campaignId]) ? {
+      baselinePublicViews: 1_000, lastPublicViews: 1_000, creditedViews: 0,
+      baselinePending: false, initializedAt: submittedTimestamp
+    } : undefined,
+    payout: { paidViews: 0, paidMoney: 0, history: [] },
+    staffChannelId: 'staff-channel',
+    staffMessageId: 'staff-message',
+    ...identityOverrides
+  };
+  let persisted = {
+    users: {
+      [userId]: {
+        id: userId,
+        stats: { videosPosted: 1, videosApproved: 0 },
+        campaignStats: {}
+      }
+    },
+    clips: {},
+    clipReviews: { [reviewKey]: clip },
+    campaignStatus: {},
+    campaignAllocations: {},
+    payoutTrackers: {}
+  };
+  return {
+    reviewKey,
+    clipId,
+    userId,
+    clip,
+    loadData: () => structuredClone(persisted),
+    saveData: value => { persisted = structuredClone(value); },
+    getData: () => structuredClone(persisted)
+  };
+}
+
+test('clip approval resolves distinct review/clip IDs and is idempotent across campaign account models', () => {
+  const cases = [
+    ['elephant', { campaignAccountId: 'monsterlab-account' }],
+    ['crowder', {}],
+    ['ice', { socialId: 'global-social', globalSocialId: 'global-social', platformAccountId: 'provider-account' }]
+  ];
+  for (const [campaignId, identity] of cases) {
+    const fixture = makeClipApprovalFixture(campaignId, identity);
+    const options = {
+      loadData: fixture.loadData,
+      saveData: fixture.saveData,
+      approvedAt: Date.parse('2026-08-08T12:00:00.000Z'),
+      latestPublicViews: 1_500
+    };
+    const first = approveClipReview(fixture.clipId, 'staff-user', options);
+    const second = approveClipReview(fixture.clipId, 'staff-user', options);
+    const stored = fixture.getData();
+
+    assert.equal(first.status, 'approved', campaignId);
+    assert.equal(second.status, 'already_approved', campaignId);
+    assert.equal(stored.clipReviews[fixture.reviewKey], undefined, campaignId);
+    assert.equal(stored.clips[fixture.clipId].reviewId, fixture.reviewKey, campaignId);
+    assert.equal(stored.clips[fixture.clipId].submissionId, fixture.reviewKey, campaignId);
+    assert.equal(stored.clips[fixture.clipId].clipId, fixture.clipId, campaignId);
+    assert.equal(stored.users[fixture.userId].stats.videosApproved, 1, campaignId);
+    assert.equal(findClipRecord(stored, fixture.reviewKey).clip.id, fixture.clipId, campaignId);
+    const buttonIds = buildClipStaffButtons(first.approvedClip)
+      .flatMap(row => row.components)
+      .map(button => button.data.custom_id);
+    assert.equal(buttonIds.some(id => id?.startsWith('clip_approve:')), false, campaignId);
+  }
+});
+
+test('clip approval restart lookup returns the existing approved clip through reviewId', () => {
+  const fixture = makeClipApprovalFixture('crowder');
+  const options = { loadData: fixture.loadData, saveData: fixture.saveData, latestPublicViews: 1_200 };
+  const approved = approveClipReview(fixture.reviewKey, 'staff-user', options);
+  assert.equal(approved.status, 'approved');
+
+  const afterRestart = approveClipReview(fixture.reviewKey, 'staff-user', options);
+  assert.equal(afterRestart.status, 'already_approved');
+  assert.equal(afterRestart.approvedClip.id, fixture.clipId);
+  assert.equal(Object.keys(fixture.getData().clips).length, 1);
+});
+
+test('pending review exists before the moderation message send begins', async () => {
+  const fixture = makeClipApprovalFixture('crowder');
+  const pending = structuredClone(fixture.clip);
+  pending.id = 'new-pending-review';
+  pending.staffChannelId = null;
+  pending.staffMessageId = null;
+  const current = fixture.getData();
+  current.clipReviews = {};
+  current.users[fixture.userId].stats.videosPosted = 0;
+  current.clips['concurrently-approved'] = {
+    id: 'concurrently-approved', userId: fixture.userId, campaignId: 'crowder', status: 'approved'
+  };
+  fixture.saveData(current);
+  let persistedBeforeSend = false;
+
+  const result = await createClipReviewModerationCard(pending, null, {
+    loadData: fixture.loadData,
+    saveData: fixture.saveData,
+    sendStaffMessage: async review => {
+      const duringSend = fixture.getData();
+      persistedBeforeSend = duringSend.clipReviews[review.id]?.status === 'pending';
+      return { id: 'new-staff-message', channelId: 'staff-channel' };
+    }
+  });
+  const stored = fixture.getData();
+  assert.equal(result.status, 'ready');
+  assert.equal(persistedBeforeSend, true);
+  assert.equal(stored.clipReviews[pending.id].staffMessageId, 'new-staff-message');
+  assert.equal(stored.clips['concurrently-approved'].status, 'approved');
+  assert.equal(stored.clipReviews[pending.id].reviewId, pending.id);
+});
+
+test('immediate Accept between message creation and locator binding preserves the approved record', async () => {
+  const fixture = makeClipApprovalFixture('crowder');
+  const pending = structuredClone(fixture.clip);
+  pending.staffChannelId = null;
+  pending.staffMessageId = null;
+  const current = fixture.getData();
+  current.clipReviews = {};
+  current.users[fixture.userId].stats.videosPosted = 0;
+  fixture.saveData(current);
+  let approval;
+
+  const result = await createClipReviewModerationCard(pending, null, {
+    loadData: fixture.loadData,
+    saveData: fixture.saveData,
+    sendStaffMessage: async review => {
+      assert.equal(fixture.getData().clipReviews[review.id].status, 'pending');
+      approval = approveClipReview(review.id, 'fast-staff-user', {
+        loadData: fixture.loadData,
+        saveData: fixture.saveData,
+        latestPublicViews: 1_500
+      });
+      return { id: 'fast-staff-message', channelId: 'staff-channel' };
+    }
+  });
+  const stored = fixture.getData();
+
+  assert.equal(approval.status, 'approved');
+  assert.equal(result.status, 'ready');
+  assert.equal(result.boundCollection, 'clips');
+  assert.equal(stored.clipReviews[pending.id], undefined);
+  assert.equal(stored.clips[pending.id].status, 'approved');
+  assert.equal(stored.clips[pending.id].staffMessageId, 'fast-staff-message');
+  assert.equal(stored.users[fixture.userId].stats.videosPosted, 1);
+  assert.equal(stored.users[fixture.userId].stats.videosApproved, 1);
+});
+
+test('staff message send failure leaves one recoverable pending review', async () => {
+  const fixture = makeClipApprovalFixture('elephant');
+  const pending = structuredClone(fixture.clip);
+  pending.staffChannelId = null;
+  pending.staffMessageId = null;
+  const current = fixture.getData();
+  current.clipReviews = {};
+  current.users[fixture.userId].stats.videosPosted = 0;
+  fixture.saveData(current);
+  const errors = [];
+
+  const result = await createClipReviewModerationCard(pending, null, {
+    loadData: fixture.loadData,
+    saveData: fixture.saveData,
+    logger: { error(...args) { errors.push(args); } },
+    sendStaffMessage: async () => { throw new Error('Discord send unavailable'); }
+  });
+  const stored = fixture.getData();
+
+  assert.equal(result.status, 'message_send_failed');
+  assert.equal(stored.clipReviews[pending.id].status, 'pending');
+  assert.equal(stored.clipReviews[pending.id].staffMessagePending, true);
+  assert.equal(stored.clipReviews[pending.id].staffMessageState, 'send_failed');
+  assert.equal(Object.keys(stored.clipReviews).length, 1);
+  assert.ok(errors.some(entry => JSON.stringify(entry).includes('[Clip Review Message] Failed to send')));
+});
+
+test('locator persistence failure does not send a duplicate moderation message', async () => {
+  const fixture = makeClipApprovalFixture('crowder');
+  const pending = structuredClone(fixture.clip);
+  pending.staffChannelId = null;
+  pending.staffMessageId = null;
+  const current = fixture.getData();
+  current.clipReviews = {};
+  fixture.saveData(current);
+  let sends = 0;
+
+  const result = await createClipReviewModerationCard(pending, null, {
+    loadData: fixture.loadData,
+    saveData: fixture.saveData,
+    logger: { error() {} },
+    sendStaffMessage: async () => {
+      sends++;
+      return { id: 'unbound-message', channelId: 'staff-channel' };
+    },
+    attachLocator: () => { throw new Error('disk unavailable during locator save'); }
+  });
+
+  assert.equal(result.status, 'locator_bind_failed');
+  assert.equal(sends, 1);
+  assert.equal(fixture.getData().clipReviews[pending.id].status, 'pending');
+  assert.equal(fixture.getData().clipReviews[pending.id].staffMessagePending, true);
+  assert.equal(fixture.getData().clipReviews[pending.id].staffMessageId, null);
+});
+
+test('multi-link review workflow persists each item independently and preserves earlier items after a later failure', async () => {
+  const fixture = makeClipApprovalFixture('crowder');
+  const current = fixture.getData();
+  current.clipReviews = {};
+  fixture.saveData(current);
+  const first = { ...structuredClone(fixture.clip), id: 'batch-first', videoId: 'batch-first', staffChannelId: null, staffMessageId: null };
+  const second = { ...structuredClone(fixture.clip), id: 'batch-second', videoId: 'batch-second', staffChannelId: null, staffMessageId: null };
+
+  const firstResult = await createClipReviewModerationCard(first, null, {
+    loadData: fixture.loadData,
+    saveData: fixture.saveData,
+    sendStaffMessage: async () => ({ id: 'batch-message-1', channelId: 'staff-channel' })
+  });
+  const secondResult = await createClipReviewModerationCard(second, null, {
+    loadData: fixture.loadData,
+    saveData: fixture.saveData,
+    logger: { error() {} },
+    sendStaffMessage: async () => { throw new Error('later batch message failed'); }
+  });
+  const stored = fixture.getData();
+
+  assert.equal(firstResult.status, 'ready');
+  assert.equal(secondResult.status, 'message_send_failed');
+  assert.equal(stored.clipReviews[first.id].staffMessageId, 'batch-message-1');
+  assert.equal(stored.clipReviews[second.id].status, 'pending');
+  assert.equal(Object.keys(stored.clipReviews).length, 2);
+});
+
+test('orphan moderation payload disables controls without fabricating a clip', () => {
+  const data = { clips: {}, clipReviews: {} };
+  const before = structuredClone(data);
+  const payload = buildOrphanClipModerationPayload({ embeds: [], components: [{ components: [{}] }] }, 'missing-clip');
+  const rendered = payload.embeds[0].toJSON();
+
+  assert.equal(findClipRecord(data, 'missing-clip'), null);
+  assert.deepEqual(data, before);
+  assert.deepEqual(payload.components, []);
+  assert.ok(JSON.stringify(rendered).includes('Submission record unavailable / historical orphan'));
+  assert.ok(JSON.stringify(rendered).includes('missing-clip'));
+});
+
+test('provider failure preserves the pending review for an accurate approval retry', async () => {
+  const fixture = makeClipApprovalFixture('elephant');
+  const refresh = await refreshClipApprovalMetadata(fixture.clip, CAMPAIGNS.elephant, {
+    fetchMetadata: async () => { throw new Error('provider unavailable'); }
+  });
+  assert.equal(refresh.ok, false);
+  assert.equal(refresh.error.message, 'provider unavailable');
+  assert.equal(fixture.getData().clipReviews[fixture.reviewKey].status, 'pending');
+  assert.equal(Object.keys(fixture.getData().clips).length, 0);
+});
+
+test('creator DM and staff-message failures remain nonfatal after canonical approval', async () => {
+  const fixture = makeClipApprovalFixture('ice', { socialId: 'global-social' });
+  const approved = approveClipReview(fixture.reviewKey, 'staff-user', {
+    loadData: fixture.loadData,
+    saveData: fixture.saveData,
+    latestPublicViews: 1_500
+  });
+  const errors = [];
+  const logger = { error(...args) { errors.push(args); } };
+  const staffResult = await runClipApprovalSideEffect('Staff Message', { requestedId: fixture.reviewKey }, async () => {
+    throw new Error('message edit failed');
+  }, { logger });
+  const dmResult = await runClipApprovalSideEffect('DM', { requestedId: fixture.reviewKey }, async () => {
+    throw new Error('DM closed');
+  }, { logger });
+
+  assert.equal(approved.status, 'approved');
+  assert.equal(staffResult, false);
+  assert.equal(dmResult, false);
+  assert.equal(fixture.getData().clips[fixture.clipId].status, 'approved');
+  assert.ok(errors.some(entry => JSON.stringify(entry).includes('message edit failed')));
+  assert.ok(errors.some(entry => JSON.stringify(entry).includes('DM closed')));
 });
 
 test('post-approval rejection releases only unpaid Monsterlab credit and preserves paid history', () => {

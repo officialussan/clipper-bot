@@ -450,8 +450,8 @@ const CAMPAIGNS = {
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
     payoutThreshold: 17500,
     campaignBudget: 2400,
-    startDate: '2026-08-03T07:00:00.000Z',
-    endDate: '2026-08-31T07:00:00.000Z',
+    startDate: '2026-08-31T07:00:00.000Z',
+    endDate: '2026-09-28T07:00:00.000Z',
     cycleWeeks: "1",
     budgetCycle: "weekly",
     budgetMode: "weekly",
@@ -463,7 +463,7 @@ const CAMPAIGNS = {
     viewCap: 8000000,
     ratePerMillion: 300,
     panelChannelId:'1492239981308018698',
-    panelMessageId:'1536315496121634828',
+    panelMessageId:'1541065071151808603',
     roleId: process.env.ELEPHANT_ROLE_ID,
     entryChannelId: process.env.ELEPHANT_ENTRY_CHANNEL_ID,
     connectAccountChannelId: '1521567104552276058',
@@ -503,8 +503,8 @@ Click the button below to start clipping and earning.`
     allowedPlatforms: ['tiktok', 'instagram', 'youtube'],
     payoutThreshold: 17500,
     campaignBudget: 2100,
-    startDate: '2026-08-03T07:00:00.000Z',
-    endDate: '2026-08-31T07:00:00.000Z',
+    startDate: '2026-08-31T07:00:00.000Z',
+    endDate: '2026-09-28T07:00:00.000Z',
     cycleWeeks: "1",
     budgetCycle: "weekly",
     budgetMode: "weekly",
@@ -516,7 +516,7 @@ Click the button below to start clipping and earning.`
     ratePerMillion: 300,
     viewCap: 7000000,
     panelChannelId:'1521565850505838672',
-    panelMessageId:'1536315187026468895',
+    panelMessageId:'1541065071151808603',
     roleId: process.env.CROWDER_ROLE_ID,
     entryChannelId: process.env.CROWDER_ENTRY_CHANNEL_ID,
     connectAccountChannelId: '1521566652796240046',
@@ -2194,10 +2194,302 @@ function isPayoutEligibleClip(clip) {
   return Boolean(clip && clip.status === 'approved' && clip.payoutEligible !== false);
 }
 
+function getClipRecordIdentityValues(key, clip) {
+  return [...new Set([key, clip?.id, clip?.clipId, clip?.reviewId, clip?.submissionId]
+    .filter(value => value !== null && value !== undefined && String(value).length > 0)
+    .map(String))];
+}
+
+function findClipRecordMatches(data, requestedId) {
+  const requested = String(requestedId ?? '');
+  if (!requested) return [];
+  const records = [];
+  for (const [collection, source] of [['clipReviews', data?.clipReviews || {}], ['clips', data?.clips || {}]]) {
+    for (const [key, clip] of Object.entries(source)) {
+      if (!getClipRecordIdentityValues(key, clip).includes(requested)) continue;
+      records.push({ clip, collection, key });
+    }
+  }
+  return records;
+}
+
 function findClipRecord(data, clipId) {
-  if (data.clipReviews?.[clipId]) return { clip: data.clipReviews[clipId], collection: 'clipReviews' };
-  if (data.clips?.[clipId]) return { clip: data.clips[clipId], collection: 'clips' };
-  return null;
+  if (data.clipReviews?.[clipId]) return { clip: data.clipReviews[clipId], collection: 'clipReviews', key: String(clipId) };
+  if (data.clips?.[clipId]) return { clip: data.clips[clipId], collection: 'clips', key: String(clipId) };
+  const matches = findClipRecordMatches(data, clipId);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function getClipApprovalDiagnostic(data, requestedId, extra = {}) {
+  const matches = findClipRecordMatches(data, requestedId);
+  const review = matches.find(match => match.collection === 'clipReviews');
+  const approved = matches.find(match => match.collection === 'clips' && match.clip?.status === 'approved');
+  const candidate = approved?.clip || review?.clip || matches[0]?.clip || null;
+  return {
+    campaignId: candidate?.campaignId || null,
+    requestedId: String(requestedId ?? ''),
+    reviewFound: Boolean(review),
+    approvedClipFoundByReviewId: Boolean(approved),
+    userId: candidate?.userId || null,
+    platform: candidate?.platform || null,
+    status: candidate?.status || null,
+    ...extra
+  };
+}
+
+async function refreshClipApprovalMetadata(clip, campaign, options = {}) {
+  const latestStoredViews = getStoredPublicViews(clip);
+  const completedOrOutOfRun = clip?.trackingStatus === 'completed' ||
+    (campaign?.separateEarningLifecycle && !isClipInCampaignEarningRun(clip, campaign));
+  if (completedOrOutOfRun) return { ok: true, metadata: null, latestPublicViews: latestStoredViews, skipped: true };
+  try {
+    const metadata = await (options.fetchMetadata || fetchClipMetadata)(clip);
+    const providerViews = Number(metadata?.views);
+    return {
+      ok: true,
+      metadata,
+      latestPublicViews: Number.isFinite(providerViews) && providerViews >= 0
+        ? Math.max(latestStoredViews, providerViews)
+        : latestStoredViews,
+      skipped: false
+    };
+  } catch (error) {
+    return { ok: false, error, metadata: null, latestPublicViews: latestStoredViews, skipped: false };
+  }
+}
+
+function persistClipReviewBeforeStaffMessage(clip, member, options = {}) {
+  if (!clip?.id) throw new Error('Pending clip review requires a clip ID.');
+  const load = options.loadData || loadData;
+  const persist = options.saveData || saveData;
+  const data = load();
+  data.clipReviews ||= {};
+  data.clips ||= {};
+  const existing = findClipRecord(data, clip.id);
+  if (existing) {
+    return { status: 'existing_record', data, clip: existing.clip, located: existing };
+  }
+  const campaign = CAMPAIGNS[clip.campaignId];
+  if (!campaign) return { status: 'campaign_not_found', data, clip: null };
+  const userRecord = data.users?.[clip.userId] || (member ? ensureUser(data, member) : null);
+  if (!userRecord) return { status: 'user_not_found', data, clip: null };
+
+  initializeClipTrackingFields(clip);
+  clip.reviewId ||= String(clip.id);
+  clip.submissionId ||= clip.reviewId;
+  clip.clipId ||= String(clip.id);
+  clip.staffChannelId = null;
+  clip.staffMessageId = null;
+  clip.staffMessagePending = true;
+  clip.staffMessageState = 'pending_send';
+  clip.staffMessageLastError = null;
+  ensureClipPayoutLimitSnapshot(clip, campaign, data);
+  data.clipReviews[clip.id] = clip;
+  userRecord.stats ||= {};
+  const platformStats = ensureCampaignPlatformStats(
+    userRecord,
+    clip.campaignId,
+    clip.platform,
+    clip.username || ''
+  );
+  platformStats.videosPosted = (Number(platformStats.videosPosted) || 0) + 1;
+  userRecord.stats.videosPosted = (Number(userRecord.stats.videosPosted) || 0) + 1;
+  persist(data);
+  return { status: 'persisted', data, clip };
+}
+
+function attachClipReviewStaffMessageLocator(requestedId, locator, options = {}) {
+  if (!locator?.channelId || !locator?.messageId) throw new Error('Staff message locator is incomplete.');
+  const load = options.loadData || loadData;
+  const persist = options.saveData || saveData;
+  const data = load();
+  const located = findClipRecord(data, requestedId);
+  if (!located) return { status: 'record_not_found', data, clip: null };
+  const clip = located.clip;
+  clip.staffChannelId = String(locator.channelId);
+  clip.staffMessageId = String(locator.messageId);
+  clip.staffMessagePending = false;
+  clip.staffMessageState = 'bound';
+  clip.staffMessageLastError = null;
+  clip.staffMessageBoundAt = Number(options.now ?? Date.now());
+  data[located.collection][located.key] = clip;
+  persist(data);
+  return { status: 'bound', data, clip, collection: located.collection };
+}
+
+function markClipReviewMessageFailure(requestedId, error, options = {}) {
+  const load = options.loadData || loadData;
+  const persist = options.saveData || saveData;
+  const data = load();
+  const located = findClipRecord(data, requestedId);
+  if (!located) return { status: 'record_not_found', data, clip: null };
+  const clip = located.clip;
+  clip.staffMessagePending = true;
+  clip.staffMessageState = options.state || 'send_failed';
+  clip.staffMessageLastError = error?.message || String(error);
+  clip.staffMessageLastAttemptAt = Number(options.now ?? Date.now());
+  data[located.collection][located.key] = clip;
+  persist(data);
+  return { status: 'recorded', data, clip, collection: located.collection };
+}
+
+async function createClipReviewModerationCard(clip, member, options = {}) {
+  const logger = options.logger || console;
+  const context = { clipId: clip?.id || null, campaignId: clip?.campaignId || null, userId: clip?.userId || null };
+  const persisted = persistClipReviewBeforeStaffMessage(clip, member, options);
+  if (persisted.status !== 'persisted') return { ...persisted, phase: 'persist_review' };
+
+  let message;
+  try {
+    message = await options.sendStaffMessage(persisted.clip);
+  } catch (error) {
+    logger.error?.('[Clip Review Message] Failed to send', { ...context, stack: error?.stack || String(error) });
+    try {
+      markClipReviewMessageFailure(clip.id, error, { ...options, state: 'send_failed' });
+    } catch (stateError) {
+      logger.error?.('[Clip Review Message] Failed to record send failure', {
+        ...context, stack: stateError?.stack || String(stateError)
+      });
+    }
+    return { status: 'message_send_failed', phase: 'send_message', data: options.loadData?.() || loadData(), clip: persisted.clip, error };
+  }
+
+  try {
+    const bound = (options.attachLocator || attachClipReviewStaffMessageLocator)(clip.id, {
+      channelId: message.channelId || message.channel?.id,
+      messageId: message.id
+    }, options);
+    if (bound.status !== 'bound') {
+      const error = new Error(`Staff message locator could not be bound: ${bound.status}`);
+      logger.error?.('[Clip Review Message] Failed to bind locator', { ...context, messageId: message.id, stack: error.stack });
+      return { status: 'locator_bind_failed', phase: 'bind_locator', data: bound.data, clip: bound.clip, message, error };
+    }
+    return { status: 'ready', phase: 'complete', data: bound.data, clip: bound.clip, message, boundCollection: bound.collection };
+  } catch (error) {
+    logger.error?.('[Clip Review Message] Failed to bind locator', {
+      ...context, messageId: message.id, stack: error?.stack || String(error)
+    });
+    return { status: 'locator_bind_failed', phase: 'bind_locator', data: options.loadData?.() || loadData(), clip: null, message, error };
+  }
+}
+
+function buildOrphanClipModerationPayload(message, requestedId) {
+  const existing = message?.embeds?.[0];
+  const embed = existing
+    ? EmbedBuilder.from(existing)
+    : new EmbedBuilder().setTitle('Clip Moderation');
+  const currentFields = (embed.data.fields || []).filter(field => field.name !== 'Moderation Status');
+  embed.setColor(0xF59E0B).setFields(
+    ...currentFields,
+    {
+      name: 'Moderation Status',
+      value: `⚠️ Submission record unavailable / historical orphan\n\`${String(requestedId || 'unknown')}\``,
+      inline: false
+    }
+  );
+  return { embeds: [embed], components: [] };
+}
+
+function approveClipReview(requestedId, staffUserId, options = {}) {
+  const load = options.loadData || loadData;
+  const persist = options.saveData || saveData;
+  const data = load();
+  const matches = findClipRecordMatches(data, requestedId);
+  const alreadyApproved = matches.find(match => match.collection === 'clips' && match.clip?.status === 'approved');
+  if (alreadyApproved) {
+    return { status: 'already_approved', approvedClip: alreadyApproved.clip, data, located: alreadyApproved };
+  }
+  const exactReview = data.clipReviews?.[requestedId]
+    ? { clip: data.clipReviews[requestedId], collection: 'clipReviews', key: String(requestedId) }
+    : null;
+  const pendingMatches = matches.filter(match => match.collection === 'clipReviews' && match.clip?.status === 'pending');
+  const located = exactReview || (pendingMatches.length === 1 ? pendingMatches[0] : null);
+  if (!located) {
+    return {
+      status: matches.length > 1 ? 'ambiguous_identity' : 'not_found',
+      approvedClip: null,
+      data,
+      diagnostic: getClipApprovalDiagnostic(data, requestedId)
+    };
+  }
+
+  const clip = located.clip;
+  if (clip.status !== 'pending') {
+    return { status: 'not_pending', approvedClip: clip, data, located };
+  }
+  const campaign = CAMPAIGNS[clip.campaignId];
+  if (!campaign) return { status: 'campaign_not_found', approvedClip: null, data, located };
+
+  const canonicalClipId = String(clip.id || clip.clipId || requestedId);
+  const conflictingClip = data.clips?.[canonicalClipId];
+  if (conflictingClip && conflictingClip !== clip) {
+    return { status: 'clip_id_conflict', approvedClip: null, data, located };
+  }
+
+  if (options.staffChannelId && !clip.staffChannelId) clip.staffChannelId = options.staffChannelId;
+  if (options.staffMessageId && !clip.staffMessageId) clip.staffMessageId = options.staffMessageId;
+
+  let latestPublicViews = Math.max(getStoredPublicViews(clip), Number(options.latestPublicViews) || 0);
+  const metadata = options.metadata;
+  if (metadata) {
+    if (campaign.separateEarningLifecycle) {
+      applyTrackedMetadata(clip, metadata, data);
+      latestPublicViews = Math.max(latestPublicViews, Number(clip.publicViews) || 0);
+    }
+    if (metadata.title) clip.title = metadata.title;
+    if (metadata.thumbnailUrl) clip.thumbnailUrl = metadata.thumbnailUrl;
+    if (metadata.authorName) clip.platformAuthorName = metadata.authorName;
+  }
+
+  const approvedAt = Number(options.approvedAt ?? Date.now());
+  const latestViews = applyApprovalSnapshotAccounting(clip, campaign, data, latestPublicViews, approvedAt);
+  clip.status = 'approved';
+  clip.payoutEligible = true;
+  clip.wasEverApproved = true;
+  clip.approvedAt = approvedAt;
+  if (isStraightCampaign(campaign)) finalizeStraightCampaignIfFulfilled(data, campaign.id, approvedAt);
+  clip.budgetCycleIndex = isStraightCampaign(campaign)
+    ? null
+    : Number.isFinite(Number(clip.budgetCycleIndex))
+      ? Number(clip.budgetCycleIndex)
+      : getClipBudgetCycleIndex(clip, campaign);
+  clip.approvalCycleIndex = isStraightCampaign(campaign)
+    ? null
+    : getCampaignBudgetCycleIndex(campaign, new Date(approvedAt));
+  clip.lastChecked = approvedAt;
+  clip.reviewId ||= located.key;
+  clip.submissionId ||= clip.reviewId;
+  clip.clipId = canonicalClipId;
+  clip.id = canonicalClipId;
+  clip.approvedBy = staffUserId || null;
+  logClipViewLifecycle(clip);
+
+  data.clips ||= {};
+  data.clipReviews ||= {};
+  data.clips[canonicalClipId] = clip;
+  delete data.clipReviews[located.key];
+
+  const userRecord = data.users?.[clip.userId];
+  if (userRecord) {
+    userRecord.stats ||= {};
+    userRecord.stats.videosApproved = (Number(userRecord.stats.videosApproved) || 0) + 1;
+    const platformStats = ensureCampaignPlatformStats(userRecord, clip.campaignId, clip.platform, clip.username || '');
+    platformStats.videosApproved = (Number(platformStats.videosApproved) || 0) + 1;
+  }
+
+  persist(data);
+  return { status: 'approved', approvedClip: clip, data, located, latestPublicViews, latestViews };
+}
+
+async function runClipApprovalSideEffect(stage, context, operation, options = {}) {
+  const logger = options.logger || console;
+  try {
+    await operation();
+    return true;
+  } catch (error) {
+    logger.error?.(`[Clip Approval ${stage}] Failed`, { ...context, stack: error?.stack || String(error) });
+    return false;
+  }
 }
 
 function wasClipPreviouslyApproved(clip) {
@@ -13795,7 +14087,7 @@ ${reason}
             return;
         }
 
-        const data = loadData();
+        let data = loadData();
         const submissionBlockMessage = getCampaignSubmissionBlockMessage(getCampaignOperationalState(data, campaign));
         if (submissionBlockMessage) {
             await interaction.reply({ content: submissionBlockMessage, flags: MessageFlags.Ephemeral });
@@ -13831,20 +14123,22 @@ ${reason}
             return;
         }
 
-        const userRecord = ensureUser(data, member);
-        if (getCampaignAccountMode(campaign) === 'global_auto_verify' && !userRecord.campaigns?.includes(campaignId)) {
+        const initialUserRecord = ensureUser(data, member);
+        if (getCampaignAccountMode(campaign) === 'global_auto_verify' && !initialUserRecord.campaigns?.includes(campaignId)) {
             await interaction.reply({ content: '❌ Join this campaign before submitting clips.', flags: MessageFlags.Ephemeral });
             return;
         }
 
         let submittedCount = 0;
         let duplicateCount = 0;
+        let reviewMessageWarningCount = 0;
         const rejectedResults = [];
         const batchVideoKeys = new Set();
 
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
         for (const originalLink of links) {
+            data = loadData();
             const validation = await validateClipBeforeSubmission({
                 data,
                 userId: interaction.user.id,
@@ -13871,17 +14165,33 @@ ${reason}
                 duplicateCount++;
                 continue;
             }
+
+            // Provider validation awaits network I/O. Reload before constructing the
+            // review so another staff action cannot be overwritten by this batch.
+            data = loadData();
+            const incomingUrlKey = normalizeClipVideoUrl(validation.canonicalUrl);
+            const duplicateAfterRefresh = [
+                ...Object.values(data.clipReviews || {}),
+                ...Object.values(data.clips || {})
+            ].some(existing => String(existing.campaignId) === String(campaignId) && (
+                (videoKey && getClipVideoKey(existing.platform, existing.videoId) === videoKey) ||
+                (incomingUrlKey && normalizeClipVideoUrl(existing.videoUrl || existing.url) === incomingUrlKey)
+            ));
+            if (duplicateAfterRefresh) {
+                duplicateCount++;
+                continue;
+            }
             if (videoKey) batchVideoKeys.add(videoKey);
 
             const metadata = validation.metadata;
             const matchedAccount = validation.matchedAccount;
             const matchedAccountId = String(matchedAccount.id);
             const matchedUsername = matchedAccount.username || validation.authorIdentity?.authorUsername || metadata.authorUsername || metadata.authorDisplayName;
-            const platformStats = ensureCampaignPlatformStats(userRecord, campaignId, validation.platform, matchedUsername);
             const campaignStaffMap = data.campaignStaffChannels?.[campaignId];
             const targetChannelId = campaignStaffMap?.[validation.platform] || campaign.staffChannelId;
             const staffChannel = interaction.guild.channels.cache.get(targetChannelId);
-            const clipId = makeClipId();
+            let clipId = makeClipId();
+            while (data.clipReviews?.[clipId] || data.clips?.[clipId]) clipId = makeClipId();
             const submittedTimestamp = Date.now();
             const payoutCycle = getCampaignPayoutCycle(campaign, { now: submittedTimestamp });
             const submissionBudgetCycle = isStraightCampaign(campaign)
@@ -13957,40 +14267,40 @@ ${reason}
                 lastChecked: submittedTimestamp,
                 nextCheckAt: submittedTimestamp + CLIP_TRACK_INTERVAL_MS,
                 cycle: isStraightCampaign(campaign) ? undefined : getCampaignCycle(campaign, new Date()),
-                staffChannelId: staffChannel ? staffChannel.id : null,
+                staffChannelId: null,
                 staffMessageId: null,
                 payout: { paidViews: 0, paidMoney: 0, lastPaidAt: null, history: [] }
             };
-            ensureClipPayoutLimitSnapshot(clip, campaign, data);
-
-            data.clipReviews ||= {};
-            if (!staffChannel) {
-                rejectedResults.push({ link: originalLink, reason: '❌ Staff review channel is unavailable. Please try again.' });
-                continue;
-            }
+            let reviewResult;
             try {
-                const staffMessage = await staffChannel.send({
-                    embeds: [buildClipStaffEmbed(clip)],
-                    components: buildClipStaffButtons(clip)
+                reviewResult = await createClipReviewModerationCard(clip, member, {
+                    sendStaffMessage: pendingReview => {
+                        if (!staffChannel) throw new Error('Staff review channel is unavailable.');
+                        return staffChannel.send({
+                            embeds: [buildClipStaffEmbed(pendingReview)],
+                            components: buildClipStaffButtons(pendingReview)
+                        });
+                    }
                 });
-                clip.staffChannelId = staffChannel.id;
-                clip.staffMessageId = staffMessage.id;
             } catch (error) {
-                console.error(`Could not create staff review message for ${clipId}:`, error.message);
-                rejectedResults.push({ link: originalLink, reason: '❌ The clip was verified, but its staff review message could not be created. Please try again.' });
+                console.error('[Clip Review] Failed to persist before message send', {
+                    clipId, campaignId, userId: clip.userId, stack: error?.stack || String(error)
+                });
+                rejectedResults.push({ link: originalLink, reason: '❌ The clip review could not be saved safely. Please try again.' });
                 continue;
             }
 
-            initializeClipTrackingFields(clip);
-            data.clipReviews[clipId] = clip;
-            platformStats.videosPosted++;
-            userRecord.stats.videosPosted++;
+            if (!['ready', 'message_send_failed', 'locator_bind_failed'].includes(reviewResult.status)) {
+                rejectedResults.push({ link: originalLink, reason: '❌ The clip review identity could not be saved safely. Please contact staff.' });
+                continue;
+            }
+            data = reviewResult.data;
             submittedCount++;
+            if (reviewResult.status !== 'ready') reviewMessageWarningCount++;
         }
 
-        saveData(data);
-
         let responseMessage = '✅ **Accepted:** ' + submittedCount + '\n⚠️ **Duplicates:** ' + duplicateCount + '\n❌ **Rejected:** ' + rejectedResults.length;
+        if (reviewMessageWarningCount > 0) responseMessage += '\n⚠️ **Staff review message pending:** ' + reviewMessageWarningCount;
         if (rejectedResults.length) {
             responseMessage += '\n\n**Rejected links:**\n' + rejectedResults.slice(0, 5).map((item, index) => (index + 1) + '. ' + item.reason).join('\n');
         }
@@ -14438,19 +14748,36 @@ ${reason}
         return interaction.reply({ content: '❌ You are not allowed to do this.', flags: MessageFlags.Ephemeral });
       }
 
-      const clipId = interaction.customId.split(':')[1];
+      const clipId = interaction.customId.slice('clip_approve:'.length);
       const data = loadData();
       const located = findClipRecord(data, clipId);
 
       if (!located) {
-        return interaction.reply({ content: '❌ Clip not found.', flags: MessageFlags.Ephemeral });
+        console.error('[Clip Approval]', getClipApprovalDiagnostic(data, clipId, {
+          interactionCustomId: interaction.customId,
+          stage: 'initial_lookup'
+        }));
+        if (interaction.message) {
+          await runClipApprovalSideEffect('Orphan Controls', {
+            requestedId: clipId,
+            campaignId: null,
+            userId: null,
+            stage: 'disable_unavailable_submission'
+          }, () => interaction.message.edit(buildOrphanClipModerationPayload(interaction.message, clipId)));
+        }
+        return interaction.reply({
+          content: '⚠️ This submission is no longer available in the moderation database.',
+          flags: MessageFlags.Ephemeral
+        });
       }
 
       const clip = located.clip;
-      const sourceCollection = located.collection;
 
       if (clip.status === 'approved') {
-        return interaction.reply({ content: '❌ This clip is already approved.', flags: MessageFlags.Ephemeral });
+        await runClipApprovalSideEffect('Staff Message', {
+          campaignId: clip.campaignId, requestedId: clipId, userId: clip.userId, stage: 'already_approved_refresh'
+        }, () => updateClipStaffMessage(interaction.guild, clip));
+        return interaction.reply({ content: '✅ Already Approved.', flags: MessageFlags.Ephemeral });
       }
 
       if (clip.status !== 'pending') {
@@ -14464,117 +14791,86 @@ ${reason}
         return interaction.editReply({ content: '❌ Campaign not found.' });
       }
 
-      if (!clip.staffChannelId) {
-        clip.staffChannelId = interaction.channelId;
-      }
-
-      if (!clip.staffMessageId && interaction.message) {
-        clip.staffMessageId = interaction.message.id;
-      }
-
-      let latestPublicViews = getStoredPublicViews(clip);
-
-      const completedOrOutOfRun = clip.trackingStatus === 'completed' ||
-        (campaign.separateEarningLifecycle && !isClipInCampaignEarningRun(clip, campaign));
-      if (!completedOrOutOfRun) {
-        try {
-          const metadata = await fetchClipMetadata(clip);
-          if (Number.isFinite(Number(metadata?.views)) && Number(metadata.views) >= 0) {
-            latestPublicViews = Math.max(latestPublicViews, Number(metadata.views));
-          }
-
-          if (campaign.separateEarningLifecycle) {
-            applyTrackedMetadata(clip, metadata, data);
-            latestPublicViews = Math.max(latestPublicViews, Number(clip.publicViews) || 0);
-          }
-
-          if (metadata?.title) clip.title = metadata.title;
-          if (metadata?.thumbnailUrl) clip.thumbnailUrl = metadata.thumbnailUrl;
-          if (metadata?.authorName) clip.platformAuthorName = metadata.authorName;
-        } catch (err) {
-          console.error(`Could not refresh clip ${clipId} before approval:`, err.message);
-        }
-      }
-
-      const approvedAt = Date.now();
-      const latestViews = applyApprovalSnapshotAccounting(clip, campaign, data, latestPublicViews, approvedAt);
-      clip.status = 'approved';
-      clip.payoutEligible = true;
-      clip.wasEverApproved = true;
-      clip.approvedAt = approvedAt;
-      if (isStraightCampaign(campaign)) finalizeStraightCampaignIfFulfilled(data, campaign.id, approvedAt);
-      clip.budgetCycleIndex = isStraightCampaign(campaign)
-        ? null
-        : Number.isFinite(Number(clip.budgetCycleIndex))
-        ? Number(clip.budgetCycleIndex)
-        : getClipBudgetCycleIndex(clip, campaign);
-      clip.approvalCycleIndex = isStraightCampaign(campaign)
-        ? null
-        : getCampaignBudgetCycleIndex(campaign, new Date(approvedAt));
-      clip.lastChecked = approvedAt;
-      logClipViewLifecycle(clip);
-
-      data.clips ||= {};
-      data.clipReviews ||= {};
-      data.clips[clipId] = clip;
-      if (sourceCollection === 'clipReviews') {
-        delete data.clipReviews[clipId];
-      }
-
-      const userRecord = data.users?.[clip.userId];
-      if (userRecord) {
-        userRecord.stats ||= {};
-        userRecord.stats.videosApproved = (Number(userRecord.stats.videosApproved) || 0) + 1;
-        const platformStats = ensureCampaignPlatformStats(
-          userRecord,
-          clip.campaignId,
-          clip.platform,
-          clip.username || ''
-        );
-        platformStats.videosApproved = (Number(platformStats.videosApproved) || 0) + 1;
-      }
-
-      saveData(data);
-
-      try {
-        await updateClipStaffMessage(interaction.guild, clip);
-      } catch (err) {
-        console.error(`Could not update approved staff message ${clipId}:`, err.message);
-      }
-
-      try {
-        const member = await interaction.guild.members.fetch(clip.userId);
-
-        await member.send({
-          embeds: [buildApprovedClipUserEmbed(clip)]
+      const refresh = await refreshClipApprovalMetadata(clip, campaign);
+      if (!refresh.ok) {
+        console.error('[Clip Approval]', getClipApprovalDiagnostic(data, clipId, {
+          interactionCustomId: interaction.customId,
+          stage: 'provider_metadata_refresh',
+          error: refresh.error?.message || String(refresh.error)
+        }));
+        return interaction.editReply({
+          content: '❌ Unable to refresh clip metadata. The clip remains pending; please try again.'
         });
-      } catch (err) {
-        console.error("❌ Failed to send approval DM:", err.message);
       }
 
-      try {
-        await syncPayoutCard(interaction.guild, clip.campaignId, clip.userId, { earningRunKey: clip.earningRunKey });
-      } catch (err) {
-        console.error(`Could not sync payout card for approved clip ${clipId}:`, err.message);
+      const transition = approveClipReview(clipId, interaction.user.id, {
+        metadata: refresh.metadata,
+        latestPublicViews: refresh.latestPublicViews,
+        staffChannelId: interaction.channelId,
+        staffMessageId: interaction.message?.id || null
+      });
+
+      if (transition.status === 'already_approved') {
+        await runClipApprovalSideEffect('Staff Message', {
+          campaignId: transition.approvedClip.campaignId,
+          requestedId: clipId,
+          userId: transition.approvedClip.userId,
+          stage: 'concurrent_already_approved_refresh'
+        }, () => updateClipStaffMessage(interaction.guild, transition.approvedClip));
+        return interaction.editReply({ content: '✅ Already Approved.' });
       }
+      if (transition.status !== 'approved') {
+        console.error('[Clip Approval]', getClipApprovalDiagnostic(transition.data || loadData(), clipId, {
+          interactionCustomId: interaction.customId,
+          stage: `transition_${transition.status}`
+        }));
+        if (transition.status === 'not_found' && interaction.message) {
+          await runClipApprovalSideEffect('Orphan Controls', {
+            requestedId: clipId, campaignId: null, userId: null, stage: 'disable_missing_during_transition'
+          }, () => interaction.message.edit(buildOrphanClipModerationPayload(interaction.message, clipId)));
+        }
+        return interaction.editReply({
+          content: transition.status === 'not_found'
+            ? '⚠️ This submission is no longer available in the moderation database.'
+            : '❌ This clip could not be approved safely. Please retry or contact an administrator.'
+        });
+      }
+
+      const approvedClip = transition.approvedClip;
+      await runClipApprovalSideEffect('Staff Message', {
+        campaignId: approvedClip.campaignId, requestedId: clipId, userId: approvedClip.userId, stage: 'approved_message_update'
+      }, () => updateClipStaffMessage(interaction.guild, approvedClip));
+
+      await runClipApprovalSideEffect('DM', {
+        campaignId: approvedClip.campaignId, requestedId: clipId, userId: approvedClip.userId, stage: 'creator_notification'
+      }, async () => {
+        const member = await interaction.guild.members.fetch(approvedClip.userId);
+        await member.send({ embeds: [buildApprovedClipUserEmbed(approvedClip)] });
+      });
+
+      await runClipApprovalSideEffect('Payout Card', {
+        campaignId: approvedClip.campaignId, requestedId: clipId, userId: approvedClip.userId, stage: 'payout_sync'
+      }, () => syncPayoutCard(interaction.guild, approvedClip.campaignId, approvedClip.userId, { earningRunKey: approvedClip.earningRunKey }));
 
       const guild = client.guilds.cache.get(process.env.GUILD_ID) || interaction.guild;
       if (guild && typeof updateServerStats === 'function') {
-        updateServerStats(guild).catch(err => console.error('Server stats update error:', err.message));
+        void runClipApprovalSideEffect('Server Stats', {
+          campaignId: approvedClip.campaignId, requestedId: clipId, userId: approvedClip.userId, stage: 'server_stats'
+        }, () => updateServerStats(guild));
       }
       if (guild && typeof updateLeaderboardMessage === 'function') {
-        updateLeaderboardMessage(guild).catch(err => console.error('Leaderboard update error:', err.message));
+        void runClipApprovalSideEffect('Leaderboard', {
+          campaignId: approvedClip.campaignId, requestedId: clipId, userId: approvedClip.userId, stage: 'leaderboard'
+        }, () => updateLeaderboardMessage(guild));
       }
       if (guild && typeof updateCampaignPanelMessage === 'function') {
-        try {
-          await updateCampaignPanelMessage(guild, clip.campaignId);
-        } catch (err) {
-          console.error(`Could not refresh campaign panel ${clip.campaignId}:`, err.message);
-        }
+        await runClipApprovalSideEffect('Campaign Panel', {
+          campaignId: approvedClip.campaignId, requestedId: clipId, userId: approvedClip.userId, stage: 'campaign_panel'
+        }, () => updateCampaignPanelMessage(guild, approvedClip.campaignId));
       }
 
       await interaction.editReply({
-        content: `✅ Clip approved at ${formatNumber(latestPublicViews)} public views (${formatNumber(latestViews)} campaign-credited).`
+        content: `✅ Clip approved at ${formatNumber(transition.latestPublicViews)} public views (${formatNumber(transition.latestViews)} campaign-credited).`
       });
       return;
     }
@@ -16160,6 +16456,7 @@ function buildPaymentReceiptPage(interaction, payments, page) {
 if (require.main === module) client.login(process.env.TOKEN);
 
 module.exports.__clipLifecycleTest = {
+  approveClipReview,
   applyDemographicsApprovalToAccount,
   applyCampaignMembership,
   applyApprovalSnapshotAccounting,
@@ -16203,6 +16500,7 @@ module.exports.__clipLifecycleTest = {
   buildElephantJulyReconciliationDryRun,
   buildMissingGlobalAccountResponse,
   buildMissingCampaignDemographicsResponse,
+  buildOrphanClipModerationPayload,
   buildPreLaunchSubmissionEmbed,
   buildRejectedClipUserDm,
   buildRejectedClipUserEmbed,
@@ -16211,11 +16509,13 @@ module.exports.__clipLifecycleTest = {
   buildClipSubmissionValidationResponse,
   clearClipAppealWindow,
   createGlobalSocialVerificationRequest,
+  createClipReviewModerationCard,
   ensureClipAppealDeadline,
   finalizeOutOfRunClips,
   finalizeStraightCampaignIfFulfilled,
   fetchInstagramPublicProfile,
   fetchPublicSocialProfile,
+  findClipRecord,
   findOtherVerifiedClipAccountOwner,
   findAllCampaignSubmissionPanelMessages,
   findCampaignSubmissionPanelMessage,
@@ -16267,6 +16567,8 @@ module.exports.__clipLifecycleTest = {
   joinCampaignMember,
   repairApprovalSnapshotInvariants,
   repairAugustFirstWeekLegacyWeeklyAccounting,
+  refreshClipApprovalMetadata,
+  runClipApprovalSideEffect,
   runBackgroundMaintenanceTask,
   migratePayoutTrackerCycles,
   reconcileCampaignFulfillmentAfterCreditChange,
@@ -16287,6 +16589,8 @@ module.exports.__clipLifecycleTest = {
   normalizeTypedSocialPlatform,
   normalizeApifyInstagramProfile,
   normalizeVideoDurationSeconds,
+  persistClipReviewBeforeStaffMessage,
+  attachClipReviewStaffMessageLocator,
   userHasEligibleGlobalSocial,
   validateCampaignPublicationDate,
   validateCampaignVideoDuration,
