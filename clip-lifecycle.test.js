@@ -61,6 +61,7 @@ const {
   buildMissingGlobalAccountResponse,
   buildMissingCampaignDemographicsResponse,
   buildOrphanClipModerationPayload,
+  buildRecoveredHistoricalClipModerationPayload,
   buildPreLaunchSubmissionEmbed,
   buildRejectedClipUserDm,
   buildRejectedClipUserEmbed,
@@ -71,6 +72,8 @@ const {
   clearClipAppealWindow,
   createGlobalSocialVerificationRequest,
   createClipReviewModerationCard,
+  executeHistoricalOrphanRecoveryFromMessage,
+  extractHistoricalOrphanClipEvidence,
   finalizeStraightCampaignIfFulfilled,
   fetchInstagramPublicProfile,
   findClipRecord,
@@ -85,6 +88,7 @@ const {
   getAccountDemographics,
   getCampaignDemographicEligibility,
   getCampaignAccountMode,
+  getHistoricalRecoveryAccountingSnapshot,
   getCampaignBudgetMode,
   getCampaignJoinBlockReason,
   getCampaignOperationalState,
@@ -144,6 +148,10 @@ const {
   normalizeApifyInstagramProfile,
   normalizeVideoDurationSeconds,
   persistClipReviewBeforeStaffMessage,
+  recoverHistoricalOrphanClip,
+  resolveHistoricalClipEarningRun,
+  parseDiscordMessageLink,
+  runAuthorizedHistoricalOrphanRecoveries,
   attachClipReviewStaffMessageLocator,
   refreshClipApprovalMetadata,
   runClipApprovalSideEffect,
@@ -3639,4 +3647,274 @@ test('old-cycle rejection accounting and payout receipts stay attached to the cl
   const receipts = getUserPaymentReceipts(data, 'creator');
   assert.equal(receipts.length, 2);
   assert.deepEqual(new Set(receipts.map(receipt => receipt.earningRunKey)), new Set([oldKey, newKey]));
+});
+
+function makeAuthorizedOrphanMessage(overrides = {}) {
+  const description = overrides.description || [
+    '**Creator**', '<@1516030505710129312>',
+    '**Campaign**', 'Steven Crowder Clipping Campaign',
+    '**Platform**', 'YouTube',
+    '**Account**', '@stevencrowderfyp',
+    '**Video**', '[This Is Worth Watching](https://www.youtube.com/watch?v=HO-9l0PeXZg)',
+    '**Status**', overrides.status || '🟡 Pending Review',
+    '**Current Views**', '1.0K',
+    '**Campaign Credited Views**', '0',
+    '**Submission Views**', '1.0K',
+    '**Approval Views**', 'Not approved yet'
+  ].join('\n');
+  return {
+    id: '1541123878707789967',
+    channelId: '1528740846214713476',
+    createdTimestamp: Date.parse('2026-08-23T16:36:05.381Z'),
+    content: '',
+    embeds: [{ title: 'Clip Review', description, fields: [{
+      name: 'Moderation Status',
+      value: '⚠️ Submission record unavailable / historical orphan\n`clip_1787502965267_68393`'
+    }] }],
+    components: [],
+    ...overrides
+  };
+}
+
+function makeHistoricalRecoveryData(overrides = {}) {
+  return {
+    users: {
+      '1516030505710129312': {
+        discordId: '1516030505710129312',
+        campaigns: ['crowder'],
+        stats: { videosPosted: 7, videosApproved: 4, moneyMade: 12 },
+        campaignAccounts: {
+          crowder: {
+            youtube: {
+              username: 'stevencrowderfyp', verified: true,
+              externalAccountId: 'UCpg7-PVLZc39d7cMrjBjOjQ',
+              channelId: 'UCpg7-PVLZc39d7cMrjBjOjQ'
+            }
+          }
+        },
+        campaignStats: {}
+      }
+    },
+    clips: {}, clipReviews: {}, campaignStatus: { crowder: { status: 'active' } },
+    payoutTrackers: { existing: { campaignId: 'crowder', userId: 'other', lifetimeViewsForCycle: 50 } },
+    ...overrides
+  };
+}
+
+function makeRecoveryProviderMetadata(overrides = {}) {
+  return {
+    platform: 'youtube',
+    authorId: 'UCpg7-PVLZc39d7cMrjBjOjQ',
+    platformAccountId: 'UCpg7-PVLZc39d7cMrjBjOjQ',
+    channelId: 'UCpg7-PVLZc39d7cMrjBjOjQ',
+    authorDisplayName: 'Crowder Louder',
+    title: 'This Is Worth Watching', views: 1055, likes: 10,
+    durationSeconds: 58, publishedAt: '2026-08-18T21:45:14.000Z',
+    publishedTimestamp: Date.parse('2026-08-18T21:45:14.000Z'),
+    ...overrides
+  };
+}
+
+function makeRecoveryStore(initial = makeHistoricalRecoveryData()) {
+  let data = structuredClone(initial);
+  return {
+    loadData: () => structuredClone(data),
+    saveData: next => { data = structuredClone(next); },
+    read: () => structuredClone(data)
+  };
+}
+
+test('historical orphan recovery reconstructs one pending Crowder review with original identity and run', async () => {
+  const message = makeAuthorizedOrphanMessage();
+  const evidence = extractHistoricalOrphanClipEvidence(message);
+  assert.equal(evidence.clipId, 'clip_1787502965267_68393');
+  assert.equal(evidence.submissionViews, null);
+  assert.equal(evidence.historicalSubmissionViewsDisplay, '1.0K');
+  const store = makeRecoveryStore();
+  const before = store.read();
+  const result = await recoverHistoricalOrphanClip(message, evidence.clipId, {
+    ...store,
+    now: Date.parse('2026-08-24T00:00:00.000Z'),
+    fetchMetadata: async () => makeRecoveryProviderMetadata()
+  });
+  assert.equal(result.status, 'recovered');
+  const review = store.read().clipReviews[evidence.clipId];
+  assert.equal(review.status, 'pending');
+  assert.equal(review.id, evidence.clipId);
+  assert.equal(review.clipId, evidence.clipId);
+  assert.equal(review.reviewId, evidence.clipId);
+  assert.equal(review.submissionId, evidence.clipId);
+  assert.equal(review.earningRunKey, 'crowder:2026-08-03T07:00:00.000Z:2026-08-31T07:00:00.000Z');
+  assert.equal(review.submittedAt, '2026-08-23T16:36:05.381Z');
+  assert.equal(review.submissionViews, null);
+  assert.equal(review.historicalSubmissionViewsDisplay, '1.0K');
+  assert.equal(review.currentViews, 1055);
+  assert.equal(review.publicViews, 1055);
+  assert.equal(review.approvalViews, null);
+  assert.equal(review.campaignCreditedViews, 0);
+  assert.equal(review.payout.paidViews, 0);
+  assert.equal(review.payout.paidMoney, 0);
+  assert.deepEqual(store.read().users, before.users);
+  assert.deepEqual(store.read().campaignStatus, before.campaignStatus);
+  assert.deepEqual(store.read().payoutTrackers, before.payoutTrackers);
+  const rendered = buildClipStaffEmbed(review).data.description;
+  assert.match(rendered, /Historical display: 1\.0K/);
+  assert.doesNotMatch(rendered, /Submission Views\*\*\n1\.0K/);
+  const recoveredPayload = buildRecoveredHistoricalClipModerationPayload(review);
+  assert.match(recoveredPayload.embeds[0].data.fields[0].value, /Historical submission recovered/);
+  assert.deepEqual(recoveredPayload.components[0].components.map(button => button.data.custom_id), [
+    `clip_approve:${evidence.clipId}`, `clip_reject:${evidence.clipId}`
+  ]);
+});
+
+test('authorized orphan controls offer recovery while approved-state evidence cannot become pending', async () => {
+  const pendingMessage = makeAuthorizedOrphanMessage();
+  const payload = buildOrphanClipModerationPayload(pendingMessage, 'clip_1787502965267_68393');
+  assert.equal(payload.components.length, 1);
+  assert.equal(payload.components[0].components[0].data.custom_id, 'clip_recover:clip_1787502965267_68393');
+  const approvedMessage = makeAuthorizedOrphanMessage({ status: '✅ Approved' });
+  const approvedPayload = buildOrphanClipModerationPayload(approvedMessage, 'clip_1787502965267_68393');
+  assert.equal(approvedPayload.components.length, 0);
+  assert.match(approvedPayload.embeds[0].data.fields[0].value, /requires accounting reconciliation/);
+  const store = makeRecoveryStore();
+  const result = await recoverHistoricalOrphanClip(approvedMessage, 'clip_1787502965267_68393', {
+    ...store, fetchMetadata: async () => makeRecoveryProviderMetadata()
+  });
+  assert.equal(result.status, 'approved_state_orphan');
+  assert.equal(Object.keys(store.read().clipReviews).length, 0);
+});
+
+test('historical orphan recovery is idempotent and Accept still uses approveClipReview once', async () => {
+  const message = makeAuthorizedOrphanMessage();
+  const store = makeRecoveryStore();
+  const options = {
+    ...store,
+    now: Date.parse('2026-08-24T00:00:00.000Z'),
+    fetchMetadata: async () => makeRecoveryProviderMetadata()
+  };
+  assert.equal((await recoverHistoricalOrphanClip(message, 'clip_1787502965267_68393', options)).status, 'recovered');
+  assert.equal((await recoverHistoricalOrphanClip(message, 'clip_1787502965267_68393', options)).status, 'already_recovered');
+  assert.equal(Object.keys(store.read().clipReviews).length, 1);
+  const originalDates = { startDate: CAMPAIGNS.crowder.startDate, endDate: CAMPAIGNS.crowder.endDate };
+  try {
+    Object.assign(CAMPAIGNS.crowder, {
+      startDate: '2026-08-31T07:00:00.000Z', endDate: '2026-09-28T07:00:00.000Z'
+    });
+    const pending = store.read().clipReviews.clip_1787502965267_68393;
+    const refresh = await refreshClipApprovalMetadata(pending, CAMPAIGNS.crowder, {
+      fetchMetadata: async () => makeRecoveryProviderMetadata({ views: 1100 })
+    });
+    assert.equal(refresh.skipped, false);
+    assert.equal(refresh.latestPublicViews, 1100);
+    const approved = approveClipReview('clip_1787502965267_68393', 'staff-1', {
+      ...store,
+      metadata: refresh.metadata,
+      latestPublicViews: refresh.latestPublicViews,
+      approvedAt: Date.parse('2026-09-01T01:00:00.000Z')
+    });
+    assert.equal(approved.status, 'approved');
+    assert.equal(approved.approvedClip.approvalViews, 1100);
+    assert.equal(approved.approvedClip.campaignCreditedViews, 0);
+    assert.equal((approveClipReview('clip_1787502965267_68393', 'staff-2', { ...store })).status, 'already_approved');
+    assert.equal(Object.keys(store.read().clips).length, 1);
+    assert.equal(Object.keys(store.read().clipReviews).length, 0);
+  } finally {
+    Object.assign(CAMPAIGNS.crowder, originalDates);
+  }
+});
+
+test('historical orphan recovery blocks duplicate video, provider failure, and ownership mismatch', async () => {
+  const message = makeAuthorizedOrphanMessage();
+  const duplicateStore = makeRecoveryStore(makeHistoricalRecoveryData({
+    clips: { existing: { id: 'existing', campaignId: 'crowder', platform: 'youtube', videoId: 'HO-9l0PeXZg', status: 'approved' } }
+  }));
+  const duplicate = await recoverHistoricalOrphanClip(message, 'clip_1787502965267_68393', {
+    ...duplicateStore, fetchMetadata: async () => makeRecoveryProviderMetadata()
+  });
+  assert.equal(duplicate.status, 'duplicate_existing');
+  assert.equal(Object.keys(duplicateStore.read().clipReviews).length, 0);
+
+  const providerStore = makeRecoveryStore();
+  const providerFailure = await recoverHistoricalOrphanClip(message, 'clip_1787502965267_68393', {
+    ...providerStore, fetchMetadata: async () => { throw new Error('provider unavailable'); }
+  });
+  assert.equal(providerFailure.status, 'provider_failure');
+  assert.equal(Object.keys(providerStore.read().clipReviews).length, 0);
+
+  const mismatchData = makeHistoricalRecoveryData();
+  mismatchData.users['1516030505710129312'].campaignAccounts.crowder.youtube.externalAccountId = 'WRONG';
+  mismatchData.users['1516030505710129312'].campaignAccounts.crowder.youtube.channelId = 'WRONG';
+  const mismatchStore = makeRecoveryStore(mismatchData);
+  const mismatch = await recoverHistoricalOrphanClip(message, 'clip_1787502965267_68393', {
+    ...mismatchStore, fetchMetadata: async () => makeRecoveryProviderMetadata()
+  });
+  assert.equal(mismatch.status, 'ownership_mismatch');
+  assert.equal(Object.keys(mismatchStore.read().clipReviews).length, 0);
+});
+
+test('historical orphan recovery rejects retired/mismatched evidence and resolves exact cycle boundaries', async () => {
+  const invalidMessage = makeAuthorizedOrphanMessage({
+    description: makeAuthorizedOrphanMessage().embeds[0].description
+      .replace('Steven Crowder Clipping Campaign', 'Michael Carbonara Campaign')
+      .replace('**Platform**\nYouTube', '**Platform**\nInstagram')
+  });
+  const store = makeRecoveryStore();
+  const invalid = await recoverHistoricalOrphanClip(invalidMessage, 'clip_1787502965267_68393', {
+    ...store, fetchMetadata: async () => makeRecoveryProviderMetadata()
+  });
+  assert.equal(invalid.status, 'evidence_mismatch');
+  assert.equal(Object.keys(store.read().clipReviews).length, 0);
+  assert.equal(resolveHistoricalClipEarningRun('crowder', '2026-08-03T06:59:59.999Z').earningRunKey,
+    'crowder:2026-06-29T00:00:00.000Z:2026-08-03T07:00:00.000Z');
+  assert.equal(resolveHistoricalClipEarningRun('crowder', '2026-08-03T07:00:00.000Z').earningRunKey,
+    'crowder:2026-08-03T07:00:00.000Z:2026-08-31T07:00:00.000Z');
+  assert.equal(resolveHistoricalClipEarningRun('crowder', '2026-08-31T07:00:00.000Z'), null);
+});
+
+test('recovery command and button adapter use the same helper and message-link parser', async () => {
+  const message = makeAuthorizedOrphanMessage();
+  let calls = 0;
+  const result = await executeHistoricalOrphanRecoveryFromMessage(message, 'clip_1787502965267_68393', {
+    dryRun: true,
+    recover: async () => {
+      calls++;
+      return { status: 'dry_run_recoverable', recoverable: true };
+    }
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.status, 'dry_run_recoverable');
+  assert.deepEqual(
+    parseDiscordMessageLink('https://discord.com/channels/1413113505565118524/1528740846214713476/1541123878707789967'),
+    { guildId: '1413113505565118524', channelId: '1528740846214713476', messageId: '1541123878707789967' }
+  );
+});
+
+test('authorized startup recovery processes all four independently and preserves accounting invariants', async () => {
+  const data = makeHistoricalRecoveryData();
+  const snapshot = getHistoricalRecoveryAccountingSnapshot(data, 'crowder');
+  const channel = { messages: { fetch: async messageId => ({ id: messageId }) } };
+  const guild = {
+    channels: {
+      cache: new Map([['1528740846214713476', channel]]),
+      fetch: async () => channel
+    }
+  };
+  const calls = [];
+  const report = await runAuthorizedHistoricalOrphanRecoveries(guild, {
+    loadData: () => structuredClone(data),
+    execute: async (_message, clipId) => {
+      calls.push(clipId);
+      return clipId === 'clip_1787502965267_68393'
+        ? { status: 'provider_failure', reason: 'temporary provider failure', messageUpdated: false }
+        : { status: 'recovered', reason: 'ok', messageUpdated: true };
+    },
+    logger: { log() {}, error() {} }
+  });
+  assert.equal(calls.length, 4);
+  assert.equal(new Set(calls).size, 4);
+  assert.equal(report.results.filter(result => result.status === 'recovered').length, 3);
+  assert.equal(report.results.filter(result => result.status === 'provider_failure').length, 1);
+  assert.equal(report.accountingUnchanged, true);
+  assert.deepEqual(report.before, snapshot);
+  assert.deepEqual(report.after, snapshot);
 });

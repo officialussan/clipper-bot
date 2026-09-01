@@ -2239,9 +2239,15 @@ function getClipApprovalDiagnostic(data, requestedId, extra = {}) {
 
 async function refreshClipApprovalMetadata(clip, campaign, options = {}) {
   const latestStoredViews = getStoredPublicViews(clip);
+  const recoveredPendingReview = clip?.status === 'pending' && clip?.historicalRecovery?.recovered === true;
   const completedOrOutOfRun = clip?.trackingStatus === 'completed' ||
     (campaign?.separateEarningLifecycle && !isClipInCampaignEarningRun(clip, campaign));
-  if (completedOrOutOfRun) return { ok: true, metadata: null, latestPublicViews: latestStoredViews, skipped: true };
+  // A recovered historical review still needs one fresh provider snapshot when
+  // staff actually accepts it. Accounting remains in the historical run and
+  // the out-of-run approval branch preserves zero pre-approval credit.
+  if (completedOrOutOfRun && !recoveredPendingReview) {
+    return { ok: true, metadata: null, latestPublicViews: latestStoredViews, skipped: true };
+  }
   try {
     const metadata = await (options.fetchMetadata || fetchClipMetadata)(clip);
     const providerViews = Number(metadata?.views);
@@ -2379,15 +2385,520 @@ function buildOrphanClipModerationPayload(message, requestedId) {
     ? EmbedBuilder.from(existing)
     : new EmbedBuilder().setTitle('Clip Moderation');
   const currentFields = (embed.data.fields || []).filter(field => field.name !== 'Moderation Status');
+  const evidence = extractHistoricalOrphanClipEvidence(message, requestedId);
+  const authorization = getAuthorizedHistoricalOrphanRecovery(evidence, message);
+  const approvedState = /approved/i.test(String(evidence.status || ''));
   embed.setColor(0xF59E0B).setFields(
     ...currentFields,
     {
       name: 'Moderation Status',
-      value: `⚠️ Submission record unavailable / historical orphan\n\`${String(requestedId || 'unknown')}\``,
+      value: approvedState
+        ? `⚠️ Historical approved record requires accounting reconciliation\n\`${String(requestedId || 'unknown')}\``
+        : authorization
+          ? `⚠️ Historical orphan — recovery required\n\`${String(requestedId || 'unknown')}\``
+          : `⚠️ Submission record unavailable / historical orphan\n\`${String(requestedId || 'unknown')}\``,
       inline: false
     }
   );
-  return { embeds: [embed], components: [] };
+  return {
+    embeds: [embed],
+    components: authorization && !approvedState ? [buildHistoricalOrphanRecoveryRow(authorization.clipId)] : []
+  };
+}
+
+const AUTHORIZED_HISTORICAL_ORPHAN_RECOVERIES = Object.freeze({
+  clip_1786016042355_54613: Object.freeze({
+    clipId: 'clip_1786016042355_54613', campaignId: 'crowder',
+    channelId: '1528740846214713476', messageId: '1534887271847694399',
+    userId: '1189010402533720127', platform: 'youtube', videoId: 'l5h1cjix3f0',
+    providerAccountId: 'UCp6zXztSgM4b0ZDSS1waLdA', submittedAt: '2026-08-06T11:34:02.435Z'
+  }),
+  clip_1786012466508_15338: Object.freeze({
+    clipId: 'clip_1786012466508_15338', campaignId: 'crowder',
+    channelId: '1528740846214713476', messageId: '1534872273817702613',
+    userId: '1189010402533720127', platform: 'youtube', videoId: 'UVTsgR_6qeA',
+    providerAccountId: 'UCp6zXztSgM4b0ZDSS1waLdA', submittedAt: '2026-08-06T10:34:26.626Z'
+  }),
+  clip_1787502965267_68393: Object.freeze({
+    clipId: 'clip_1787502965267_68393', campaignId: 'crowder',
+    channelId: '1528740846214713476', messageId: '1541123878707789967',
+    userId: '1516030505710129312', platform: 'youtube', videoId: 'HO-9l0PeXZg',
+    providerAccountId: 'UCpg7-PVLZc39d7cMrjBjOjQ', submittedAt: '2026-08-23T16:36:05.381Z'
+  }),
+  clip_1787502923539_81688: Object.freeze({
+    clipId: 'clip_1787502923539_81688', campaignId: 'crowder',
+    channelId: '1528740846214713476', messageId: '1541123703570432151',
+    userId: '1516030505710129312', platform: 'youtube', videoId: 'aLclwp37SHg',
+    providerAccountId: 'UCpg7-PVLZc39d7cMrjBjOjQ', submittedAt: '2026-08-23T16:35:23.625Z'
+  })
+});
+
+function getDiscordMessageEmbedData(message) {
+  return (message?.embeds || []).map(embed => embed?.data || embed || {});
+}
+
+function getDiscordMessageComponentCustomIds(message) {
+  return (message?.components || []).flatMap(row => row?.components || [])
+    .map(component => component?.customId || component?.custom_id || component?.data?.custom_id)
+    .filter(Boolean)
+    .map(String);
+}
+
+function extractHistoricalCardField(text, labelPattern) {
+  const source = String(text || '');
+  const block = source.match(new RegExp(`\\*\\*(?:${labelPattern})\\*\\*\\s*\\n\\s*([^\\n]+)`, 'i'));
+  if (block) return block[1].trim();
+  const inline = source.match(new RegExp(`\\*\\*(?:${labelPattern}):\\*\\*\\s*([^\\n]+)`, 'i'));
+  return inline ? inline[1].trim() : null;
+}
+
+function extractHistoricalOrphanClipEvidence(message, requestedId = null) {
+  const embeds = getDiscordMessageEmbedData(message);
+  const text = [
+    message?.content || '',
+    ...embeds.flatMap(embed => [
+      embed.title || '', embed.description || '',
+      ...(embed.fields || []).flatMap(field => [field.name || '', field.value || ''])
+    ]),
+    ...getDiscordMessageComponentCustomIds(message)
+  ].join('\n');
+  const clipIds = [...new Set([...text.matchAll(/clip_\d+_\d+/g)].map(match => match[0]))];
+  const clipId = requestedId && /^clip_\d+_\d+$/.test(String(requestedId))
+    ? String(requestedId)
+    : clipIds.length === 1 ? clipIds[0] : null;
+  const creatorText = extractHistoricalCardField(text, 'Creator|User');
+  const creatorId = creatorText?.match(/<@(\d+)>/)?.[1] || null;
+  const campaignText = extractHistoricalCardField(text, 'Campaign');
+  const platformText = extractHistoricalCardField(text, 'Platform');
+  const accountText = extractHistoricalCardField(text, 'Account|Username');
+  const status = extractHistoricalCardField(text, 'Status');
+  const submissionViewsDisplay = extractHistoricalCardField(text, 'Submission Views');
+  const markdownUrl = text.match(/\*\*(?:Video|Link)(?::)?\*\*\s*(?:\n\s*)?\[[^\]]*\]\((https?:\/\/[^)]+)\)/i)?.[1];
+  const plainUrl = text.match(/\*\*(?:Video|Link)(?::)?\*\*\s*(?:\n\s*)?(https?:\/\/\S+)/i)?.[1];
+  const videoUrl = markdownUrl || plainUrl?.replace(/[)>.,]+$/, '') || null;
+  const channelId = String(message?.channelId || message?.channel_id || message?.channel?.id || '');
+  const messageId = String(message?.id || '');
+  const createdTimestamp = Number(message?.createdTimestamp) || Date.parse(message?.createdAt || message?.timestamp || '');
+  const platform = normalizeTypedSocialPlatform(platformText);
+  const campaignId = /crowder/i.test(String(campaignText || '')) ? 'crowder'
+    : /elephant/i.test(String(campaignText || '')) ? 'elephant'
+      : /\bice\b/i.test(String(campaignText || '')) ? 'ice' : null;
+  let parsedVideo = null;
+  try { parsedVideo = videoUrl ? parseCanonicalVideoUrl(videoUrl) : null; } catch {}
+  const exactSubmissionViews = /^\d{1,3}(?:,\d{3})*$/.test(String(submissionViewsDisplay || '').trim())
+    ? Number(String(submissionViewsDisplay).replace(/,/g, ''))
+    : null;
+  return {
+    clipId, clipIds, channelId, messageId, creatorId, campaignId, campaignText,
+    platform, platformText, accountUsername: accountText ? normalizeUsername(accountText) : null,
+    status, videoUrl, videoId: parsedVideo?.videoId || null,
+    canonicalUrl: parsedVideo?.canonicalUrl || null,
+    detectedPlatform: parsedVideo?.platform || null,
+    submittedTimestamp: Number.isFinite(createdTimestamp) ? createdTimestamp : null,
+    submittedAt: Number.isFinite(createdTimestamp) ? new Date(createdTimestamp).toISOString() : null,
+    submissionViews: exactSubmissionViews,
+    historicalSubmissionViewsDisplay: submissionViewsDisplay || null
+  };
+}
+
+function getAuthorizedHistoricalOrphanRecovery(evidence, message = null) {
+  const authorization = AUTHORIZED_HISTORICAL_ORPHAN_RECOVERIES[String(evidence?.clipId || '')];
+  if (!authorization) return null;
+  const channelId = String(evidence?.channelId || message?.channelId || message?.channel_id || '');
+  const messageId = String(evidence?.messageId || message?.id || '');
+  return channelId === authorization.channelId && messageId === authorization.messageId
+    ? authorization : null;
+}
+
+function buildHistoricalOrphanRecoveryRow(clipId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`clip_recover:${clipId}`)
+      .setLabel('Recover Submission')
+      .setEmoji('🔄')
+      .setStyle(ButtonStyle.Primary)
+  );
+}
+
+function resolveHistoricalClipEarningRun(campaignId, submittedAt) {
+  const submittedTimestamp = Date.parse(submittedAt || '');
+  if (!Number.isFinite(submittedTimestamp)) return null;
+  const cycles = campaignId === 'crowder' ? [
+    CROWDER_HISTORICAL_RECONCILIATION.historicalCycle,
+    {
+      earningRunKey: CROWDER_HISTORICAL_RECONCILIATION.currentEarningRunKey,
+      cycleStartAt: CROWDER_HISTORICAL_RECONCILIATION.currentCycleStartAt,
+      cycleEndAt: CROWDER_HISTORICAL_RECONCILIATION.currentCycleEndAt
+    }
+  ] : [];
+  return cycles.find(cycle => {
+    const start = Date.parse(cycle.cycleStartAt || '');
+    const end = Date.parse(cycle.cycleEndAt || '');
+    return Number.isFinite(start) && Number.isFinite(end) && submittedTimestamp >= start && submittedTimestamp < end;
+  }) || null;
+}
+
+function findCampaignClipByProviderIdentity(data, campaignId, platform, videoId, canonicalUrl = null) {
+  const videoKey = getClipVideoKey(platform, videoId);
+  const urlKey = normalizeClipVideoUrl(canonicalUrl);
+  for (const [collection, source] of [['clipReviews', data?.clipReviews || {}], ['clips', data?.clips || {}]]) {
+    for (const [key, clip] of Object.entries(source)) {
+      if (String(clip?.campaignId) !== String(campaignId)) continue;
+      const storedVideoKey = getClipVideoKey(clip?.platform, clip?.videoId);
+      const storedUrlKey = normalizeClipVideoUrl(clip?.videoUrl || clip?.url);
+      if ((videoKey && storedVideoKey === videoKey) || (urlKey && storedUrlKey === urlKey)) {
+        return { collection, key, clip };
+      }
+    }
+  }
+  return null;
+}
+
+function buildRecoveredHistoricalClipReview({ authorization, evidence, metadata, ownership, cycle, recoveredAt }) {
+  const campaign = CAMPAIGNS[authorization.campaignId];
+  const currentViews = Number(metadata.views);
+  const submittedTimestamp = Date.parse(authorization.submittedAt);
+  const historicalCampaign = { ...campaign, startDate: cycle.cycleStartAt, endDate: cycle.cycleEndAt };
+  const matchedAccount = ownership.matchedAccount;
+  const username = matchedAccount?.username || evidence.accountUsername || metadata.authorDisplayName || 'Unknown';
+  return {
+    id: authorization.clipId,
+    clipId: authorization.clipId,
+    reviewId: authorization.clipId,
+    submissionId: authorization.clipId,
+    userId: authorization.userId,
+    campaignId: authorization.campaignId,
+    campaignName: campaign.name,
+    platform: authorization.platform,
+    username,
+    campaignAccountId: matchedAccount?.id || null,
+    socialId: null,
+    globalSocialId: null,
+    url: evidence.canonicalUrl,
+    videoUrl: evidence.canonicalUrl,
+    originalSubmittedUrl: evidence.videoUrl,
+    videoId: authorization.videoId,
+    authorUsername: metadata.authorUsername || null,
+    normalizedAuthorUsername: normalizeSocialUsername(metadata.authorUsername || metadata.authorDisplayName || ''),
+    platformAccountId: metadata.platformAccountId || metadata.authorId || metadata.channelId || null,
+    platformAuthorId: metadata.authorId || metadata.channelId || null,
+    platformAuthorName: metadata.authorDisplayName || metadata.authorName || null,
+    durationSeconds: Number.isFinite(Number(metadata.durationSeconds)) ? Number(metadata.durationSeconds) : null,
+    publishedAt: metadata.publishedAt || null,
+    publishedTimestamp: metadata.publishedTimestamp || null,
+    title: metadata.title || evidence.canonicalUrl,
+    thumbnailUrl: metadata.thumbnailUrl || null,
+    ...(Number.isFinite(Number(metadata.likes)) && Number(metadata.likes) >= 0 ? { likes: Number(metadata.likes) } : {}),
+    ...(Number.isFinite(Number(metadata.comments)) && Number(metadata.comments) >= 0 ? { comments: Number(metadata.comments) } : {}),
+    publicViews: currentViews,
+    currentViews,
+    submissionViews: evidence.submissionViews,
+    historicalSubmissionViewsDisplay: evidence.historicalSubmissionViewsDisplay,
+    approvalViews: null,
+    views: 0,
+    campaignCreditedViews: 0,
+    currentWeekCreditedViews: 0,
+    weeklyViews: 0,
+    estimatedEarnings: 0,
+    earnedMoney: 0,
+    moneyMade: 0,
+    totalMoneyMade: 0,
+    status: 'pending',
+    payoutEligible: false,
+    wasEverApproved: false,
+    submittedTimestamp,
+    submittedAt: authorization.submittedAt,
+    createdAt: authorization.submittedAt,
+    recoveredAt: new Date(recoveredAt).toISOString(),
+    budgetCycleIndex: getCampaignBudgetCycleIndex(historicalCampaign, new Date(submittedTimestamp)),
+    budgetCycleSubmittedAt: submittedTimestamp,
+    earningRunKey: cycle.earningRunKey,
+    payoutCycleStartAt: cycle.cycleStartAt,
+    payoutCycleEndAt: cycle.cycleEndAt,
+    trackingStatus: 'pending_review',
+    lastChecked: recoveredAt,
+    nextCheckAt: null,
+    budgetTracking: {
+      budgetCycleKey: getCampaignBudgetCycleKey(historicalCampaign, new Date(submittedTimestamp)),
+      baselinePublicViews: currentViews,
+      lastPublicViews: currentViews,
+      creditedViewsThisCycle: 0,
+      pausedBaselineViews: null,
+      initializedAt: recoveredAt,
+      runLedgerCompleteFor: cycle.earningRunKey
+    },
+    staffChannelId: authorization.channelId,
+    staffMessageId: authorization.messageId,
+    staffMessagePending: false,
+    staffMessageState: 'bound',
+    staffMessageLastError: null,
+    staffMessageBoundAt: recoveredAt,
+    payout: { paidViews: 0, paidMoney: 0, lastPaidAt: null, history: [] },
+    historicalRecovery: {
+      recovered: true,
+      recoveryType: 'historical_orphan',
+      method: 'discord_message_plus_live_provider_verification',
+      recoveredAt: new Date(recoveredAt).toISOString(),
+      sourceChannelId: authorization.channelId,
+      sourceMessageId: authorization.messageId,
+      originalClipId: authorization.clipId,
+      providerVerified: true,
+      ownershipVerified: true,
+      ownershipMatchedBy: ownership.matchedBy || null,
+      originalSubmissionTimeSource: 'discord_message',
+      historicalSubmissionViewsExact: Number.isFinite(evidence.submissionViews),
+      historicalSubmissionViewsDisplay: evidence.historicalSubmissionViewsDisplay || null
+    }
+  };
+}
+
+async function recoverHistoricalOrphanClip(message, requestedId, options = {}) {
+  const load = options.loadData || loadData;
+  const persist = options.saveData || saveData;
+  const fetchMetadata = options.fetchMetadata || fetchSubmissionMetadata;
+  const now = Number(options.now ?? Date.now());
+  const dryRun = options.dryRun === true;
+  const evidence = extractHistoricalOrphanClipEvidence(message, requestedId);
+  const authorization = getAuthorizedHistoricalOrphanRecovery(evidence, message);
+  if (!authorization) return { status: 'not_authorized', recoverable: false, reason: 'This message is not in the approved pending-orphan recovery scope.', evidence };
+  if (/approved/i.test(String(evidence.status || ''))) {
+    return { status: 'approved_state_orphan', recoverable: false, reason: 'Historical approved records require accounting reconciliation.', evidence, authorization };
+  }
+  if (!/pending/i.test(String(evidence.status || ''))) {
+    return { status: 'not_pending', recoverable: false, reason: 'The historical card is not a pending review.', evidence, authorization };
+  }
+  if (evidence.creatorId !== authorization.userId || evidence.campaignId !== authorization.campaignId) {
+    return { status: 'evidence_mismatch', recoverable: false, reason: 'Creator or campaign evidence does not match the authorized recovery.', evidence, authorization };
+  }
+  if (evidence.platform !== authorization.platform || evidence.detectedPlatform !== authorization.platform || evidence.videoId !== authorization.videoId) {
+    return { status: 'platform_or_video_mismatch', recoverable: false, reason: 'Platform or provider video identity does not match the authorized recovery.', evidence, authorization };
+  }
+  if (!evidence.videoUrl || !evidence.canonicalUrl) {
+    return { status: 'url_missing', recoverable: false, reason: 'Original video URL is unavailable.', evidence, authorization };
+  }
+  if (evidence.submittedAt !== authorization.submittedAt) {
+    return { status: 'submission_time_mismatch', recoverable: false, reason: 'Discord message creation time does not match the authorized historical timestamp.', evidence, authorization };
+  }
+  const campaign = CAMPAIGNS[authorization.campaignId];
+  if (!campaign) return { status: 'campaign_not_found', recoverable: false, reason: 'Historical campaign is not configured.', evidence, authorization };
+  const cycle = resolveHistoricalClipEarningRun(authorization.campaignId, authorization.submittedAt);
+  if (!cycle) return { status: 'earning_run_not_found', recoverable: false, reason: 'Historical earning run could not be determined.', evidence, authorization };
+
+  let data = load();
+  data.clipReviews ||= {};
+  data.clips ||= {};
+  const existingIdentity = findClipRecord(data, authorization.clipId);
+  if (existingIdentity) {
+    const sameVideo = String(existingIdentity.clip?.campaignId) === authorization.campaignId &&
+      getClipVideoKey(existingIdentity.clip?.platform, existingIdentity.clip?.videoId) === getClipVideoKey(authorization.platform, authorization.videoId);
+    if (sameVideo && !dryRun) {
+      existingIdentity.clip.staffChannelId = authorization.channelId;
+      existingIdentity.clip.staffMessageId = authorization.messageId;
+      existingIdentity.clip.staffMessagePending = false;
+      existingIdentity.clip.staffMessageState = 'bound';
+      existingIdentity.clip.staffMessageLastError = null;
+      existingIdentity.clip.staffMessageBoundAt = now;
+      data[existingIdentity.collection][existingIdentity.key] = existingIdentity.clip;
+      persist(data);
+    }
+    return {
+      status: sameVideo ? 'already_recovered' : 'clip_id_conflict',
+      recoverable: sameVideo,
+      reason: sameVideo ? 'Canonical record already exists.' : 'Original clip ID is already used by another record.',
+      evidence, authorization, cycle, review: existingIdentity.clip, duplicate: existingIdentity
+    };
+  }
+  const existingVideo = findCampaignClipByProviderIdentity(data, authorization.campaignId, authorization.platform, authorization.videoId, evidence.canonicalUrl);
+  if (existingVideo) {
+    return { status: 'duplicate_existing', recoverable: false, reason: 'Provider video already exists in this campaign.', evidence, authorization, cycle, duplicate: existingVideo };
+  }
+
+  let metadata;
+  try {
+    metadata = await fetchMetadata(authorization.platform, evidence.canonicalUrl, authorization.videoId);
+  } catch (error) {
+    return { status: 'provider_failure', recoverable: false, reason: error?.message || String(error), error, evidence, authorization, cycle };
+  }
+  metadata = { ...metadata, platform: authorization.platform };
+  const providerAccountId = normalizeExternalId(metadata.platformAccountId || metadata.authorId || metadata.channelId);
+  if (!providerAccountId || providerAccountId !== authorization.providerAccountId || !Number.isFinite(Number(metadata.views)) || Number(metadata.views) < 0) {
+    return { status: 'provider_identity_mismatch', recoverable: false, reason: 'Provider response does not match the authorized video owner.', metadata, evidence, authorization, cycle };
+  }
+
+  data = load();
+  const approvedAccounts = getApprovedSubmissionAccounts(data, authorization.userId, authorization.campaignId, authorization.platform);
+  const ownership = await validateVideoOwnership(approvedAccounts, metadata);
+  if (!ownership.valid || normalizeExternalId(ownership.identity?.platformAccountId) !== authorization.providerAccountId) {
+    return { status: 'ownership_mismatch', recoverable: false, reason: 'Provider account does not match the creator verified campaign account.', ownership, metadata, evidence, authorization, cycle };
+  }
+
+  // Reload after asynchronous provider and ownership checks so this persistence
+  // cannot overwrite a concurrent recovery or moderation transition.
+  data = load();
+  data.clipReviews ||= {};
+  data.clips ||= {};
+  const existingAfterValidation = findClipRecord(data, authorization.clipId);
+  if (existingAfterValidation) {
+    const sameVideo = String(existingAfterValidation.clip?.campaignId) === authorization.campaignId &&
+      getClipVideoKey(existingAfterValidation.clip?.platform, existingAfterValidation.clip?.videoId) === getClipVideoKey(authorization.platform, authorization.videoId);
+    if (sameVideo && !dryRun) {
+      existingAfterValidation.clip.staffChannelId = authorization.channelId;
+      existingAfterValidation.clip.staffMessageId = authorization.messageId;
+      existingAfterValidation.clip.staffMessagePending = false;
+      existingAfterValidation.clip.staffMessageState = 'bound';
+      existingAfterValidation.clip.staffMessageLastError = null;
+      existingAfterValidation.clip.staffMessageBoundAt = now;
+      data[existingAfterValidation.collection][existingAfterValidation.key] = existingAfterValidation.clip;
+      persist(data);
+    }
+    return { status: sameVideo ? 'already_recovered' : 'clip_id_conflict', recoverable: sameVideo, reason: sameVideo ? 'Canonical record already exists.' : 'Original clip ID is already used by another record.', evidence, authorization, cycle, metadata, ownership, review: existingAfterValidation.clip, duplicate: existingAfterValidation };
+  }
+  const duplicateAfterValidation = findCampaignClipByProviderIdentity(data, authorization.campaignId, authorization.platform, authorization.videoId, evidence.canonicalUrl);
+  if (duplicateAfterValidation) {
+    return { status: 'duplicate_existing', recoverable: false, reason: 'Provider video already exists in this campaign.', evidence, authorization, cycle, metadata, ownership, duplicate: duplicateAfterValidation };
+  }
+  const review = buildRecoveredHistoricalClipReview({ authorization, evidence, metadata, ownership, cycle, recoveredAt: now });
+  if (!dryRun) {
+    data.clipReviews[authorization.clipId] = review;
+    persist(data);
+  }
+  return {
+    status: dryRun ? 'dry_run_recoverable' : 'recovered', recoverable: true,
+    reason: dryRun ? 'All recovery validations passed.' : 'Pending historical review reconstructed.',
+    evidence, authorization, cycle, metadata, ownership, review, data, duplicate: null, dryRun
+  };
+}
+
+function buildRecoveredHistoricalClipModerationPayload(review) {
+  const embed = buildClipStaffEmbed(review);
+  const currentFields = (embed.data.fields || []).filter(field => field.name !== 'Moderation Status');
+  embed.setFields(...currentFields, {
+    name: 'Moderation Status', value: '🔄 Historical submission recovered\n🟡 Pending Review', inline: false
+  });
+  return { embeds: [embed], components: buildClipStaffButtons(review) };
+}
+
+async function executeHistoricalOrphanRecoveryFromMessage(message, requestedId, options = {}) {
+  const recover = options.recover || recoverHistoricalOrphanClip;
+  const result = await recover(message, requestedId, options);
+  if (options.dryRun || !['recovered', 'already_recovered'].includes(result.status) || !result.review) {
+    return { ...result, messageUpdated: false };
+  }
+  const payload = result.review.status === 'pending'
+    ? buildRecoveredHistoricalClipModerationPayload(result.review)
+    : { embeds: [buildClipStaffEmbed(result.review)], components: buildClipStaffButtons(result.review) };
+  try {
+    await (options.editMessage ? options.editMessage(message, payload) : message.edit(payload));
+    return { ...result, messageUpdated: true };
+  } catch (error) {
+    console.error('[Historical Orphan Recovery] Discord message update failed', {
+      clipId: requestedId,
+      channelId: result.authorization?.channelId || null,
+      messageId: result.authorization?.messageId || null,
+      stack: error?.stack || String(error)
+    });
+    return { ...result, messageUpdated: false, messageUpdateError: error };
+  }
+}
+
+function parseDiscordMessageLink(value) {
+  const match = String(value || '').trim().match(/^https?:\/\/(?:www\.)?discord(?:app)?\.com\/channels\/(\d+)\/(\d+)\/(\d+)\/?$/i);
+  return match ? { guildId: match[1], channelId: match[2], messageId: match[3] } : null;
+}
+
+const ICE_ORPHAN_AUDIT_CHANNEL_IDS = Object.freeze([
+  '1536308350231388261',
+  '1536308351191875634',
+  '1536308352093655084'
+]);
+
+function getHistoricalRecoveryAccountingSnapshot(data, campaignId = 'crowder') {
+  const campaign = CAMPAIGNS[campaignId];
+  const currentRun = getCampaignCurrentRunAccounting(data, campaignId);
+  const currentWeek = getCampaignCurrentWeekAccounting(data, campaignId);
+  const fulfilled = campaign ? getCampaignPanelFulfilledPercent(campaign, data) : 0;
+  const payoutTotals = Object.values(data?.payoutTrackers || {})
+    .filter(tracker => tracker?.campaignId === campaignId)
+    .reduce((totals, tracker) => {
+      totals.paidViews += Number(tracker.paidViews ?? tracker.actualPaidViews ?? 0) || 0;
+      totals.paidMoney += Number(tracker.paidMoney ?? tracker.actualPaidAmount ?? 0) || 0;
+      totals.currentUnpaidViews += Number(tracker.currentUnpaidViews) || 0;
+      totals.currentUnpaidAmount += Number(tracker.currentUnpaidAmount) || 0;
+      return totals;
+    }, { paidViews: 0, paidMoney: 0, currentUnpaidViews: 0, currentUnpaidAmount: 0 });
+  return {
+    currentRunCreditedViews: Number(currentRun?.totalViews ?? currentRun?.creditedViews ?? 0) || 0,
+    currentWeekCreditedViews: Number(currentWeek?.totalViews ?? currentWeek?.creditedViews ?? 0) || 0,
+    fulfilledPercent: Number(fulfilled) || 0,
+    payoutTotals
+  };
+}
+
+async function auditIceOrphanChannelAccess(guild, options = {}) {
+  const logger = options.logger || console;
+  const results = [];
+  for (const channelId of ICE_ORPHAN_AUDIT_CHANNEL_IDS) {
+    try {
+      const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId);
+      if (!channel?.messages?.fetch) throw Object.assign(new Error('Missing Access'), { code: 50001 });
+      await channel.messages.fetch({ limit: 1 });
+      results.push({ channelId, accessible: true });
+    } catch (error) {
+      results.push({ channelId, accessible: false, code: error?.code || error?.rawError?.code || null });
+      logger.warn?.('[Orphan Audit] ICE channel inaccessible — Missing Access', {
+        channelId, code: error?.code || error?.rawError?.code || null
+      });
+    }
+  }
+  return results;
+}
+
+async function runAuthorizedHistoricalOrphanRecoveries(guild, options = {}) {
+  const load = options.loadData || loadData;
+  const execute = options.execute || executeHistoricalOrphanRecoveryFromMessage;
+  const logger = options.logger || console;
+  const before = getHistoricalRecoveryAccountingSnapshot(load(), 'crowder');
+  const results = [];
+  for (const authorization of Object.values(AUTHORIZED_HISTORICAL_ORPHAN_RECOVERIES)) {
+    try {
+      const channel = guild.channels.cache.get(authorization.channelId) || await guild.channels.fetch(authorization.channelId);
+      if (!channel?.messages?.fetch) throw new Error('Moderation channel is unavailable.');
+      const message = await channel.messages.fetch(authorization.messageId);
+      const result = await execute(message, authorization.clipId, options);
+      results.push({
+        clipId: authorization.clipId,
+        channelId: authorization.channelId,
+        messageId: authorization.messageId,
+        status: result.status,
+        reason: result.reason || null,
+        messageUpdated: result.messageUpdated === true
+      });
+    } catch (error) {
+      logger.error?.('[Historical Orphan Recovery] Candidate failed', {
+        clipId: authorization.clipId,
+        channelId: authorization.channelId,
+        messageId: authorization.messageId,
+        stack: error?.stack || String(error)
+      });
+      results.push({
+        clipId: authorization.clipId,
+        channelId: authorization.channelId,
+        messageId: authorization.messageId,
+        status: 'error',
+        reason: error?.message || String(error),
+        messageUpdated: false
+      });
+    }
+  }
+  const after = getHistoricalRecoveryAccountingSnapshot(load(), 'crowder');
+  const accountingUnchanged = JSON.stringify(before) === JSON.stringify(after);
+  logger.log?.('[Historical Orphan Recovery] Authorized pending-only reconciliation complete', {
+    results, before, after, accountingUnchanged
+  });
+  if (!accountingUnchanged) {
+    logger.error?.('[Historical Orphan Recovery] Accounting invariant changed unexpectedly', { before, after });
+  }
+  return { results, before, after, accountingUnchanged };
 }
 
 function approveClipReview(requestedId, staffUserId, options = {}) {
@@ -5449,6 +5960,13 @@ function buildClipStaffEmbed(clip) {
     ? '**Tracking**\n✅ Completed\n' + (clip.completedReason ? '**Completed Reason**\n' + String(clip.completedReason).replace(/_/g, ' ') + '\n' : '')
     : '**Next Scheduled Check**\n' + (Number(clip.nextCheckAt) > 0 ? '<t:' + Math.floor(Number(clip.nextCheckAt) / 1000) + ':R>' : 'Not scheduled');
   const viewsLabel = rejected ? 'Latest Recorded Views' : 'Current Views';
+  const hasExactSubmissionViews = clip.submissionViews !== null && clip.submissionViews !== undefined &&
+    Number.isFinite(Number(clip.submissionViews));
+  const submissionViewsText = hasExactSubmissionViews
+    ? formatNumber(Number(clip.submissionViews))
+    : clip.historicalSubmissionViewsDisplay
+      ? `Historical display: ${String(clip.historicalSubmissionViewsDisplay)}`
+      : 'Exact snapshot unavailable';
   const earningsLabel = rejectionStage === 'pre_approval' ? 'Estimated Earnings Before Rejection' :
     rejectionStage === 'post_approval' ? 'Tracked Earnings Before Removal' :
     pending ? 'Estimated Earnings' : 'Current Earnings';
@@ -5470,7 +5988,7 @@ function buildClipStaffEmbed(clip) {
       (rejectionStage === 'pre_approval' ? '**Payment Eligibility**\nNot eligible\n' : '') +
       (rejectionStage === 'post_approval' ? '**Payment Eligibility**\nNot eligible for new payment\n**Historical Paid**\n$' + (Number(clip.payout?.paidMoney) || 0).toFixed(2) + '\n' : '') +
       (rejected ? '**Rejection Reason**\n' + (clip.rejectReason || 'Not provided') + '\n' : '') +
-      '**Submission Views**\n' + (Number.isFinite(Number(clip.submissionViews)) ? formatNumber(Number(clip.submissionViews)) : 'Unavailable') + '\n' +
+      '**Submission Views**\n' + submissionViewsText + '\n' +
       '**Approval Views**\n' + approvalViewsText + '\n' +
       '**Last Updated**\n<t:' + Math.floor((clip.lastChecked || Date.now()) / 1000) + ':R>\n' +
       trackingText
@@ -10144,6 +10662,10 @@ client.once(Events.ClientReady, () => {
         () => syncElephantJulyReconciliationCards(guild));
       await runBackgroundMaintenanceTask('syncCrowderHistoricalReconciliationCards', { campaignId: 'crowder' },
         () => syncCrowderHistoricalReconciliationCards(guild));
+      await runBackgroundMaintenanceTask('recoverAuthorizedHistoricalOrphans', { campaignId: 'crowder' },
+        () => runAuthorizedHistoricalOrphanRecoveries(guild));
+      await runBackgroundMaintenanceTask('auditIceOrphanChannelAccess', { campaignId: 'ice' },
+        () => auditIceOrphanChannelAccess(guild));
     }
 
     await runBackgroundMaintenanceTask('autoTrackClipViews', { campaignId: 'all', trigger: 'startup' }, autoTrackClipViews);
@@ -10159,7 +10681,45 @@ client.once(Events.ClientReady, () => {
 });
 
 client.on('messageCreate', async message => {
-  if (message.author.bot || !message.guild || !message.content.toLowerCase().startsWith('!auditcliptracking')) return;
+  const command = message.content.toLowerCase().split(/\s+/)[0];
+  const isRecoverCommand = command === '!recoverclip';
+  const isTrackingAuditCommand = command === '!auditcliptracking';
+  if (message.author.bot || !message.guild || (!isRecoverCommand && !isTrackingAuditCommand)) return;
+  if (isRecoverCommand && !isAdmin(message.member)) {
+    await message.reply('❌ You need administrator permissions to recover historical submissions.');
+    return;
+  }
+  if (isRecoverCommand) {
+  const rawLink = message.content.trim().split(/\s+/)[1] || '';
+  const locator = parseDiscordMessageLink(rawLink);
+  if (!locator || locator.guildId !== message.guild.id) {
+    await message.reply('❌ Use `!recoverclip MESSAGE_LINK` with a moderation message from this server.');
+    return;
+  }
+  const channel = await message.guild.channels.fetch(locator.channelId).catch(() => null);
+  if (!channel?.messages?.fetch) {
+    await message.reply('❌ The moderation channel is unavailable.');
+    return;
+  }
+  const sourceMessage = await channel.messages.fetch(locator.messageId).catch(() => null);
+  if (!sourceMessage) {
+    await message.reply('❌ The moderation message could not be found.');
+    return;
+  }
+  const evidence = extractHistoricalOrphanClipEvidence(sourceMessage);
+  if (!evidence.clipId) {
+    await message.reply('⚠️ The moderation message does not contain one recoverable clip identity.');
+    return;
+  }
+  const result = await executeHistoricalOrphanRecoveryFromMessage(sourceMessage, evidence.clipId);
+  const response = result.status === 'recovered'
+    ? `✅ Recovered \`${evidence.clipId}\` as a pending review. No approval, credit, or earnings were created.`
+    : result.status === 'already_recovered'
+      ? `✅ \`${evidence.clipId}\` was already recovered; its original message locator is bound.`
+      : `⚠️ Recovery stopped for \`${evidence.clipId}\`: ${result.reason || result.status}`;
+  await message.reply(response);
+  return;
+  }
   if (!isAdmin(message.member)) {
     await message.reply('❌ You need administrator permissions to audit clip tracking.');
     return;
@@ -14743,6 +15303,22 @@ ${reason}
       return;
     }
 
+    if (interaction.isButton() && interaction.customId.startsWith('clip_recover:')) {
+      if (!interaction.guild || !isAdmin(interaction.member)) {
+        return interaction.reply({ content: '❌ You are not allowed to do this.', flags: MessageFlags.Ephemeral });
+      }
+      const clipId = interaction.customId.slice('clip_recover:'.length);
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const result = await executeHistoricalOrphanRecoveryFromMessage(interaction.message, clipId);
+      if (result.status === 'recovered') {
+        return interaction.editReply({ content: '✅ Historical submission recovered as a pending review. No approval, credit, or earnings were created.' });
+      }
+      if (result.status === 'already_recovered') {
+        return interaction.editReply({ content: '✅ This submission was already recovered. Its canonical record and original message are bound.' });
+      }
+      return interaction.editReply({ content: `⚠️ Unable to recover this submission: ${result.reason || result.status}` });
+    }
+
     if (interaction.isButton() && interaction.customId.startsWith('clip_approve:')) {
       if (!interaction.guild || !isAdmin(interaction.member)) {
         return interaction.reply({ content: '❌ You are not allowed to do this.', flags: MessageFlags.Ephemeral });
@@ -14766,7 +15342,7 @@ ${reason}
           }, () => interaction.message.edit(buildOrphanClipModerationPayload(interaction.message, clipId)));
         }
         return interaction.reply({
-          content: '⚠️ This submission is no longer available in the moderation database.',
+          content: '⚠️ This submission must be recovered before it can be reviewed.',
           flags: MessageFlags.Ephemeral
         });
       }
@@ -14831,7 +15407,7 @@ ${reason}
         }
         return interaction.editReply({
           content: transition.status === 'not_found'
-            ? '⚠️ This submission is no longer available in the moderation database.'
+            ? '⚠️ This submission must be recovered before it can be reviewed.'
             : '❌ This clip could not be approved safely. Please retry or contact an administrator.'
         });
       }
@@ -15001,8 +15577,13 @@ ${reason}
       const located = findClipRecord(data, clipId);
 
       if (!located) {
+        if (interaction.message) {
+          await runClipApprovalSideEffect('Orphan Controls', {
+            requestedId: clipId, campaignId: null, userId: null, stage: 'reject_missing_lookup'
+          }, () => interaction.message.edit(buildOrphanClipModerationPayload(interaction.message, clipId)));
+        }
         await interaction.reply({
-          content: '❌ Clip not found.',
+          content: '⚠️ This submission must be recovered before it can be reviewed.',
           flags: MessageFlags.Ephemeral
         });
         return;
@@ -16492,6 +17073,7 @@ module.exports.__clipLifecycleTest = {
   buildGlobalSocialRemovePage,
   buildGlobalSocialViewPage,
   getCampaignAccountAnalytics,
+  getHistoricalRecoveryAccountingSnapshot,
   getGlobalSocialAccountAnalytics,
   buildGlobalSocialVerificationPrompt,
   buildInstagramVerificationFailureResponse,
@@ -16501,6 +17083,7 @@ module.exports.__clipLifecycleTest = {
   buildMissingGlobalAccountResponse,
   buildMissingCampaignDemographicsResponse,
   buildOrphanClipModerationPayload,
+  buildRecoveredHistoricalClipModerationPayload,
   buildPreLaunchSubmissionEmbed,
   buildRejectedClipUserDm,
   buildRejectedClipUserEmbed,
@@ -16510,12 +17093,15 @@ module.exports.__clipLifecycleTest = {
   clearClipAppealWindow,
   createGlobalSocialVerificationRequest,
   createClipReviewModerationCard,
+  executeHistoricalOrphanRecoveryFromMessage,
+  extractHistoricalOrphanClipEvidence,
   ensureClipAppealDeadline,
   finalizeOutOfRunClips,
   finalizeStraightCampaignIfFulfilled,
   fetchInstagramPublicProfile,
   fetchPublicSocialProfile,
   findClipRecord,
+  findCampaignClipByProviderIdentity,
   findOtherVerifiedClipAccountOwner,
   findAllCampaignSubmissionPanelMessages,
   findCampaignSubmissionPanelMessage,
@@ -16590,6 +17176,11 @@ module.exports.__clipLifecycleTest = {
   normalizeApifyInstagramProfile,
   normalizeVideoDurationSeconds,
   persistClipReviewBeforeStaffMessage,
+  recoverHistoricalOrphanClip,
+  resolveHistoricalClipEarningRun,
+  parseDiscordMessageLink,
+  runAuthorizedHistoricalOrphanRecoveries,
+  auditIceOrphanChannelAccess,
   attachClipReviewStaffMessageLocator,
   userHasEligibleGlobalSocial,
   validateCampaignPublicationDate,
@@ -16604,5 +17195,7 @@ module.exports.__clipLifecycleTest = {
   updateCampaignPanelMessage,
   updateCampaignSubmissionPanelMessage,
   updatePendingReviewTracking,
+  AUTHORIZED_HISTORICAL_ORPHAN_RECOVERIES,
+  ICE_ORPHAN_AUDIT_CHANNEL_IDS,
   CAMPAIGNS
 };
