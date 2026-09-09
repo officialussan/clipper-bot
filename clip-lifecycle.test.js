@@ -45,6 +45,7 @@ const {
   buildCampaignSubmissionPanelComponents,
   buildCampaignStatsEmbed,
   buildCampaignStatusEmbed,
+  buildClientPerformanceReport,
   buildClipStaffEmbed,
   buildClipStaffButtons,
   buildGlobalSocialLinkModal,
@@ -127,6 +128,7 @@ const {
   getInitialSubmissionViewState,
   initializeClipTrackingFields,
   isClipAppealWindowOpen,
+  isPerformanceReportAuthorized,
   isStraightCampaign,
   joinCampaignMember,
   repairApprovalSnapshotInvariants,
@@ -151,6 +153,11 @@ const {
   recoverHistoricalOrphanClip,
   resolveHistoricalClipEarningRun,
   parseDiscordMessageLink,
+  parsePerformanceReportCommand,
+  generateClientPerformanceWorkbook,
+  getClientReportCampaignPolicy,
+  getClientReportPublicViews,
+  recordDailyPerformanceSnapshot,
   runAuthorizedHistoricalOrphanRecoveries,
   attachClipReviewStaffMessageLocator,
   refreshClipApprovalMetadata,
@@ -3917,4 +3924,291 @@ test('authorized startup recovery processes all four independently and preserves
   assert.equal(report.accountingUnchanged, true);
   assert.deepEqual(report.before, snapshot);
   assert.deepEqual(report.after, snapshot);
+});
+
+const CLIENT_REPORT_NOW = Date.parse('2026-09-09T12:00:00.000Z');
+const CLIENT_REPORT_CYCLE = 'elephant:2026-08-03T07:00:00.000Z:2026-08-31T07:00:00.000Z';
+
+function makeClientReportClip(id, overrides = {}) {
+  const platform = overrides.platform || 'youtube';
+  const videoId = overrides.videoId || `video_${id}`;
+  return {
+    id,
+    userId: overrides.userId || `user_${id}`,
+    campaignId: overrides.campaignId || 'elephant',
+    campaignName: overrides.campaignName || 'PRIVATE RAW CAMPAIGN NAME',
+    platform,
+    videoId,
+    username: overrides.username || `creator_${id}`,
+    title: overrides.title || `Clip ${id}`,
+    videoUrl: overrides.videoUrl || `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`,
+    status: 'approved',
+    payoutEligible: true,
+    approvedAt: Date.parse('2026-08-15T12:00:00.000Z'),
+    submittedAt: '2026-08-14T12:00:00.000Z',
+    earningRunKey: CLIENT_REPORT_CYCLE,
+    publicViews: 100,
+    currentViews: 100,
+    trackingStatus: 'active',
+    ...overrides
+  };
+}
+
+test('performance report A: default selection includes recent completed opted-in campaigns only', () => {
+  const data = {
+    clips: {
+      eligible: makeClientReportClip('eligible'),
+      rejected: makeClientReportClip('rejected', { status: 'rejected', payoutEligible: false }),
+      postRejected: makeClientReportClip('post-rejected', { status: 'rejected', payoutEligible: false, rejectionStage: 'post_approval' }),
+      hiddenIce: makeClientReportClip('ice', { campaignId: 'ice' }),
+      unknown: makeClientReportClip('unknown', { campaignId: 'unknown' }),
+      test: makeClientReportClip('test', { isTest: true })
+    },
+    clipReviews: { pending: makeClientReportClip('pending', { status: 'pending', payoutEligible: false }) }
+  };
+  const report = buildClientPerformanceReport(data, { mode: 'default' }, { now: CLIENT_REPORT_NOW });
+  assert.equal(report.summary.approvedVideos, 1);
+  assert.equal(report.clips[0].campaign, CAMPAIGNS.elephant.clientReportName);
+  assert.equal(report.excluded.nonApproved, 2);
+  assert.equal(report.excluded.privacyPolicy, 2);
+  assert.equal(report.excluded.testRecords, 1);
+});
+
+test('performance report command authorization allows administrators and rejects ordinary creators', () => {
+  assert.equal(isPerformanceReportAuthorized({ permissions: { has: () => true }, roles: { cache: new Map() } }), true);
+  assert.equal(isPerformanceReportAuthorized({ permissions: { has: () => false }, roles: { cache: new Map() } }), false);
+});
+
+test('performance report B: canonical platform/video identity prevents duplicate inflation across campaigns', () => {
+  const data = {
+    clips: {
+      first: makeClientReportClip('first', { campaignId: 'elephant', videoId: 'same-video', publicViews: 1000, currentViews: 1000 }),
+      second: makeClientReportClip('second', { campaignId: 'crowder', videoId: 'same-video', publicViews: 1200, currentViews: 1200, lastChecked: CLIENT_REPORT_NOW })
+    },
+    clipReviews: {
+      sameReview: makeClientReportClip('review-copy', { campaignId: 'elephant', videoId: 'same-video', status: 'approved' })
+    }
+  };
+  const report = buildClientPerformanceReport(data, { mode: 'all' }, { now: CLIENT_REPORT_NOW });
+  assert.equal(report.summary.approvedVideos, 1);
+  assert.equal(report.summary.totalPublicViews, 1200);
+  assert.equal(report.excluded.duplicates, 1);
+  assert.match(report.deduplication, /canonical platform\/video identity/);
+});
+
+test('performance report C: all, rolling windows, and explicit campaign scopes resolve correctly', () => {
+  const recent = makeClientReportClip('recent', { approvedAt: Date.parse('2026-09-01T00:00:00Z') });
+  const old = makeClientReportClip('old', { campaignId: 'crowder', approvedAt: Date.parse('2026-06-01T00:00:00Z'), earningRunKey: 'crowder:2026-05-01T00:00:00.000Z:2026-06-02T00:00:00.000Z' });
+  const data = { clips: { recent, old } };
+  assert.equal(buildClientPerformanceReport(data, { mode: 'window', days: 30 }, { now: CLIENT_REPORT_NOW }).summary.approvedVideos, 1);
+  assert.equal(buildClientPerformanceReport(data, { mode: 'all' }, { now: CLIENT_REPORT_NOW }).summary.approvedVideos, 2);
+  const selected = buildClientPerformanceReport(data, { mode: 'campaigns', campaignIds: ['crowder'] }, { now: CLIENT_REPORT_NOW });
+  assert.equal(selected.summary.approvedVideos, 1);
+  assert.equal(selected.clips[0].campaignId, 'crowder');
+  assert.deepEqual(parsePerformanceReportCommand('!performancereport elephant,crowder --internal'), { mode: 'campaigns', internal: true, campaignIds: ['elephant', 'crowder'] });
+});
+
+test('performance report D: executive totals and campaign breakdown reconcile exactly', () => {
+  const data = { clips: {
+    one: makeClientReportClip('one', { campaignId: 'elephant', publicViews: 100, currentViews: 100 }),
+    two: makeClientReportClip('two', { campaignId: 'elephant', publicViews: 200, currentViews: 200 }),
+    three: makeClientReportClip('three', { campaignId: 'crowder', publicViews: 300, currentViews: 300 })
+  } };
+  const report = buildClientPerformanceReport(data, { mode: 'all' }, { now: CLIENT_REPORT_NOW });
+  assert.equal(report.summary.totalPublicViews, 600);
+  assert.equal(report.campaigns.reduce((sum, row) => sum + row.publicViews, 0), 600);
+  assert.equal(report.campaigns.reduce((sum, row) => sum + row.approvedVideos, 0), 3);
+});
+
+test('performance report E: unique creators use canonical creator identity while exposing only public handles', () => {
+  const data = { clips: {
+    one: makeClientReportClip('one', { userId: 'discord-secret-1', username: 'public_one' }),
+    two: makeClientReportClip('two', { userId: 'discord-secret-1', username: 'public_one' }),
+    three: makeClientReportClip('three', { userId: 'discord-secret-2', username: 'public_two' })
+  } };
+  const report = buildClientPerformanceReport(data, { mode: 'all' }, { now: CLIENT_REPORT_NOW });
+  assert.equal(report.summary.uniqueCreators, 2);
+  assert.deepEqual(new Set(report.clips.map(row => row.creator)), new Set(['@public_one', '@public_two']));
+});
+
+test('performance report F: platform breakdown reconciles counts, views, and shares', () => {
+  const data = { clips: {
+    youtube: makeClientReportClip('youtube', { platform: 'youtube', publicViews: 300, currentViews: 300 }),
+    tiktok: makeClientReportClip('tiktok', { platform: 'tiktok', videoUrl: 'https://www.tiktok.com/@creator/video/1234567890', publicViews: 100, currentViews: 100 })
+  } };
+  const report = buildClientPerformanceReport(data, { mode: 'all' }, { now: CLIENT_REPORT_NOW });
+  assert.equal(report.platforms.reduce((sum, row) => sum + row.publicViews, 0), 400);
+  assert.equal(report.platforms.find(row => row.platform === 'YouTube').viewShare, 0.75);
+  assert.equal(report.platforms.reduce((sum, row) => sum + row.approvedVideos, 0), 2);
+});
+
+test('performance report G: top clip, top campaign, average, median, and top list are deterministic', () => {
+  const data = { clips: {
+    low: makeClientReportClip('low', { publicViews: 100, currentViews: 100 }),
+    middle: makeClientReportClip('middle', { publicViews: 300, currentViews: 300 }),
+    high: makeClientReportClip('high', { campaignId: 'crowder', publicViews: 500, currentViews: 500 })
+  } };
+  const report = buildClientPerformanceReport(data, { mode: 'all' }, { now: CLIENT_REPORT_NOW });
+  assert.equal(report.summary.averageViewsPerVideo, 300);
+  assert.equal(report.summary.medianViewsPerVideo, 300);
+  assert.equal(report.summary.topClip.title, 'Clip high');
+  assert.equal(report.topClips[0].publicViews, 500);
+  assert.equal(report.summary.topCampaign.campaignId, 'crowder');
+});
+
+test('performance report H: client clip rows omit Discord, payout, accounting, and reconciliation fields', () => {
+  const clip = makeClientReportClip('safe', {
+    userId: '123456789012345678',
+    payout: { paidViews: 99, paidMoney: 10 },
+    campaignCreditedViews: 77,
+    historicalReconciliationKey: 'private-ledger'
+  });
+  const row = buildClientPerformanceReport({ clips: { safe: clip } }, { mode: 'all' }, { now: CLIENT_REPORT_NOW }).clips[0];
+  assert.deepEqual(Object.keys(row).sort(), [
+    'activityAt', 'approvedAt', 'campaign', 'campaignId', 'category', 'comments', 'creator', 'creatorKey',
+    'cycleEndAt', 'cycleStartAt', 'identity', 'lastUpdatedAt', 'likes', 'platform', 'platformKey', 'publicViews',
+    'publishedAt', 'status', 'submittedAt', 'title', 'url'
+  ]);
+  assert.equal(JSON.stringify(row).includes(clip.userId), false);
+  assert.equal('payout' in row, false);
+  assert.equal('internal' in row, false);
+});
+
+test('performance report I: public metrics use current/public views with optional reliable engagement', () => {
+  const clip = makeClientReportClip('metrics', { publicViews: 12_000_000, currentViews: 12_000_000, submissionViews: 900, campaignCreditedViews: 7_000_000, likes: 80, comments: 12 });
+  const report = buildClientPerformanceReport({ clips: { metrics: clip } }, { mode: 'all' }, { now: CLIENT_REPORT_NOW });
+  assert.equal(getClientReportPublicViews(clip), 12_000_000);
+  assert.equal(report.summary.totalPublicViews, 12_000_000);
+  assert.equal(report.clips[0].likes, 80);
+  assert.equal(report.clips[0].comments, 12);
+  assert.deepEqual(report.source.publicViewFields, ['publicViews', 'currentViews', 'legacy fallback: submissionViews/approvalViews/views']);
+});
+
+test('performance report J: campaign goals appear only when explicitly configured for client reporting', () => {
+  const originalGoal = CAMPAIGNS.elephant.clientReportGoalViews;
+  try {
+    delete CAMPAIGNS.elephant.clientReportGoalViews;
+    let report = buildClientPerformanceReport({ clips: { one: makeClientReportClip('one', { publicViews: 500, currentViews: 500 }) } }, { mode: 'all' }, { now: CLIENT_REPORT_NOW });
+    assert.equal(report.campaigns[0].goalViews, null);
+    assert.equal(report.campaigns[0].goalAttainment, null);
+    CAMPAIGNS.elephant.clientReportGoalViews = 1000;
+    report = buildClientPerformanceReport({ clips: { one: makeClientReportClip('one', { publicViews: 500, currentViews: 500 }) } }, { mode: 'all' }, { now: CLIENT_REPORT_NOW });
+    assert.equal(report.campaigns[0].goalViews, 1000);
+    assert.equal(report.campaigns[0].goalAttainment, 0.5);
+  } finally {
+    if (originalGoal === undefined) delete CAMPAIGNS.elephant.clientReportGoalViews;
+    else CAMPAIGNS.elephant.clientReportGoalViews = originalGoal;
+  }
+});
+
+test('performance report K: privacy allowlist and safe aliases are authoritative', () => {
+  assert.equal(getClientReportCampaignPolicy('elephant').name, 'Political Media Campaign');
+  assert.equal(getClientReportCampaignPolicy('ice'), null);
+  assert.equal(getClientReportCampaignPolicy('ice', { explicit: true }).name, 'Public Affairs Campaign');
+  assert.equal(getClientReportCampaignPolicy('tony', { explicit: true }).name, 'Personal Development Campaign');
+  const explicitlySelected = buildClientPerformanceReport({ clips: { ice: makeClientReportClip('ice', { campaignId: 'ice' }) } }, { mode: 'campaigns', campaignIds: ['ice'] }, { now: CLIENT_REPORT_NOW });
+  assert.equal(explicitlySelected.summary.approvedVideos, 1);
+  const report = buildClientPerformanceReport({ clips: { one: makeClientReportClip('one', { campaignName: 'Secret Client Name' }) } }, { mode: 'all' }, { now: CLIENT_REPORT_NOW });
+  assert.equal(JSON.stringify(report).includes('Secret Client Name'), false);
+});
+
+test('performance report L: client workbook contains required styled sheets and clickable evidence URLs', async () => {
+  const ExcelJS = require('exceljs');
+  const data = { clips: { safe: makeClientReportClip('safe', { userId: 'discord-secret-id', publicViews: 123456, likes: 100, comments: 20 }) } };
+  const report = buildClientPerformanceReport(data, { mode: 'all' }, { now: CLIENT_REPORT_NOW });
+  const buffer = await generateClientPerformanceWorkbook(report);
+  assert.ok(buffer.length > 5000);
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  assert.deepEqual(workbook.worksheets.map(sheet => sheet.name), ['Executive Summary', 'Campaigns', 'Clip Evidence', 'Top Clips', 'Platform Breakdown']);
+  assert.equal(workbook.getWorksheet('Clip Evidence').getCell('F5').value.hyperlink, data.clips.safe.videoUrl);
+  assert.equal(workbook.getWorksheet('Clip Evidence').getCell('J5').value, 123456);
+  assert.equal(workbook.getWorksheet('Clip Evidence').views[0].state, 'frozen');
+  assert.deepEqual(workbook.getWorksheet('Campaigns').getRow(4).values.slice(1), [
+    'Campaign', 'Campaign Category', 'Campaign Cycle', 'Start', 'End', 'Approved Clips', 'Unique Creators',
+    'TikTok Views', 'Instagram Views', 'YouTube Views', 'Total Public Views', 'Average Views / Clip', 'Top Clip Views', 'Goal', 'Overdelivery %'
+  ]);
+  assert.deepEqual(workbook.getWorksheet('Platform Breakdown').getRow(4).values.slice(1), ['Platform', 'Approved Clips', 'Public Views', 'Percentage of Total Views']);
+  assert.equal(workbook.getWorksheet('Executive Summary').getCell('A20').value, 'Campaign Summary');
+  const cells = [];
+  workbook.eachSheet(sheet => sheet.eachRow(row => row.eachCell(cell => cells.push(JSON.stringify(cell.value)))));
+  const renderedText = cells.join('\n');
+  assert.equal(renderedText.includes('discord-secret-id'), false);
+  assert.equal(renderedText.includes('earningRunKey'), false);
+  assert.equal(renderedText.includes('paidMoney'), false);
+});
+
+test('performance report M: internal accounting sheet is opt-in and clearly separated', async () => {
+  const ExcelJS = require('exceljs');
+  const report = buildClientPerformanceReport({ clips: { one: makeClientReportClip('one') } }, { mode: 'all', internal: true }, { now: CLIENT_REPORT_NOW });
+  const buffer = await generateClientPerformanceWorkbook(report, { internal: true });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  assert.ok(workbook.getWorksheet('Internal Audit'));
+  assert.match(workbook.getWorksheet('Internal Audit').getCell('A2').value, /Internal-only traceability/);
+});
+
+test('performance report N: empty and invalid selections fail cleanly without fabricating output', () => {
+  const empty = buildClientPerformanceReport({ clips: {}, clipReviews: {} }, { mode: 'default' }, { now: CLIENT_REPORT_NOW });
+  assert.equal(empty.summary.approvedVideos, 0);
+  assert.equal(empty.summary.totalPublicViews, 0);
+  const unknown = buildClientPerformanceReport({ clips: {} }, { mode: 'campaigns', campaignIds: ['unknown-client'] }, { now: CLIENT_REPORT_NOW });
+  assert.deepEqual(unknown.unsupportedCampaignIds, ['unknown-client']);
+  assert.match(parsePerformanceReportCommand('!performancereport all 30d').error, /Use one scope/);
+});
+
+test('performance report O: an approved clip with no URL is retained and marked Unavailable', async () => {
+  const ExcelJS = require('exceljs');
+  const clip = makeClientReportClip('missing-url', { videoUrl: null, url: null, originalSubmittedUrl: null });
+  const report = buildClientPerformanceReport({ clips: { clip } }, { mode: 'all' }, { now: CLIENT_REPORT_NOW });
+  assert.equal(report.summary.approvedVideos, 1);
+  assert.equal(report.clips[0].url, null);
+  assert.equal(report.excluded.unavailableUrl, 1);
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(await generateClientPerformanceWorkbook(report));
+  assert.equal(workbook.getWorksheet('Clip Evidence').getCell('F5').value, 'Unavailable');
+});
+
+test('performance snapshot history is bounded, idempotent, deduplicated, and provider-free', () => {
+  const data = {
+    clips: {
+      one: makeClientReportClip('one', { videoId: 'same', publicViews: 100, campaignCreditedViews: 50 }),
+      duplicate: makeClientReportClip('duplicate', { videoId: 'same', publicViews: 120, campaignCreditedViews: 60 }),
+      completed: makeClientReportClip('completed', { trackingStatus: 'completed' }),
+      rejected: makeClientReportClip('rejected', { status: 'rejected', payoutEligible: false })
+    },
+    performanceReportSnapshots: {
+      version: 1,
+      retentionDays: 1,
+      clipDays: { '2026-09-07': [], '2026-09-08': [] },
+      campaignDays: { '2026-09-07': [], '2026-09-08': [] }
+    }
+  };
+  const first = recordDailyPerformanceSnapshot(data, { now: CLIENT_REPORT_NOW, retentionDays: 1 });
+  assert.equal(first.changed, true);
+  assert.equal(first.clipSnapshots, 1);
+  assert.deepEqual(Object.keys(data.performanceReportSnapshots.clipDays), ['2026-09-09']);
+  assert.deepEqual(Object.keys(data.performanceReportSnapshots.clipDays['2026-09-09'][0]).sort(), ['campaignId', 'capturedAt', 'clipId', 'comments', 'earningRunKey', 'likes', 'publicViews']);
+  const second = recordDailyPerformanceSnapshot(data, { now: CLIENT_REPORT_NOW + 1000, retentionDays: 1 });
+  assert.deepEqual(second, { changed: false, date: '2026-09-09', reason: 'already_captured' });
+});
+
+test('performance report P: generation is read-only and handles thousands of clips', () => {
+  const clips = {};
+  for (let index = 0; index < 5000; index++) {
+    clips[`clip-${index}`] = makeClientReportClip(`bulk-${index}`, {
+      userId: `creator-${index % 200}`,
+      videoId: `bulk-video-${index}`,
+      publicViews: index,
+      currentViews: index
+    });
+  }
+  const data = { clips, clipReviews: {}, campaignStatus: { elephant: { status: 'active' } } };
+  const before = structuredClone(data);
+  const report = buildClientPerformanceReport(data, { mode: 'all' }, { now: CLIENT_REPORT_NOW });
+  assert.equal(report.summary.approvedVideos, 5000);
+  assert.equal(report.summary.uniqueCreators, 200);
+  assert.deepEqual(data, before);
+  assert.equal(report.source.providerCalls, false);
+  assert.equal(report.source.dataWrites, false);
 });

@@ -85,6 +85,9 @@ const CLIP_TRACK_SCHEDULER_MS = 10 * 60 * 1000;
 const CLIP_TRACK_RETRY_MS = 15 * 60 * 1000;
 const GLOBAL_SOCIAL_VERIFICATION_TTL_MS = 30 * 60 * 1000;
 const INSTAGRAM_PROFILE_VERIFICATION_COOLDOWN_MS = 20 * 1000;
+const CLIENT_PERFORMANCE_REPORT_FILENAME = 'Creators_Elite_Performance_Report.xlsx';
+const PERFORMANCE_SNAPSHOT_INTERVAL_MS = 60 * 60 * 1000;
+const DEFAULT_PERFORMANCE_SNAPSHOT_RETENTION_DAYS = 365;
 
 function getInstagramConfigurationStatus() {
   const missing = [];
@@ -467,6 +470,9 @@ const CAMPAIGNS = {
     roleId: process.env.ELEPHANT_ROLE_ID,
     entryChannelId: process.env.ELEPHANT_ENTRY_CHANNEL_ID,
     connectAccountChannelId: '1521567104552276058',
+    clientReportEnabled: true,
+    clientReportName: 'Political Media Campaign',
+    clientReportCategory: 'Media & Commentary',
     source: 'monsterlab',
     accountMode: 'campaign_staff_code',
     monsterCampaignId: "fbFMAJpxpQkZ0Honf7z4",
@@ -520,6 +526,9 @@ Click the button below to start clipping and earning.`
     roleId: process.env.CROWDER_ROLE_ID,
     entryChannelId: process.env.CROWDER_ENTRY_CHANNEL_ID,
     connectAccountChannelId: '1521566652796240046',
+    clientReportEnabled: true,
+    clientReportName: 'Political Commentary Campaign',
+    clientReportCategory: 'Media & Commentary',
     source: 'monsterlab',
     accountMode: 'campaign_staff_code',
     monsterCampaignId: "Qgl6rzYPcDIVxqZ23kXI",
@@ -568,6 +577,9 @@ Click the button below to start clipping and earning.`
     payoutThresholdViews: 10_000,
     maxPayoutPerClipPercent: 10,
     refillable: true,
+    clientReportEnabled: false,
+    clientReportName: 'Public Affairs Campaign',
+    clientReportCategory: 'Public Affairs',
     roleId: process.env.ICE_ROLE_ID,
     entryChannelId: process.env.ICE_ENTRY_CHANNEL_ID,
     launchAt: null,
@@ -599,6 +611,18 @@ based on performance.
 Click the button below to start clipping and earning.`
   }
 };
+
+// Retired campaigns stay outside the operational CAMPAIGNS registry. This
+// report-only registry allows historical performance to be included without
+// accidentally making a retired campaign joinable or exposing its client name.
+const CLIENT_REPORT_ARCHIVED_CAMPAIGNS = Object.freeze({
+  tony: Object.freeze({
+    id: 'tony',
+    clientReportEnabled: true,
+    clientReportName: 'Personal Development Campaign',
+    clientReportCategory: 'Personal Development'
+  })
+});
 
 const ELEPHANT_JULY_RECONCILIATION = Object.freeze({
   migrationName: 'elephantJulyHistoricalReconciliationV2',
@@ -2177,6 +2201,16 @@ function isAdmin(member) {
   return member.permissions.has(PermissionsBitField.Flags.Administrator);
 }
 
+function isPerformanceReportAuthorized(member) {
+  if (!member) return false;
+  if (member.permissions?.has?.(PermissionsBitField.Flags.Administrator)) return true;
+  const roles = member.roles?.cache;
+  return Boolean(
+    (STAFF_ROLE_ID && roles?.has?.(STAFF_ROLE_ID)) ||
+    (PROXY_STAFF_ROLE_ID && roles?.has?.(PROXY_STAFF_ROLE_ID))
+  );
+}
+
 function formatPlatform(p) {
   return {
     tiktok: 'TikTok',
@@ -3105,6 +3139,739 @@ function getStoredPublicViews(clip) {
     if (Number.isFinite(legacyViews) && legacyViews >= 0) publicSnapshots.push(legacyViews);
   }
   return publicSnapshots.length ? Math.max(...publicSnapshots) : 0;
+}
+
+function getClientReportCampaignPolicy(campaignId, options = {}) {
+  const id = String(campaignId || '').trim().toLowerCase();
+  const campaign = CAMPAIGNS[id] || CLIENT_REPORT_ARCHIVED_CAMPAIGNS[id];
+  const reportName = typeof campaign?.clientReportName === 'string'
+    ? campaign.clientReportName.trim()
+    : '';
+  if (!campaign || !reportName) return null;
+  if (!options.explicit && campaign.clientReportEnabled !== true) return null;
+  if (options.explicit && campaign.clientReportEnabled !== true && campaign.clientReportAllowExplicit === false) return null;
+  return {
+    id,
+    name: reportName,
+    category: typeof campaign.clientReportCategory === 'string' && campaign.clientReportCategory.trim()
+      ? campaign.clientReportCategory.trim()
+      : 'Creator Campaign',
+    goalViews: Number.isFinite(Number(campaign.clientReportGoalViews)) && Number(campaign.clientReportGoalViews) > 0
+      ? Number(campaign.clientReportGoalViews)
+      : null,
+    enabledByDefault: campaign.clientReportEnabled === true
+  };
+}
+
+function parsePerformanceReportCommand(content) {
+  const tokens = String(content || '').trim().split(/\s+/).slice(1);
+  const internal = tokens.some(token => token.toLowerCase() === '--internal');
+  const args = tokens
+    .filter(token => token.toLowerCase() !== '--internal')
+    .flatMap(token => token.split(','))
+    .map(token => token.trim().toLowerCase())
+    .filter(Boolean);
+  if (!args.length) return { mode: 'default', internal, campaignIds: [] };
+  if (args.length === 1 && args[0] === 'all') return { mode: 'all', internal, campaignIds: [] };
+  const windowMatch = args.length === 1 ? args[0].match(/^(30|60|90)d$/) : null;
+  if (windowMatch) return { mode: 'window', days: Number(windowMatch[1]), internal, campaignIds: [] };
+  if (args.some(token => token === 'all' || /^(30|60|90)d$/.test(token) || token.startsWith('--'))) {
+    return { error: 'Use one scope: `!performancereport`, `all`, `30d`, `60d`, `90d`, or campaign IDs.' };
+  }
+  return { mode: 'campaigns', internal, campaignIds: [...new Set(args)] };
+}
+
+function getClientReportTimestamp(value) {
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : null;
+  const number = Number(value);
+  if (Number.isFinite(number) && number > 0) return number;
+  const parsed = Date.parse(String(value || ''));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getClientReportActivityTimestamp(clip) {
+  return getClientReportTimestamp(clip?.approvedAt) ||
+    getClientReportTimestamp(clip?.submittedAt) ||
+    getClientReportTimestamp(clip?.submittedTimestamp) ||
+    getClientReportTimestamp(clip?.createdAt);
+}
+
+function getClientReportCycleBounds(clip, campaign) {
+  const parsed = parsePayoutCycleBoundsFromKey(clip?.earningRunKey);
+  let inferred = null;
+  if (!parsed.cycleStartAt || !parsed.cycleEndAt) {
+    const submitted = getClientReportActivityTimestamp({
+      submittedAt: clip?.submittedAt,
+      submittedTimestamp: clip?.submittedTimestamp,
+      createdAt: clip?.createdAt
+    });
+    const knownCycles = String(clip?.campaignId || '').toLowerCase() === 'elephant' ? [
+      { cycleStartAt: ELEPHANT_JULY_RECONCILIATION.cycleStartAt, cycleEndAt: ELEPHANT_JULY_RECONCILIATION.cycleEndAt },
+      { cycleStartAt: ELEPHANT_JULY_RECONCILIATION.nextCycleStartAt, cycleEndAt: parsePayoutCycleBoundsFromKey(ELEPHANT_JULY_RECONCILIATION.nextEarningRunKey).cycleEndAt }
+    ] : String(clip?.campaignId || '').toLowerCase() === 'crowder' ? [
+      CROWDER_HISTORICAL_RECONCILIATION.historicalCycle,
+      { cycleStartAt: CROWDER_HISTORICAL_RECONCILIATION.currentCycleStartAt, cycleEndAt: CROWDER_HISTORICAL_RECONCILIATION.currentCycleEndAt }
+    ] : [];
+    inferred = knownCycles.find(cycle => {
+      const start = getClientReportTimestamp(cycle?.cycleStartAt);
+      const end = getClientReportTimestamp(cycle?.cycleEndAt);
+      return submitted !== null && start !== null && end !== null && submitted >= start && submitted < end;
+    }) || null;
+  }
+  const start = getClientReportTimestamp(clip?.payoutCycleStartAt ?? clip?.cycleStartAt ?? parsed.cycleStartAt ?? inferred?.cycleStartAt ?? campaign?.startDate);
+  const end = getClientReportTimestamp(clip?.payoutCycleEndAt ?? clip?.cycleEndAt ?? parsed.cycleEndAt ?? inferred?.cycleEndAt ?? campaign?.endDate);
+  return { start, end };
+}
+
+function getClientReportPublicViews(clip) {
+  const primary = [clip?.publicViews, clip?.currentViews]
+    .map(Number)
+    .filter(value => Number.isFinite(value) && value >= 0);
+  if (primary.length) return Math.max(...primary);
+  return getStoredPublicViews(clip);
+}
+
+function getClientReportMetric(clip, names) {
+  const values = names
+    .map(name => Number(clip?.[name]))
+    .filter(value => Number.isFinite(value) && value >= 0);
+  return values.length ? Math.max(...values) : null;
+}
+
+function getClientReportClipUrl(clip) {
+  const value = String(clip?.videoUrl || clip?.url || clip?.originalSubmittedUrl || '').trim();
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function isClientReportTestRecord(clip) {
+  if (clip?.isTest === true || clip?.testRecord === true || clip?.environment === 'test') return true;
+  const campaignId = String(clip?.campaignId || '').toLowerCase();
+  return /^(test|testing|dummy|sandbox)(?:[-_:]|$)/.test(campaignId);
+}
+
+function getClientReportCreatorKey(clip) {
+  const source = clip?.userId !== null && clip?.userId !== undefined
+    ? `user:${String(clip.userId)}`
+    : `account:${String(clip?.platform || '').toLowerCase()}:${normalizeUsername(clip?.username || clip?.platformAuthorName || 'unknown').toLowerCase()}`;
+  return `creator:${crypto.createHash('sha256').update(source).digest('hex').slice(0, 16)}`;
+}
+
+function getClientReportCreatorDisplay(clip, anonymousIndex) {
+  const username = normalizeUsername(clip?.username || clip?.platformUsername || '');
+  if (username) return `@${username}`.slice(0, 80);
+  return `Creator ${String(anonymousIndex).padStart(2, '0')}`;
+}
+
+function getClientReportClipIdentity(clip) {
+  const identity = getClipIdentityKey(clip);
+  if (identity) return identity;
+  const url = getClientReportClipUrl(clip);
+  return url ? `url:${url.toLowerCase()}` : null;
+}
+
+function getClientReportPolicies(selection) {
+  if (selection.mode === 'campaigns') {
+    const policies = selection.campaignIds
+      .map(id => getClientReportCampaignPolicy(id, { explicit: true }))
+      .filter(Boolean);
+    const allowed = new Set(policies.map(policy => policy.id));
+    return {
+      policies,
+      unsupportedCampaignIds: selection.campaignIds.filter(id => !allowed.has(id))
+    };
+  }
+  return {
+    policies: [...new Set([...Object.keys(CAMPAIGNS), ...Object.keys(CLIENT_REPORT_ARCHIVED_CAMPAIGNS)])]
+      .map(id => getClientReportCampaignPolicy(id))
+      .filter(Boolean),
+    unsupportedCampaignIds: []
+  };
+}
+
+function clipMatchesClientReportPeriod(clip, campaign, selection, now) {
+  const activityAt = getClientReportActivityTimestamp(clip);
+  if (activityAt && activityAt > now) return false;
+  if (selection.mode === 'window') {
+    const start = now - selection.days * 24 * 60 * 60 * 1000;
+    return activityAt !== null && activityAt >= start;
+  }
+  if (selection.mode !== 'default') return true;
+  const recentStart = now - 90 * 24 * 60 * 60 * 1000;
+  const cycle = getClientReportCycleBounds(clip, campaign);
+  return cycle.end !== null && cycle.end <= now && cycle.end >= recentStart;
+}
+
+function median(values) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function buildClientPerformanceReport(data, rawSelection = { mode: 'default' }, options = {}) {
+  const now = getClientReportTimestamp(options.now) || Date.now();
+  const selection = typeof rawSelection === 'string'
+    ? parsePerformanceReportCommand(`!performancereport ${rawSelection}`)
+    : { mode: 'default', campaignIds: [], internal: false, ...rawSelection };
+  if (selection.error) return { error: selection.error };
+  const { policies, unsupportedCampaignIds } = getClientReportPolicies(selection);
+  const policyById = new Map(policies.map(policy => [policy.id, policy]));
+  const excluded = {
+    nonApproved: 0,
+    privacyPolicy: 0,
+    period: 0,
+    testRecords: 0,
+    unavailableUrl: 0,
+    duplicates: 0
+  };
+  const candidates = [];
+  for (const clip of Object.values(data?.clips || {})) {
+    if (!isPayoutEligibleClip(clip)) { excluded.nonApproved++; continue; }
+    if (isClientReportTestRecord(clip)) { excluded.testRecords++; continue; }
+    const policy = policyById.get(String(clip.campaignId || '').toLowerCase());
+    if (!policy) { excluded.privacyPolicy++; continue; }
+    if (!clipMatchesClientReportPeriod(clip, CAMPAIGNS[policy.id] || CLIENT_REPORT_ARCHIVED_CAMPAIGNS[policy.id], selection, now)) { excluded.period++; continue; }
+    const url = getClientReportClipUrl(clip);
+    if (!url) excluded.unavailableUrl++;
+    const identity = getClientReportClipIdentity(clip);
+    if (!identity) continue;
+    candidates.push({ clip, policy, url, identity });
+  }
+
+  const deduped = new Map();
+  for (const candidate of candidates) {
+    const current = deduped.get(candidate.identity);
+    if (!current) {
+      deduped.set(candidate.identity, candidate);
+      continue;
+    }
+    excluded.duplicates++;
+    const candidateViews = getClientReportPublicViews(candidate.clip);
+    const currentViews = getClientReportPublicViews(current.clip);
+    const candidateCheckedAt = getClientReportTimestamp(candidate.clip.lastChecked) || 0;
+    const currentCheckedAt = getClientReportTimestamp(current.clip.lastChecked) || 0;
+    if (candidateViews > currentViews || (candidateViews === currentViews && candidateCheckedAt > currentCheckedAt)) {
+      deduped.set(candidate.identity, candidate);
+    }
+  }
+
+  const creatorIndexes = new Map();
+  const rows = [...deduped.values()].map(candidate => {
+    const { clip, policy, url, identity } = candidate;
+    const creatorKey = getClientReportCreatorKey(clip);
+    if (!creatorIndexes.has(creatorKey)) creatorIndexes.set(creatorKey, creatorIndexes.size + 1);
+    const activityAt = getClientReportActivityTimestamp(clip);
+    const cycle = getClientReportCycleBounds(clip, CAMPAIGNS[policy.id] || CLIENT_REPORT_ARCHIVED_CAMPAIGNS[policy.id]);
+    const row = {
+      identity,
+      campaignId: policy.id,
+      campaign: policy.name,
+      category: policy.category,
+      creatorKey,
+      creator: getClientReportCreatorDisplay(clip, creatorIndexes.get(creatorKey)),
+      platform: formatPlatform(String(clip.platform || '').toLowerCase()),
+      platformKey: String(clip.platform || '').toLowerCase(),
+      title: String(clip.title || 'Untitled clip').replace(/\s+/g, ' ').trim().slice(0, 180),
+      url,
+      approvedAt: getClientReportTimestamp(clip.approvedAt),
+      submittedAt: getClientReportTimestamp(clip.submittedAt) || getClientReportTimestamp(clip.submittedTimestamp),
+      publishedAt: getClientReportTimestamp(clip.publishedAt) || getClientReportTimestamp(clip.publishedTimestamp),
+      lastUpdatedAt: getClientReportTimestamp(clip.lastChecked) || getClientReportTimestamp(clip.updatedAt) || activityAt,
+      activityAt,
+      cycleStartAt: cycle.start,
+      cycleEndAt: cycle.end,
+      publicViews: getClientReportPublicViews(clip),
+      likes: getClientReportMetric(clip, ['likes', 'likeCount', 'likesCount']),
+      comments: getClientReportMetric(clip, ['comments', 'commentCount', 'commentsCount']),
+      status: 'Approved'
+    };
+    if (selection.internal === true) {
+      row.internal = {
+        clipId: clip.id || clip.clipId || null,
+        campaignId: clip.campaignId || null,
+        earningRunKey: clip.earningRunKey || null,
+        campaignCreditedViews: Number(clip.campaignCreditedViews ?? clip.views) || 0
+      };
+    }
+    return row;
+  }).sort((a, b) => b.publicViews - a.publicViews || String(a.url).localeCompare(String(b.url)));
+
+  const campaignRows = policies.map(policy => {
+    const campaignClips = rows.filter(row => row.campaignId === policy.id);
+    if (!campaignClips.length) return null;
+    const views = campaignClips.reduce((sum, row) => sum + row.publicViews, 0);
+    const topClip = [...campaignClips].sort((a, b) => b.publicViews - a.publicViews)[0] || null;
+    const starts = campaignClips.map(row => row.cycleStartAt || row.activityAt).filter(Boolean);
+    const ends = campaignClips.map(row => row.cycleEndAt || row.activityAt).filter(Boolean);
+    return {
+      campaignId: policy.id,
+      campaign: policy.name,
+      category: policy.category,
+      startAt: starts.length ? Math.min(...starts) : null,
+      endAt: ends.length ? Math.max(...ends) : null,
+      approvedVideos: campaignClips.length,
+      uniqueCreators: new Set(campaignClips.map(row => row.creatorKey)).size,
+      publicViews: views,
+      averageViewsPerClip: campaignClips.length ? views / campaignClips.length : null,
+      platformViews: {
+        tiktok: campaignClips.filter(row => row.platformKey === 'tiktok').reduce((sum, row) => sum + row.publicViews, 0),
+        instagram: campaignClips.filter(row => row.platformKey === 'instagram').reduce((sum, row) => sum + row.publicViews, 0),
+        youtube: campaignClips.filter(row => row.platformKey === 'youtube').reduce((sum, row) => sum + row.publicViews, 0),
+        facebook: campaignClips.filter(row => row.platformKey === 'facebook').reduce((sum, row) => sum + row.publicViews, 0)
+      },
+      topClip: topClip ? { title: topClip.title, views: topClip.publicViews, url: topClip.url } : null,
+      goalViews: policy.goalViews,
+      goalAttainment: policy.goalViews ? views / policy.goalViews : null,
+      overdeliveryPercent: policy.goalViews ? (views - policy.goalViews) / policy.goalViews : null
+    };
+  }).filter(Boolean).sort((a, b) => b.publicViews - a.publicViews);
+
+  const campaignCycleGroups = new Map();
+  for (const row of rows) {
+    const hasCycle = row.cycleStartAt !== null || row.cycleEndAt !== null;
+    const key = hasCycle
+      ? `${row.campaignId}|${row.cycleStartAt || 'unknown'}|${row.cycleEndAt || 'unknown'}`
+      : `${row.campaignId}|historical-unclassified`;
+    const policy = policyById.get(row.campaignId);
+    const group = campaignCycleGroups.get(key) || {
+      campaignId: row.campaignId,
+      campaign: row.campaign,
+      category: row.category,
+      startAt: row.cycleStartAt,
+      endAt: row.cycleEndAt,
+      activityStartAt: null,
+      activityEndAt: null,
+      clips: [],
+      goalViews: policy?.goalViews || null
+    };
+    group.clips.push(row);
+    if (row.activityAt) {
+      group.activityStartAt = group.activityStartAt === null ? row.activityAt : Math.min(group.activityStartAt, row.activityAt);
+      group.activityEndAt = group.activityEndAt === null ? row.activityAt : Math.max(group.activityEndAt, row.activityAt);
+    }
+    campaignCycleGroups.set(key, group);
+  }
+  const campaignCycles = [...campaignCycleGroups.values()].map(group => {
+    const startAt = group.startAt || group.activityStartAt;
+    const endAt = group.endAt || group.activityEndAt;
+    const publicViews = group.clips.reduce((sum, row) => sum + row.publicViews, 0);
+    const topClip = [...group.clips].sort((a, b) => b.publicViews - a.publicViews)[0] || null;
+    const cycleLabel = group.startAt || group.endAt
+      ? `${startAt ? new Date(startAt).toISOString().slice(0, 10) : 'Unknown start'} to ${endAt ? new Date(endAt).toISOString().slice(0, 10) : 'Present'}`
+      : 'Available historical activity';
+    return {
+      campaignId: group.campaignId,
+      campaign: group.campaign,
+      category: group.category,
+      cycle: cycleLabel,
+      startAt,
+      endAt,
+      approvedVideos: group.clips.length,
+      uniqueCreators: new Set(group.clips.map(row => row.creatorKey)).size,
+      publicViews,
+      averageViewsPerClip: group.clips.length ? publicViews / group.clips.length : null,
+      platformViews: {
+        tiktok: group.clips.filter(row => row.platformKey === 'tiktok').reduce((sum, row) => sum + row.publicViews, 0),
+        instagram: group.clips.filter(row => row.platformKey === 'instagram').reduce((sum, row) => sum + row.publicViews, 0),
+        youtube: group.clips.filter(row => row.platformKey === 'youtube').reduce((sum, row) => sum + row.publicViews, 0),
+        facebook: group.clips.filter(row => row.platformKey === 'facebook').reduce((sum, row) => sum + row.publicViews, 0)
+      },
+      topClip: topClip ? { title: topClip.title, views: topClip.publicViews, url: topClip.url } : null,
+      goalViews: group.goalViews,
+      goalAttainment: group.goalViews ? publicViews / group.goalViews : null,
+      overdeliveryPercent: group.goalViews ? (publicViews - group.goalViews) / group.goalViews : null
+    };
+  }).sort((a, b) => (b.endAt || 0) - (a.endAt || 0) || b.publicViews - a.publicViews);
+
+  const platformRows = [...new Set(rows.map(row => row.platformKey))].map(platformKey => {
+    const platformClips = rows.filter(row => row.platformKey === platformKey);
+    const views = platformClips.reduce((sum, row) => sum + row.publicViews, 0);
+    return {
+      platform: formatPlatform(platformKey),
+      approvedVideos: platformClips.length,
+      uniqueCreators: new Set(platformClips.map(row => row.creatorKey)).size,
+      publicViews: views
+    };
+  }).sort((a, b) => b.publicViews - a.publicViews);
+  const totalViews = rows.reduce((sum, row) => sum + row.publicViews, 0);
+  for (const platform of platformRows) platform.viewShare = totalViews ? platform.publicViews / totalViews : 0;
+
+  const activityTimes = rows.map(row => row.activityAt).filter(Boolean);
+  let periodStart = null;
+  let periodEnd = now;
+  let periodLabel = 'Recent completed campaigns (last 90 days)';
+  if (selection.mode === 'window') {
+    periodStart = now - selection.days * 24 * 60 * 60 * 1000;
+    periodLabel = `Last ${selection.days} days`;
+  } else if (selection.mode === 'all') {
+    periodStart = activityTimes.length ? Math.min(...activityTimes) : null;
+    periodLabel = 'All available approved history';
+  } else if (selection.mode === 'campaigns') {
+    periodStart = activityTimes.length ? Math.min(...activityTimes) : null;
+    periodEnd = activityTimes.length ? Math.max(...activityTimes) : now;
+    periodLabel = `Selected campaigns: ${policies.map(policy => policy.name).join(', ') || 'none'}`;
+  } else {
+    periodStart = now - 90 * 24 * 60 * 60 * 1000;
+  }
+
+  const dailyPerformance = [];
+  for (const [date, entries] of Object.entries(data?.performanceReportSnapshots?.campaignDays || {})) {
+    const timestamp = Date.parse(`${date}T00:00:00.000Z`);
+    if (periodStart && timestamp < periodStart) continue;
+    if (timestamp > periodEnd) continue;
+    for (const entry of Array.isArray(entries) ? entries : []) {
+      const policy = policyById.get(String(entry.campaignId || '').toLowerCase());
+      if (!policy) continue;
+      dailyPerformance.push({
+        date,
+        campaign: policy.name,
+        approvedVideos: Number(entry.approvedVideos) || 0,
+        uniqueCreators: Number(entry.uniqueCreators) || 0,
+        publicViews: Number(entry.publicViews) || 0
+      });
+    }
+  }
+
+  return {
+    generatedAt: now,
+    selection,
+    period: { label: periodLabel, startAt: periodStart, endAt: periodEnd },
+    source: {
+      collections: ['data.clips'],
+      eligibility: ['status=approved', 'payoutEligible!=false', 'clientReportEnabled policy', 'canonical clip identity'],
+      publicViewFields: ['publicViews', 'currentViews', 'legacy fallback: submissionViews/approvalViews/views'],
+      activityDateFields: ['approvedAt', 'submittedAt', 'submittedTimestamp', 'createdAt'],
+      providerCalls: false,
+      dataWrites: false
+    },
+    deduplication: 'One row per canonical platform/video identity across the selected report. The record with the highest current public-view snapshot wins; lastChecked breaks ties.',
+    unsupportedCampaignIds,
+    excluded,
+    summary: {
+      campaigns: campaignRows.length,
+      approvedVideos: rows.length,
+      totalPublicViews: totalViews,
+      uniqueCreators: new Set(rows.map(row => row.creatorKey)).size,
+      averageViewsPerVideo: rows.length ? totalViews / rows.length : null,
+      medianViewsPerVideo: rows.length ? median(rows.map(row => row.publicViews)) : null,
+      topClip: rows[0] || null,
+      topCampaign: campaignRows[0] || null
+    },
+    campaigns: campaignRows,
+    campaignCycles,
+    clips: rows,
+    topClips: rows.slice(0, 20),
+    platforms: platformRows,
+    dailyPerformance
+  };
+}
+
+function getPerformanceSnapshotRetentionDays() {
+  const configured = Number(process.env.PERFORMANCE_SNAPSHOT_RETENTION_DAYS);
+  if (!Number.isFinite(configured)) return DEFAULT_PERFORMANCE_SNAPSHOT_RETENTION_DAYS;
+  return Math.min(Math.max(Math.floor(configured), 30), 730);
+}
+
+function recordDailyPerformanceSnapshot(data, options = {}) {
+  const now = getClientReportTimestamp(options.now) || Date.now();
+  const date = new Date(now).toISOString().slice(0, 10);
+  const retentionDays = Number.isFinite(Number(options.retentionDays))
+    ? Math.min(Math.max(Math.floor(Number(options.retentionDays)), 1), 730)
+    : getPerformanceSnapshotRetentionDays();
+  data.performanceReportSnapshots ||= { version: 1, retentionDays, clipDays: {}, campaignDays: {} };
+  const store = data.performanceReportSnapshots;
+  store.version = 1;
+  store.retentionDays = retentionDays;
+  store.clipDays ||= {};
+  store.campaignDays ||= {};
+  if (store.clipDays[date] && store.campaignDays[date]) return { changed: false, date, reason: 'already_captured' };
+
+  const deduped = new Map();
+  for (const clip of Object.values(data?.clips || {})) {
+    if (!isPayoutEligibleClip(clip) || clip.trackingStatus === 'completed') continue;
+    const identity = getClientReportClipIdentity(clip);
+    if (!identity) continue;
+    const current = deduped.get(identity);
+    if (!current || getClientReportPublicViews(clip) > getClientReportPublicViews(current)) deduped.set(identity, clip);
+  }
+  const clipRows = [...deduped.values()].map(clip => ({
+    clipId: clip.id || clip.clipId || null,
+    campaignId: clip.campaignId || null,
+    earningRunKey: clip.earningRunKey || null,
+    capturedAt: now,
+    publicViews: getClientReportPublicViews(clip),
+    likes: getClientReportMetric(clip, ['likes', 'likeCount', 'likesCount']),
+    comments: getClientReportMetric(clip, ['comments', 'commentCount', 'commentsCount'])
+  }));
+  const campaignGroups = new Map();
+  for (const clip of deduped.values()) {
+    const campaignId = String(clip.campaignId || 'unknown').toLowerCase();
+    const earningRunKey = clip.earningRunKey || null;
+    const groupKey = `${campaignId}|${earningRunKey || 'unclassified'}`;
+    const group = campaignGroups.get(groupKey) || { campaignId, earningRunKey, approvedVideos: 0, publicViews: 0, creditedViews: 0, creators: new Set() };
+    group.approvedVideos++;
+    group.publicViews += getClientReportPublicViews(clip);
+    group.creditedViews += Math.max(0, Number(getClipActiveCreditedViews(clip)) || 0);
+    group.creators.add(getClientReportCreatorKey(clip));
+    campaignGroups.set(groupKey, group);
+  }
+  store.clipDays[date] = clipRows;
+  store.campaignDays[date] = [...campaignGroups.values()].map(group => ({
+    campaignId: group.campaignId,
+    earningRunKey: group.earningRunKey,
+    capturedAt: now,
+    approvedVideos: group.approvedVideos,
+    publicViews: group.publicViews,
+    creditedViews: group.creditedViews,
+    uniqueCreators: group.creators.size
+  }));
+  const dates = [...new Set([...Object.keys(store.clipDays), ...Object.keys(store.campaignDays)])].sort();
+  for (const oldDate of dates.slice(0, Math.max(0, dates.length - retentionDays))) {
+    delete store.clipDays[oldDate];
+    delete store.campaignDays[oldDate];
+  }
+  return { changed: true, date, clipSnapshots: clipRows.length, campaignSnapshots: campaignGroups.size, retentionDays };
+}
+
+function readPerformanceReportDataOnly() {
+  return readJsonFileSafely(primaryDataFilePath) ||
+    (process.env.RAILWAY_ENVIRONMENT ? readJsonFileSafely(railwayBackupFilePath) : null) ||
+    (mirrorDataFilePath !== primaryDataFilePath ? readJsonFileSafely(mirrorDataFilePath) : null) ||
+    { clips: {}, clipReviews: {} };
+}
+
+async function captureDailyPerformanceSnapshot(options = {}) {
+  const data = (options.loadData || loadData)();
+  const result = recordDailyPerformanceSnapshot(data, { now: options.now });
+  if (result.changed) (options.saveData || saveData)(data);
+  return result;
+}
+
+function requireExcelJs(options = {}) {
+  if (options.ExcelJS) return options.ExcelJS;
+  try {
+    return require('exceljs');
+  } catch (error) {
+    const wrapped = new Error('Excel report generation is unavailable because the ExcelJS production dependency is not installed.');
+    wrapped.cause = error;
+    throw wrapped;
+  }
+}
+
+async function generateClientPerformanceWorkbook(report, options = {}) {
+  if (report?.error) throw new Error(report.error);
+  const ExcelJS = requireExcelJs(options);
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'Creators Elite';
+  workbook.company = 'Creators Elite';
+  workbook.subject = 'Client-facing creator campaign performance';
+  workbook.created = new Date(report.generatedAt);
+  workbook.modified = new Date(report.generatedAt);
+  workbook.calcProperties.fullCalcOnLoad = true;
+  const colors = { green: 'FF16A34A', dark: 'FF14352B', light: 'FFEAF7EF', gray: 'FFF3F4F6', white: 'FFFFFFFF', blue: 'FF2563EB' };
+  const thinBorder = { top: { style: 'thin', color: { argb: 'FFD1D5DB' } }, left: { style: 'thin', color: { argb: 'FFD1D5DB' } }, bottom: { style: 'thin', color: { argb: 'FFD1D5DB' } }, right: { style: 'thin', color: { argb: 'FFD1D5DB' } } };
+  const asDate = value => value ? new Date(value) : null;
+  const styleTitle = (sheet, endColumn, subtitle) => {
+    sheet.mergeCells(1, 1, 1, endColumn);
+    const title = sheet.getCell(1, 1);
+    title.value = 'CREATORS ELITE | PERFORMANCE REPORT';
+    title.font = { name: 'Aptos Display', size: 20, bold: true, color: { argb: colors.white } };
+    title.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.dark } };
+    title.alignment = { vertical: 'middle', horizontal: 'left' };
+    sheet.getRow(1).height = 34;
+    sheet.mergeCells(2, 1, 2, endColumn);
+    const sub = sheet.getCell(2, 1);
+    sub.value = subtitle;
+    sub.font = { name: 'Aptos', size: 10, color: { argb: 'FF374151' } };
+    sub.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.light } };
+    sub.alignment = { vertical: 'middle', wrapText: true };
+    sheet.getRow(2).height = 28;
+  };
+  const styleHeader = row => {
+    row.font = { name: 'Aptos', size: 10, bold: true, color: { argb: colors.white } };
+    row.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.green } };
+    row.alignment = { vertical: 'middle', wrapText: true };
+    row.height = 28;
+    row.eachCell(cell => { cell.border = thinBorder; });
+  };
+  const styleBody = (sheet, startRow, endRow, numberColumns = [], dateColumns = [], percentColumns = []) => {
+    for (let rowNumber = startRow; rowNumber <= endRow; rowNumber++) {
+      const row = sheet.getRow(rowNumber);
+      row.font = { name: 'Aptos', size: 10, color: { argb: 'FF111827' } };
+      if ((rowNumber - startRow) % 2 === 1) row.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.gray } };
+      row.alignment = { vertical: 'top', wrapText: true };
+      row.eachCell(cell => { cell.border = thinBorder; });
+    }
+    for (const column of numberColumns) sheet.getColumn(column).numFmt = '#,##0';
+    for (const column of dateColumns) sheet.getColumn(column).numFmt = 'yyyy-mm-dd';
+    for (const column of percentColumns) sheet.getColumn(column).numFmt = '0.0%';
+  };
+  const finalizeTableSheet = (sheet, headerRow, finalRow, finalColumn) => {
+    sheet.views = [{ state: 'frozen', ySplit: headerRow, activeCell: `A${headerRow + 1}` }];
+    if (finalRow >= headerRow) sheet.autoFilter = { from: { row: headerRow, column: 1 }, to: { row: finalRow, column: finalColumn } };
+    sheet.pageSetup = { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.25, right: 0.25, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 } };
+  };
+
+  const executive = workbook.addWorksheet('Executive Summary', { properties: { tabColor: { argb: colors.green } } });
+  executive.columns = [{ width: 29 }, { width: 24 }, { width: 29 }, { width: 24 }, { width: 24 }, { width: 24 }];
+  styleTitle(executive, 6, `${report.period.label} | Generated ${new Date(report.generatedAt).toISOString()}`);
+  executive.getCell('A4').value = 'Reporting Period'; executive.getCell('B4').value = asDate(report.period.startAt);
+  executive.getCell('C4').value = 'Through'; executive.getCell('D4').value = asDate(report.period.endAt);
+  executive.getCell('E4').value = 'Generated (UTC)'; executive.getCell('F4').value = asDate(report.generatedAt);
+  for (const address of ['A4', 'C4', 'E4']) executive.getCell(address).font = { bold: true, color: { argb: colors.dark } };
+  for (const address of ['B4', 'D4', 'F4']) executive.getCell(address).numFmt = 'yyyy-mm-dd hh:mm "UTC"';
+  const metrics = [
+    ['Campaigns Included', report.summary.campaigns],
+    ['Approved Videos', report.summary.approvedVideos],
+    ['Total Public Views', report.summary.totalPublicViews],
+    ['Unique Creators', report.summary.uniqueCreators],
+    ['Average Views / Video', report.summary.averageViewsPerVideo],
+    ['Median Views / Video', report.summary.medianViewsPerVideo]
+  ];
+  metrics.forEach(([label, value], index) => {
+    const startColumn = (index % 3) * 2 + 1;
+    const row = 6 + Math.floor(index / 3) * 2;
+    executive.mergeCells(row, startColumn, row, startColumn + 1);
+    executive.getCell(row, startColumn).value = label;
+    executive.getCell(row, startColumn).font = { bold: true, size: 10, color: { argb: colors.white } };
+    executive.getCell(row, startColumn).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.green } };
+    executive.mergeCells(row + 1, startColumn, row + 1, startColumn + 1);
+    executive.getCell(row + 1, startColumn).value = value ?? 'N/A';
+    if (value !== null && value !== undefined) executive.getCell(row + 1, startColumn).numFmt = '#,##0';
+    executive.getCell(row + 1, startColumn).font = { bold: true, size: 16, color: { argb: colors.dark } };
+    executive.getCell(row + 1, startColumn).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.light } };
+  });
+  executive.mergeCells('A11:F11'); executive.getCell('A11').value = 'Highlights';
+  executive.getCell('A11').font = { bold: true, color: { argb: colors.white } }; executive.getCell('A11').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.dark } };
+  executive.mergeCells('A12:F12');
+  executive.getCell('A12').value = report.summary.topClip
+    ? `Top clip: ${report.summary.topClip.title} (${report.summary.topClip.platform}) - ${report.summary.topClip.publicViews.toLocaleString('en-US')} public views`
+    : 'No approved clip activity matched this report.';
+  executive.mergeCells('A13:F13');
+  executive.getCell('A13').value = report.summary.topCampaign
+    ? `Top campaign: ${report.summary.topCampaign.campaign} - ${report.summary.topCampaign.publicViews.toLocaleString('en-US')} public views`
+    : 'No campaign activity matched this report.';
+  executive.mergeCells('A14:F14');
+  executive.getCell('A14').value = `Platforms used: ${report.platforms.map(row => row.platform).join(' â€¢ ') || 'N/A'}`;
+  executive.mergeCells('A15:F15'); executive.getCell('A15').value = 'Methodology';
+  executive.getCell('A15').font = { bold: true, color: { argb: colors.white } }; executive.getCell('A15').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.dark } };
+  executive.mergeCells('A16:F18');
+  executive.getCell('A16').value = `Public/current views are the primary sales metric. Only canonical approved Creators Elite campaign clips are included. ${report.deduplication} Pending, rejected, post-approval rejected, test, orphan, and non-opted-in campaign records are excluded. Goals are blank unless explicitly configured for client reporting.`;
+  executive.getCell('A16').alignment = { vertical: 'top', wrapText: true };
+  executive.getRow(16).height = 44;
+  executive.mergeCells('A20:F20'); executive.getCell('A20').value = 'Campaign Summary';
+  executive.getCell('A20').font = { bold: true, color: { argb: colors.white } }; executive.getCell('A20').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colors.dark } };
+  executive.getRow(21).values = ['Campaign', 'Category', 'Approved Clips', 'Creators', 'Public Views', 'Average Views / Clip'];
+  styleHeader(executive.getRow(21));
+  for (const campaign of report.campaigns) executive.addRow([
+    campaign.campaign, campaign.category, campaign.approvedVideos, campaign.uniqueCreators, campaign.publicViews, campaign.averageViewsPerClip
+  ]);
+  styleBody(executive, 22, executive.rowCount, [3, 4, 5, 6]);
+  executive.views = [{ state: 'frozen', ySplit: 2 }];
+  executive.pageSetup = { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
+
+  const campaignSheet = workbook.addWorksheet('Campaigns');
+  campaignSheet.columns = [
+    { key: 'campaign', width: 32 }, { key: 'category', width: 25 }, { key: 'cycle', width: 28 }, { key: 'start', width: 15 }, { key: 'end', width: 15 },
+    { key: 'approvedVideos', width: 17 }, { key: 'uniqueCreators', width: 17 }, { key: 'tiktokViews', width: 16 },
+    { key: 'instagramViews', width: 18 }, { key: 'youtubeViews', width: 17 }, { key: 'publicViews', width: 18 },
+    { key: 'averageViews', width: 18 }, { key: 'topClipViews', width: 18 }, { key: 'goalViews', width: 18 }, { key: 'overdelivery', width: 16 }
+  ];
+  styleTitle(campaignSheet, 15, 'Client-safe campaign-cycle breakdown; goals appear only when explicitly configured.');
+  campaignSheet.addRow([]);
+  campaignSheet.addRow(['Campaign', 'Campaign Category', 'Campaign Cycle', 'Start', 'End', 'Approved Clips', 'Unique Creators', 'TikTok Views', 'Instagram Views', 'YouTube Views', 'Total Public Views', 'Average Views / Clip', 'Top Clip Views', 'Goal', 'Overdelivery %']);
+  styleHeader(campaignSheet.getRow(4));
+  for (const row of report.campaignCycles) campaignSheet.addRow([
+    row.campaign, row.category, row.cycle, asDate(row.startAt), asDate(row.endAt), row.approvedVideos, row.uniqueCreators,
+    row.platformViews.tiktok, row.platformViews.instagram, row.platformViews.youtube, row.publicViews,
+    row.averageViewsPerClip, row.topClip?.views || null, row.goalViews, row.overdeliveryPercent
+  ]);
+  styleBody(campaignSheet, 5, campaignSheet.rowCount, [6, 7, 8, 9, 10, 11, 12, 13, 14], [4, 5], [15]);
+  finalizeTableSheet(campaignSheet, 4, campaignSheet.rowCount, 15);
+
+  const evidence = workbook.addWorksheet('Clip Evidence');
+  evidence.columns = [
+    { key: 'title', width: 42 }, { key: 'campaign', width: 30 }, { key: 'platform', width: 14 }, { key: 'creator', width: 24 },
+    { key: 'account', width: 24 }, { key: 'url', width: 55 }, { key: 'submittedAt', width: 18 }, { key: 'approvedAt', width: 18 },
+    { key: 'publishedAt', width: 18 }, { key: 'publicViews', width: 18 }, { key: 'likes', width: 14 }, { key: 'comments', width: 14 },
+    { key: 'status', width: 14 }, { key: 'lastUpdatedAt', width: 20 }
+  ];
+  styleTitle(evidence, 14, 'Approved Creators Elite clips only. Public social handles and public post links are provided as evidence.');
+  evidence.addRow([]); evidence.addRow(['Clip Title', 'Campaign', 'Platform', 'Creator Public Handle', 'Connected Account', 'Clip URL', 'Submitted At', 'Approved At', 'Published At', 'Current / Public Views', 'Likes', 'Comments', 'Status', 'Last Updated']);
+  styleHeader(evidence.getRow(4));
+  for (const row of report.clips) {
+    const added = evidence.addRow([
+      row.title, row.campaign, row.platform, row.creator, row.creator, row.url || 'Unavailable', asDate(row.submittedAt), asDate(row.approvedAt),
+      asDate(row.publishedAt), row.publicViews, row.likes, row.comments, row.status, asDate(row.lastUpdatedAt)
+    ]);
+    if (row.url) {
+      added.getCell(6).value = { text: row.url, hyperlink: row.url, tooltip: 'Open public clip' };
+      added.getCell(6).font = { color: { argb: colors.blue }, underline: true };
+    }
+  }
+  styleBody(evidence, 5, evidence.rowCount, [10, 11, 12], [7, 8, 9, 14]);
+  for (let rowNumber = 5; rowNumber <= evidence.rowCount; rowNumber++) {
+    if (evidence.getCell(rowNumber, 6).value?.hyperlink) evidence.getCell(rowNumber, 6).font = { color: { argb: colors.blue }, underline: true };
+  }
+  finalizeTableSheet(evidence, 4, evidence.rowCount, 14);
+
+  const top = workbook.addWorksheet('Top Clips');
+  top.columns = [{ width: 8 }, { width: 30 }, { width: 14 }, { width: 24 }, { width: 18 }, { width: 55 }];
+  styleTitle(top, 6, 'Top approved clips ranked by latest stored public views.');
+  top.addRow([]); top.addRow(['Rank', 'Campaign', 'Platform', 'Account', 'Public Views', 'Clip URL']);
+  styleHeader(top.getRow(4));
+  report.topClips.forEach((row, index) => {
+    const added = top.addRow([index + 1, row.campaign, row.platform, row.creator, row.publicViews, row.url || 'Unavailable']);
+    if (row.url) {
+      added.getCell(6).value = { text: row.url, hyperlink: row.url, tooltip: 'Open public clip' };
+      added.getCell(6).font = { color: { argb: colors.blue }, underline: true };
+    }
+  });
+  styleBody(top, 5, top.rowCount, [1, 5]);
+  for (let rowNumber = 5; rowNumber <= top.rowCount; rowNumber++) {
+    if (top.getCell(rowNumber, 6).value?.hyperlink) top.getCell(rowNumber, 6).font = { color: { argb: colors.blue }, underline: true };
+  }
+  finalizeTableSheet(top, 4, top.rowCount, 6);
+
+  const platforms = workbook.addWorksheet('Platform Breakdown');
+  platforms.columns = [{ width: 22 }, { width: 20 }, { width: 22 }, { width: 22 }];
+  styleTitle(platforms, 4, 'Cross-platform distribution of approved clip performance.');
+  platforms.addRow([]); platforms.addRow(['Platform', 'Approved Clips', 'Public Views', 'Percentage of Total Views']);
+  styleHeader(platforms.getRow(4));
+  for (const row of report.platforms) platforms.addRow([row.platform, row.approvedVideos, row.publicViews, row.viewShare]);
+  styleBody(platforms, 5, platforms.rowCount, [2, 3], [], [4]);
+  finalizeTableSheet(platforms, 4, platforms.rowCount, 4);
+
+  if (report.dailyPerformance.length) {
+    const daily = workbook.addWorksheet('Daily Performance');
+    daily.columns = [{ width: 15 }, { width: 32 }, { width: 20 }, { width: 20 }, { width: 22 }];
+    styleTitle(daily, 5, 'Daily snapshots captured by Creators Elite; no historical values are estimated.');
+    daily.addRow([]); daily.addRow(['Snapshot Date', 'Campaign', 'Approved Videos', 'Unique Creators', 'Public Views']);
+    styleHeader(daily.getRow(4));
+    for (const row of report.dailyPerformance) daily.addRow([asDate(Date.parse(`${row.date}T00:00:00.000Z`)), row.campaign, row.approvedVideos, row.uniqueCreators, row.publicViews]);
+    styleBody(daily, 5, daily.rowCount, [3, 4, 5], [1]);
+    finalizeTableSheet(daily, 4, daily.rowCount, 5);
+  }
+
+  if (report.selection.internal === true) {
+    const internal = workbook.addWorksheet('Internal Audit');
+    internal.state = 'visible';
+    internal.columns = [{ width: 28 }, { width: 18 }, { width: 55 }, { width: 22 }];
+    styleTitle(internal, 4, 'Internal-only traceability. Do not distribute this sheet to clients.');
+    internal.addRow([]); internal.addRow(['Clip ID', 'Campaign ID', 'Earning Run Key', 'Campaign Credited Views']);
+    styleHeader(internal.getRow(4));
+    for (const row of report.clips) internal.addRow([row.internal.clipId, row.internal.campaignId, row.internal.earningRunKey, row.internal.campaignCreditedViews]);
+    styleBody(internal, 5, internal.rowCount, [4]);
+    finalizeTableSheet(internal, 4, internal.rowCount, 4);
+  }
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  return Buffer.from(buffer);
 }
 
 function getSafeTrackedViews(clip, metadata) {
@@ -10669,9 +11436,13 @@ client.once(Events.ClientReady, () => {
     }
 
     await runBackgroundMaintenanceTask('autoTrackClipViews', { campaignId: 'all', trigger: 'startup' }, autoTrackClipViews);
+    await runBackgroundMaintenanceTask('captureDailyPerformanceSnapshot', { campaignId: 'all', trigger: 'startup' }, captureDailyPerformanceSnapshot);
     setInterval(() => {
       void runBackgroundMaintenanceTask('autoTrackClipViews', { campaignId: 'all', trigger: 'interval' }, autoTrackClipViews);
     }, CLIP_TRACK_SCHEDULER_MS);
+    setInterval(() => {
+      void runBackgroundMaintenanceTask('captureDailyPerformanceSnapshot', { campaignId: 'all', trigger: 'interval' }, captureDailyPerformanceSnapshot);
+    }, PERFORMANCE_SNAPSHOT_INTERVAL_MS);
 
     await runBackgroundMaintenanceTask('archiveFinishedCampaigns', { campaignId: 'all', trigger: 'startup' }, archiveFinishedCampaigns);
     setInterval(() => {
@@ -10684,7 +11455,51 @@ client.on('messageCreate', async message => {
   const command = message.content.toLowerCase().split(/\s+/)[0];
   const isRecoverCommand = command === '!recoverclip';
   const isTrackingAuditCommand = command === '!auditcliptracking';
-  if (message.author.bot || !message.guild || (!isRecoverCommand && !isTrackingAuditCommand)) return;
+  const isPerformanceReportCommand = command === '!performancereport';
+  if (message.author.bot || !message.guild || (!isRecoverCommand && !isTrackingAuditCommand && !isPerformanceReportCommand)) return;
+  if (isPerformanceReportCommand) {
+    if (!isPerformanceReportAuthorized(message.member)) {
+      await message.reply('âŒ You need administrator permissions to generate client performance reports.');
+      return;
+    }
+    const selection = parsePerformanceReportCommand(message.content);
+    if (selection.error) {
+      await message.reply(`âŒ ${selection.error}`);
+      return;
+    }
+    await message.channel.sendTyping?.().catch(() => null);
+    try {
+      const report = buildClientPerformanceReport(readPerformanceReportDataOnly(), selection, { now: Date.now() });
+      if (report.unsupportedCampaignIds.length) {
+        await message.reply(`âŒ These campaigns do not have an approved client-report name/policy: ${report.unsupportedCampaignIds.map(id => `\`${id}\``).join(', ')}.`);
+        return;
+      }
+      if (!report.summary.approvedVideos) {
+        await message.reply('âš ï¸ No eligible campaign performance data found for the selected period.');
+        return;
+      }
+      await new Promise(resolve => setImmediate(resolve));
+      const workbook = await generateClientPerformanceWorkbook(report, { internal: selection.internal });
+      const internalNotice = selection.internal ? '\nâš ï¸ Includes an internal audit sheet; remove it before client distribution.' : '';
+      await message.reply({
+        content: [
+          '**Creators Elite Performance Report**',
+          `Scope: **${report.period.label}**`,
+          `Campaigns: **${report.summary.campaigns.toLocaleString('en-US')}**`,
+          `Approved videos: **${report.summary.approvedVideos.toLocaleString('en-US')}**`,
+          `Public views: **${report.summary.totalPublicViews.toLocaleString('en-US')}**`,
+          `Creators activated: **${report.summary.uniqueCreators.toLocaleString('en-US')}**`,
+          `Top platform: **${report.platforms[0]?.platform || 'N/A'}**`,
+          `Top clip: **${report.summary.topClip ? `${report.summary.topClip.publicViews.toLocaleString('en-US')} views` : 'N/A'}**${internalNotice}`
+        ].join('\n'),
+        files: [{ attachment: workbook, name: CLIENT_PERFORMANCE_REPORT_FILENAME }]
+      });
+    } catch (error) {
+      console.error('[Performance Report] Generation failed', { stack: error?.stack || String(error) });
+      await message.reply(`âŒ Performance report generation failed: ${String(error?.message || error).slice(0, 500)}`);
+    }
+    return;
+  }
   if (isRecoverCommand && !isAdmin(message.member)) {
     await message.reply('❌ You need administrator permissions to recover historical submissions.');
     return;
@@ -17065,6 +17880,7 @@ module.exports.__clipLifecycleTest = {
   buildCampaignSubmissionPanelComponents,
   buildCampaignStatsEmbed,
   buildCampaignStatusEmbed,
+  buildClientPerformanceReport,
   buildClipStaffEmbed,
   buildClipStaffButtons,
   buildGlobalSocialLinkModal,
@@ -17090,6 +17906,7 @@ module.exports.__clipLifecycleTest = {
   buildShortCampaignPanelText,
   buildSubmitClipModal,
   buildClipSubmissionValidationResponse,
+  captureDailyPerformanceSnapshot,
   clearClipAppealWindow,
   createGlobalSocialVerificationRequest,
   createClipReviewModerationCard,
@@ -17106,6 +17923,8 @@ module.exports.__clipLifecycleTest = {
   findAllCampaignSubmissionPanelMessages,
   findCampaignSubmissionPanelMessage,
   getClipTrackingAudit,
+  getClientReportCampaignPolicy,
+  getClientReportPublicViews,
   getClipActiveCreditedViews,
   getClipActiveWeekCreditedViews,
   getProviderClipAuthorIdentity,
@@ -17148,6 +17967,7 @@ module.exports.__clipLifecycleTest = {
   getSafeTrackedViews,
   initializeClipTrackingFields,
   isClipAppealWindowOpen,
+  isPerformanceReportAuthorized,
   isStraightCampaign,
   isNonMonsterlabCampaign,
   joinCampaignMember,
@@ -17179,6 +17999,10 @@ module.exports.__clipLifecycleTest = {
   recoverHistoricalOrphanClip,
   resolveHistoricalClipEarningRun,
   parseDiscordMessageLink,
+  parsePerformanceReportCommand,
+  generateClientPerformanceWorkbook,
+  recordDailyPerformanceSnapshot,
+  readPerformanceReportDataOnly,
   runAuthorizedHistoricalOrphanRecoveries,
   auditIceOrphanChannelAccess,
   attachClipReviewStaffMessageLocator,
